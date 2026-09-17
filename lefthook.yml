@@ -1,0 +1,5 @@
+pre-commit:
+  commands:
+    ultracite:
+      glob: "*.{js,cjs,mjs,jsx,ts,tsx,json,jsonc}"
+      run: pnpm exec ultracite check {staged_files}

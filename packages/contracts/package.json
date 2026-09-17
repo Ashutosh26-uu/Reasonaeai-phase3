@@ -1,0 +1,29 @@
+{
+  "name": "@reasonateai/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./authorization": {
+      "types": "./src/authorization.ts",
+      "import": "./dist/authorization.js"
+    },
+    "./identity": {
+      "types": "./src/identity.ts",
+      "import": "./dist/identity.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "ultracite check .",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
