@@ -21,6 +21,18 @@ When these files conflict, use this precedence:
 
 Do not silently resolve a material product conflict. Record the chosen resolution in the appropriate canonical file in the same change.
 
+## Company ownership and contribution policy
+
+- This is a company-owned repository. All project source code, data, specifications, artifacts, and work product created for the internship remain company property.
+- Keep company code and data only in approved company repositories, systems, and deployment environments. Do not mirror, publish, or transfer them to personal repositories or unapproved services.
+- Never push directly to the protected/default branch. Work on a focused feature branch and submit changes to the upstream company repository through a pull request.
+- Do not force-push shared branches, rewrite upstream history, or merge a pull request without the required company review and branch protections.
+- A pull request must be coherent and reviewable: clear scope, conventional title, linked task when available, implementation rationale, security impact, migration/deployment notes, and exact verification evidence.
+- Keep pull requests small enough for reliable review, but never split an end-to-end requirement into misleading “completed” fragments or pad changes to increase PR or line-count metrics.
+- Weekly evaluation considers delivered pull requests, substantive lines of code, and code quality. Generated files, formatting churn, duplicated code, and metric-gaming do not represent substantive delivery.
+- Monthly evaluation is governed by the working, deployable software outcome. Weekly work is not considered successful when it fails to integrate into the monthly deliverable.
+- Every weekly contribution must therefore move the active monthly acceptance scenario forward and remain integrated, tested, deployable, and consistent with the repository Definition of Done.
+
 ## Self-maintaining project context
 
 These context files are living repository state, not passive documentation. Update them as part of the work that makes them inaccurate.
