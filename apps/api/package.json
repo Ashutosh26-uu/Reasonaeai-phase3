@@ -1,0 +1,44 @@
+{
+  "name": "@reasonateai/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ReasonateAI web API and autonomous CTO runtime host.",
+  "keywords": [],
+  "license": "Apache-2.0",
+  "author": "",
+  "type": "module",
+  "scripts": {
+    "build": "mastra build",
+    "check": "ultracite check .",
+    "dev": "mastra dev",
+    "start": "mastra start",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@mastra/core": "^1.67.0",
+    "@mastra/docker": "^0.8.0",
+    "@mastra/duckdb": "^1.9.0",
+    "@mastra/libsql": "^1.23.0",
+    "@mastra/observability": "^1.17.8",
+    "@reasonateai/contracts": "workspace:*",
+    "@reasonateai/cto-runtime": "workspace:*",
+    "@reasonateai/project-state": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "mastra": "^1.30.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "turbo": {
+    "tasks": {
+      "build": {
+        "cache": false
+      }
+    }
+  }
+}
