@@ -4,9 +4,21 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./api-error": {
+      "types": "./src/api-error.ts",
+      "import": "./dist/api-error.js"
+    },
     "./authorization": {
       "types": "./src/authorization.ts",
       "import": "./dist/authorization.js"
+    },
+    "./execution": {
+      "types": "./src/execution.ts",
+      "import": "./dist/execution.js"
+    },
+    "./execution-protocol": {
+      "types": "./src/execution-protocol.ts",
+      "import": "./dist/execution-protocol.js"
     },
     "./identity": {
       "types": "./src/identity.ts",
