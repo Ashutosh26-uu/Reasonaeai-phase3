@@ -1,0 +1,45 @@
+{
+  "name": "@reasonateai/cto-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/runtime.ts",
+      "import": "./dist/runtime.js"
+    },
+    "./prompts": {
+      "types": "./src/prompts.ts",
+      "import": "./dist/prompts.js"
+    },
+    "./run-scope": {
+      "types": "./src/run-scope.ts",
+      "import": "./dist/run-scope.js"
+    },
+    "./runtime": {
+      "types": "./src/runtime.ts",
+      "import": "./dist/runtime.js"
+    },
+    "./subagents": {
+      "types": "./src/subagents.ts",
+      "import": "./dist/subagents.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "ultracite check .",
+    "pretest": "pnpm --filter @reasonateai/contracts build",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@mastra/core": "^1.67.0",
+    "@mastra/memory": "^1.30.0",
+    "@reasonateai/contracts": "workspace:*",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
