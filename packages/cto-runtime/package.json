@@ -51,7 +51,15 @@
     "./runtime": {
       "types": "./src/runtime.ts",
       "import": "./dist/runtime.js"
-    }
+    },
+    "./resources/handlers": "./src/resources/handlers/index.ts",
+    "./resources/artifacts": "./src/resources/artifacts.ts",
+    "./resources/types": "./src/resources/types.ts",
+    "./resources/json-path": "./src/resources/json-path.ts",
+    "./tools/selectors": "./src/tools/selectors.ts",
+    "./context/compose": "./src/context/compose.ts",
+    "./context/environment": "./src/context/environment.ts",
+    "./context/instructions": "./src/context/instructions.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
