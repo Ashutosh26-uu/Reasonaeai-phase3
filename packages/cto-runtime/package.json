@@ -20,6 +20,10 @@
       "types": "./src/runtime.ts",
       "import": "./dist/runtime.js"
     },
+    "./subagent-contract": {
+      "types": "./src/subagent-contract.ts",
+      "import": "./dist/subagent-contract.js"
+    },
     "./subagents": {
       "types": "./src/subagents.ts",
       "import": "./dist/subagents.js"

@@ -19,11 +19,77 @@ The product is an autonomous CTO that owns a project's whole lifecycle. That sha
 | Subpath | Provides |
 | --- | --- |
 | `runtime` | `createReasonateCtoRuntime`, `ReasonateCtoRuntimeConfig`, `CtoRuntimeLimits`, `CtoSubagentModels` |
-| `subagents` | `createCoreSubagents`, `scoutWorkspaceTools`, `fullWorkspaceTools` |
+| `subagent-contract` | `SubagentDefinition`, `validateSubagentDefinition`, `resolveDelegation`, `effectiveTools`, `mayDelegate`, `refusalMessage` |
+| `subagents` | `coreSubagentDefinitions`, `coreToolSets`, `createCoreSubagents`, `scoutWorkspaceTools`, `fullWorkspaceTools` |
 | `prompts` | CTO, scout, coder, debugger, and custom-agent instructions; the branded name |
 | `run-scope` | `readRunScope`, `sandboxIdFor`, `runScopeKeys`, `RunScope` |
 
 `createCustomAgentTool` is internal; the CTO reaches custom agents through the composed runtime.
+
+---
+
+## The subagent contract
+
+A worker is **data, not code**. `SubagentDefinition` names the role, describes when the orchestrator should reach for it, and carries its own system prompt, capability profile, step budget, and spawn policy. The runtime validates that data and materialises execution from it, so a second way to declare an agent cannot appear beside it. This follows the contract in oh-my-pi, where an agent is frontmatter plus a prompt body.
+
+`subagent-contract.ts` imports nothing from Mastra. Tool sets are supplied by the caller, which keeps the contract testable without a runtime.
+
+### Capability ceilings
+
+| Profile | Tools | Use |
+| --- | --- | --- |
+| `research` | read, list, stat, grep, search, language intelligence | Investigation with no writes and no commands |
+| `implementation` | full workspace, sandbox, computer, search, language intelligence | Bounded implementation or verification |
+| `bugfix` | same as `implementation` | Same surface, different working contract: reproduce, repair, rerun |
+
+A profile is a **ceiling**. `declaredTools` may narrow it and can never widen it; `effectiveTools` is the single place that is applied, so a definition cannot grant itself a tool its profile forbids.
+
+### Delegation
+
+`resolveDelegation` returns an allow with the definition, or a typed refusal:
+
+| Refusal | Meaning |
+| --- | --- |
+| `unknown-agent` | No such agent type. The orchestrator must not fall back to a default |
+| `agent-disabled` | Configured off by policy |
+| `self-recursion` | An agent cannot delegate to itself. Checked before depth so the refusal names the real cause |
+| `spawn-denied` | The parent's spawn policy (`"*"`, an allowlist, or `[]` to deny all) excludes the target |
+| `depth-exceeded` | Recursion limit reached |
+
+An **absent** `spawns` means no delegation at all, which is the safe default. `mayDelegate` answers the same question for an already-resolved pair.
+
+### Guardrails and their tests
+
+| Invariant | Test |
+| --- | --- |
+| A definition cannot carry undeclared fields | `test/subagent-contract.test.ts` — an extra `tools` field is rejected |
+| Identifiers and step budgets are usable | same file — `Scout` with a capital, `maxSteps: 0` and `257` all rejected |
+| A tool outside the profile is refused | same file — `execute` under `research` reports a ceiling violation |
+| Allowlists narrow and never widen | same file — a declared `execute` under `research` yields no tools |
+| Unknown targets are refused, not defaulted | same file |
+| Self-recursion is refused and named before depth | same file |
+| An empty spawn policy denies everything | same file |
+| The shipped workers are internally consistent | same file — every shipped definition validates with zero issues |
+
+### Materialisation
+
+`createCoreSubagents` turns the contract into Mastra subagent definitions. Step budgets and models may be overridden per deployment; everything else comes from the contract.
+
+| Agent | Profile | Blocking | Spawns |
+| --- | --- | --- | --- |
+| `scout` | `research` | yes — returns inline | none |
+| `coder` | `implementation` | no — background | `scout` |
+| `debugger` | `bugfix` | no — background | `scout` |
+
+A read-only investigator has nothing useful to delegate, which is why `scout` carries no `spawns`. The orchestrator's own reach is governed by the runtime, not by this list.
+
+### Not yet ported
+
+Deliberately out of scope, and trackable on the Agent Runtime workstream:
+
+- Definition **discovery** from project and user directories with first-wins precedence. The contract is the loading boundary; discovery is not implemented.
+- A **`yield`-style completion tool** with reminder prompts. Today a worker reports through its final text and the instruction contract.
+
 
 ---
 
