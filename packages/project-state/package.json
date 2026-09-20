@@ -8,6 +8,10 @@
       "types": "./src/postgres.ts",
       "import": "./dist/postgres.js"
     },
+    "./memberships": {
+      "types": "./src/memberships.ts",
+      "import": "./dist/memberships.js"
+    },
     "./relay": {
       "types": "./src/relay.ts",
       "import": "./dist/relay.js"

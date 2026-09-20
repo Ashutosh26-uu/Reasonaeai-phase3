@@ -23,6 +23,11 @@ import type {
   SessionId,
 } from "@reasonateai/contracts/identity";
 import { Pool, type PoolClient } from "pg";
+import { MEMBERSHIP_MIGRATION_SQL } from "./membership-schema.js";
+import {
+  createMembershipRepository,
+  type MembershipRepository,
+} from "./memberships.js";
 import { PROJECT_STATE_MIGRATION_SQL } from "./schema.js";
 import { AUTH_SESSION_MIGRATION_SQL } from "./session-schema.js";
 import { createSessionRepository, type SessionRepository } from "./sessions.js";
@@ -144,6 +149,7 @@ export interface ProjectStateStore {
     scope: TenantScope;
   }) => Promise<RunEventEnvelope[]>;
   markOutboxPublished: (outboxIds: number[]) => Promise<void>;
+  memberships: MembershipRepository;
   migrate: () => Promise<void>;
   recordArtifact: (
     manifest: ArtifactManifest,
@@ -323,6 +329,7 @@ export function createProjectStateStore(config: {
   const sessions = createSessionRepository(pool, {
     idleTtlMs: config.sessionIdleTtlMs ?? 1000 * 60 * 60 * 24 * 14,
   });
+  const memberships = createMembershipRepository(pool);
 
   async function withTransaction<T>(
     run: (client: PoolClient) => Promise<T>
@@ -785,6 +792,7 @@ export function createProjectStateStore(config: {
     listPendingOutbox,
     listRunEvents,
     markOutboxPublished,
+    memberships,
     migrate: async () => {
       // `create table if not exists` is not concurrency-safe: two processes
       // racing the same DDL collide in the system catalog. Replicas starting
@@ -796,6 +804,7 @@ export function createProjectStateStore(config: {
         ]);
         await client.query(PROJECT_STATE_MIGRATION_SQL);
         await client.query(AUTH_SESSION_MIGRATION_SQL);
+        await client.query(MEMBERSHIP_MIGRATION_SQL);
       });
     },
     recordArtifact,
