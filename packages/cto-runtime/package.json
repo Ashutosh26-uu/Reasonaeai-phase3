@@ -8,6 +8,38 @@
       "types": "./src/runtime.ts",
       "import": "./dist/runtime.js"
     },
+    "./agents/catalog": {
+      "types": "./src/agents/catalog.ts",
+      "import": "./dist/agents/catalog.js"
+    },
+    "./agents/definitions": {
+      "types": "./src/agents/definitions/index.ts",
+      "import": "./dist/agents/definitions/index.js"
+    },
+    "./agents/delegation": {
+      "types": "./src/agents/delegation.ts",
+      "import": "./dist/agents/delegation.js"
+    },
+    "./agents/frontmatter": {
+      "types": "./src/agents/frontmatter.ts",
+      "import": "./dist/agents/frontmatter.js"
+    },
+    "./agents/loader": {
+      "types": "./src/agents/loader.ts",
+      "import": "./dist/agents/loader.js"
+    },
+    "./agents/materialize": {
+      "types": "./src/agents/materialize.ts",
+      "import": "./dist/agents/materialize.js"
+    },
+    "./agents/tool-filter": {
+      "types": "./src/agents/tool-filter.ts",
+      "import": "./dist/agents/tool-filter.js"
+    },
+    "./agents/types": {
+      "types": "./src/agents/types.ts",
+      "import": "./dist/agents/types.js"
+    },
     "./prompts": {
       "types": "./src/prompts.ts",
       "import": "./dist/prompts.js"
@@ -19,14 +51,6 @@
     "./runtime": {
       "types": "./src/runtime.ts",
       "import": "./dist/runtime.js"
-    },
-    "./subagent-contract": {
-      "types": "./src/subagent-contract.ts",
-      "import": "./dist/subagent-contract.js"
-    },
-    "./subagents": {
-      "types": "./src/subagents.ts",
-      "import": "./dist/subagents.js"
     }
   },
   "scripts": {
@@ -43,6 +67,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@types/node": "^22.20.3",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

@@ -4,13 +4,13 @@ import {
   Workspace,
 } from "@mastra/core/workspace";
 import { describe, expect, it } from "vitest";
-import { REASONATE_CTO_NAME } from "../src/prompts.js";
-import { createReasonateCtoRuntime } from "../src/runtime.js";
 import {
-  createCoreSubagents,
   fullWorkspaceTools,
   scoutWorkspaceTools,
-} from "../src/subagents.js";
+} from "../src/agents/definitions/workers.js";
+import { materializeDelegatableSubagents } from "../src/agents/materialize.js";
+import { REASONATE_CTO_NAME } from "../src/prompts.js";
+import { createReasonateCtoRuntime } from "../src/runtime.js";
 
 const FULL_LIFECYCLE_PATTERN = /complete product lifecycle/i;
 const DEPLOYED_PRODUCT_PATTERN = /deployed, usable product/i;
@@ -40,11 +40,17 @@ describe("ReasonateAI CTO composition", () => {
   });
 
   it("keeps scout read-only while coder and debugger can edit and execute", () => {
-    const [scout, coder, debugAgent] = createCoreSubagents({
-      maxCoderSteps: 20,
-      maxDebuggerSteps: 24,
-      maxScoutSteps: 8,
+    const materialized = materializeDelegatableSubagents({
+      overrides: {
+        coder: { maxTurns: 20 },
+        debugger: { maxTurns: 24 },
+        scout: { maxTurns: 8 },
+      },
     });
+    const byId = Object.fromEntries(
+      materialized.map((entry) => [entry.id, entry])
+    );
+    const { scout, coder, debugger: debugAgent } = byId;
 
     expect(scout?.allowedWorkspaceTools).toEqual([...scoutWorkspaceTools]);
     expect(scout?.allowedWorkspaceTools).not.toContain(
@@ -62,7 +68,18 @@ describe("ReasonateAI CTO composition", () => {
     );
   });
 
-  it("rejects unbounded agent loops at construction", () => {
+  it("applies no step cap unless one is configured", async () => {
+    const uncapped = createReasonateCtoRuntime({
+      model: "openai/gpt-5-mini",
+      workspace,
+    });
+
+    const uncappedOptions = await uncapped.mainAgent.getDefaultOptions();
+    expect(uncappedOptions.maxSteps).toBeUndefined();
+    expect(uncapped.limits).toEqual({});
+  });
+
+  it("rejects a configured step cap that a runtime cannot rely on", () => {
     expect(() =>
       createReasonateCtoRuntime({
         limits: { mainMaxSteps: 0 },
@@ -70,5 +87,16 @@ describe("ReasonateAI CTO composition", () => {
         workspace,
       })
     ).toThrow(INVALID_LIMIT_PATTERN);
+  });
+
+  it("applies a configured step cap", async () => {
+    const capped = createReasonateCtoRuntime({
+      limits: { mainMaxSteps: 40 },
+      model: "openai/gpt-5-mini",
+      workspace,
+    });
+
+    const cappedOptions = await capped.mainAgent.getDefaultOptions();
+    expect(cappedOptions.maxSteps).toBe(40);
   });
 });

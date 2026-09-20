@@ -4,19 +4,30 @@ import type { MastraBrowser } from "@mastra/core/browser";
 import { createCodingAgent } from "@mastra/core/coding-agent";
 import type { MastraCompositeStore } from "@mastra/core/storage";
 import { Memory } from "@mastra/memory";
+import { materializeDelegatableSubagents } from "./agents/materialize.js";
 import {
   createCustomAgentTool,
   type RuntimeWorkspace,
 } from "./custom-agent.js";
 import { MAIN_AGENT_INSTRUCTIONS, REASONATE_CTO_NAME } from "./prompts.js";
-import { createCoreSubagents } from "./subagents.js";
 
+/**
+ * Optional hard caps on agent loop steps.
+ *
+ * There are deliberately **no defaults**. A step cap that fires mid-task
+ * truncates legitimate work, and a run should be stopped by a budget that steers
+ * it toward finishing, by wall-clock, or by spend — not by a number chosen
+ * before the task was understood. A deployment that needs a ceiling sets one.
+ *
+ * When a value is provided it is validated, so a typo cannot silently become an
+ * accidental cap of one step.
+ */
 export interface CtoRuntimeLimits {
-  customAgentMaxSteps: number;
-  debuggerMaxSteps: number;
-  mainMaxSteps: number;
-  scoutMaxSteps: number;
-  workerMaxSteps: number;
+  customAgentMaxSteps?: number;
+  debuggerMaxSteps?: number;
+  mainMaxSteps?: number;
+  scoutMaxSteps?: number;
+  workerMaxSteps?: number;
 }
 
 export interface CtoSubagentModels {
@@ -39,23 +50,22 @@ export interface ReasonateCtoRuntimeConfig {
   workspace: RuntimeWorkspace;
 }
 
-const DEFAULT_LIMITS: CtoRuntimeLimits = {
-  customAgentMaxSteps: 24,
-  debuggerMaxSteps: 32,
-  mainMaxSteps: 64,
-  scoutMaxSteps: 12,
-  workerMaxSteps: 32,
-};
-
 function resolveLimits(
   overrides: Partial<CtoRuntimeLimits> | undefined
 ): CtoRuntimeLimits {
-  const limits = { ...DEFAULT_LIMITS, ...overrides };
+  const limits: CtoRuntimeLimits = { ...overrides };
+
   for (const [name, value] of Object.entries(limits)) {
+    if (value === undefined) {
+      continue;
+    }
     if (!Number.isInteger(value) || value < 1 || value > 256) {
-      throw new Error(`${name} must be an integer between 1 and 256.`);
+      throw new Error(
+        `${name} must be an integer between 1 and 256 when provided.`
+      );
     }
   }
+
   return limits;
 }
 
@@ -63,8 +73,12 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
   const limits = resolveLimits(config.limits);
   const memory = config.memory ?? new Memory();
   const customAgent = createCustomAgentTool({
-    defaultMaxSteps: limits.customAgentMaxSteps,
-    maxSteps: limits.customAgentMaxSteps,
+    ...(limits.customAgentMaxSteps === undefined
+      ? {}
+      : {
+          defaultMaxSteps: limits.customAgentMaxSteps,
+          maxSteps: limits.customAgentMaxSteps,
+        }),
     model: config.model,
     ...(config.skills ? { skills: config.skills } : {}),
     workspace: config.workspace,
@@ -73,7 +87,9 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
   const mainAgent = createCodingAgent({
     defaultOptions: {
       autoResumeSuspendedTools: false,
-      maxSteps: limits.mainMaxSteps,
+      ...(limits.mainMaxSteps === undefined
+        ? {}
+        : { maxSteps: limits.mainMaxSteps }),
     },
     description:
       "ReasonateAI's autonomous CTO that owns the complete product lifecycle from intent through verified deployment.",
@@ -102,19 +118,33 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
       },
     ],
     ...(config.storage ? { storage: config.storage } : {}),
-    subagents: createCoreSubagents({
-      ...(config.subagentModels?.coder
-        ? { coderModel: config.subagentModels.coder }
-        : {}),
-      ...(config.subagentModels?.debugger
-        ? { debuggerModel: config.subagentModels.debugger }
-        : {}),
-      maxCoderSteps: limits.workerMaxSteps,
-      maxDebuggerSteps: limits.debuggerMaxSteps,
-      maxScoutSteps: limits.scoutMaxSteps,
-      ...(config.subagentModels?.scout
-        ? { scoutModel: config.subagentModels.scout }
-        : {}),
+    subagents: materializeDelegatableSubagents({
+      overrides: {
+        coder: {
+          ...(config.subagentModels?.coder
+            ? { model: config.subagentModels.coder }
+            : {}),
+          ...(limits.workerMaxSteps === undefined
+            ? {}
+            : { maxTurns: limits.workerMaxSteps }),
+        },
+        debugger: {
+          ...(config.subagentModels?.debugger
+            ? { model: config.subagentModels.debugger }
+            : {}),
+          ...(limits.debuggerMaxSteps === undefined
+            ? {}
+            : { maxTurns: limits.debuggerMaxSteps }),
+        },
+        scout: {
+          ...(config.subagentModels?.scout
+            ? { model: config.subagentModels.scout }
+            : {}),
+          ...(limits.scoutMaxSteps === undefined
+            ? {}
+            : { maxTurns: limits.scoutMaxSteps }),
+        },
+      },
     }),
     tools: {
       ...config.tools,

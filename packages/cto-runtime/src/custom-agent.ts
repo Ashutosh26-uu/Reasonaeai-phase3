@@ -3,8 +3,12 @@ import type { RequestContext } from "@mastra/core/request-context";
 import { createTool } from "@mastra/core/tools";
 import type { Workspace } from "@mastra/core/workspace";
 import { z } from "zod";
+import {
+  reasonateToolUniverse,
+  scoutWorkspaceTools,
+} from "./agents/definitions/workers.js";
+import { filterToolsByDefinition } from "./agents/tool-filter.js";
 import { CUSTOM_AGENT_SAFETY_INSTRUCTIONS } from "./prompts.js";
-import { scoutWorkspaceTools } from "./subagents.js";
 
 export type RuntimeWorkspace =
   | Workspace
@@ -12,16 +16,11 @@ export type RuntimeWorkspace =
       requestContext: RequestContext;
     }) => Promise<Workspace | undefined> | Workspace | undefined);
 
-const CustomAgentCapabilitySchema = z.enum([
-  "research",
-  "implementation",
-  "debugging",
-  "full",
-]);
+const CustomAgentAccessSchema = z.enum(["read-only", "full"]);
 
 export function createCustomAgentTool(input: {
-  defaultMaxSteps: number;
-  maxSteps: number;
+  defaultMaxSteps?: number;
+  maxSteps?: number;
   model: string;
   skills?: string[];
   workspace: RuntimeWorkspace;
@@ -51,11 +50,23 @@ export function createCustomAgentTool(input: {
         workspace,
       });
 
+      const requestedSteps = args.maxSteps ?? input.defaultMaxSteps;
+
       const result = await specialist.generate(args.assignment, {
-        ...(args.capability === "research"
-          ? { activeTools: [...scoutWorkspaceTools] }
+        // A read-only specialist is the same agent with a narrower tool set,
+        // derived from the same universe every other agent draws from.
+        ...(args.access === "read-only"
+          ? {
+              activeTools: filterToolsByDefinition(reasonateToolUniverse, {
+                description: "read-only specialist",
+                mode: "subagent",
+                name: "custom",
+                prompt: "",
+                tools: [...scoutWorkspaceTools],
+              }),
+            }
           : {}),
-        maxSteps: args.maxSteps ?? input.defaultMaxSteps,
+        ...(requestedSteps === undefined ? {} : { maxSteps: requestedSteps }),
         requestContext: context.requestContext,
       });
 
@@ -67,10 +78,15 @@ export function createCustomAgentTool(input: {
     },
     id: "spawn-custom-agent",
     inputSchema: z.strictObject({
+      access: CustomAgentAccessSchema,
       assignment: z.string().min(1).max(16_000),
-      capability: CustomAgentCapabilitySchema,
       description: z.string().min(1).max(500),
-      maxSteps: z.number().int().min(1).max(input.maxSteps).optional(),
+      maxSteps: z
+        .number()
+        .int()
+        .min(1)
+        .max(input.maxSteps ?? 256)
+        .optional(),
       name: z.string().min(1).max(80),
       systemInstructions: z.string().min(1).max(12_000),
     }),
