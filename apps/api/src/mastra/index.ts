@@ -19,6 +19,7 @@ import {
   BUILD_SESSION_ITEM_PATH,
   createBuildSessionHandlers,
 } from "./routes/build-sessions";
+import { createRunEventHandlers, RUN_EVENTS_PATH } from "./routes/run-events";
 import { serverMiddleware } from "./server";
 import { reasonateBuildWorkspace } from "./workspace";
 
@@ -46,6 +47,15 @@ function stateStore(): ProjectStateStore {
 }
 
 const buildSessionHandlers = createBuildSessionHandlers({
+  resolvePrincipal: async ({ cookieHeader }) =>
+    await resolveSessionPrincipal({
+      cookieHeader,
+      sessions: stateStore().sessions,
+    }),
+  store: stateStore,
+});
+
+const runEventHandlers = createRunEventHandlers({
   resolvePrincipal: async ({ cookieHeader }) =>
     await resolveSessionPrincipal({
       cookieHeader,
@@ -116,6 +126,16 @@ export const mastra = new Mastra({
           description:
             "Reads one build session within the caller's organization and project scope.",
           summary: "Read a build session",
+          tags: ["Build sessions"],
+        },
+      }),
+      registerApiRoute(RUN_EVENTS_PATH, {
+        handler: (c) => runEventHandlers.stream(c),
+        method: "GET",
+        openapi: {
+          description:
+            "Streams a run's durable events as server-sent events, replaying from Last-Event-ID before following live.",
+          summary: "Follow build session events",
           tags: ["Build sessions"],
         },
       }),

@@ -35,6 +35,8 @@ export interface HandlerContext {
     json: () => Promise<unknown>;
     param: (name: string) => string | undefined;
     query: (name: string) => string | undefined;
+    /** Present on a real Hono context; used to observe client disconnects. */
+    raw?: { signal?: AbortSignal };
   };
 }
 
