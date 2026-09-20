@@ -26,30 +26,30 @@ This phase is active. Authentication and authorization precede resource and tool
 - Added `@reasonateai/project-state` with the authoritative PostgreSQL schema and a tenant-scoped store implementing idempotent build-session allocation, reconnect-to-active-session, per-run monotonic event ledger, transactional outbox, single-holder run leases with expiry, artifact metadata, and deployment records.
 - Verified the store against real PostgreSQL 16: idempotent replay, reconnect reuse, cross-tenant refusal, contiguous event ordering with cursor replay, outbox publication, and mutually exclusive lease holders all pass as integration tests.
 - Corrected the Turborepo graph: `build` now declares the `.mastra/**` output so the API artifact is cacheable and integrity-checkable, and `test` keys its cache on `DATABASE_URL` so a database-less run cannot replay as a passing integration result.
+- Added organization and project membership storage, because the centralized policy is pure and receives memberships rather than loading them; nothing supplied them before.
+- Added authenticated product routes: `POST /v1/build-sessions` allocates idempotently, and `GET /v1/build-sessions/:buildSessionId` reads in scope. Both resolve a session principal, authorize through the centralized policy on `agent:run` and `project:read`, and reject any body field beyond the organization and project.
+- Added `GET /v1/build-sessions/:buildSessionId/events`, which authorizes the caller, replays the run's durable ledger from `Last-Event-ID`, then follows live from the same ledger.
+- Verified the launch slice end to end through the running API, real PostgreSQL 16, and real Redis 7: unauthenticated requests return a typed 401; allocation returns `created: true` on a first request and `created: false` with the same session id on reconnect; a member whose role lacks the capability and a caller with no membership both receive `forbidden`; the ledger holds `run.queued` at sequence 1; the outbox relay publishes it to the run's Redis stream topic; reconnecting the event stream with `Last-Event-ID: 1` skips that sequence; and an event appended while the stream was open arrived as sequence 2. Raw Mastra routes still answer 404 with zero occurrences of the system prompt.
 
 ### In progress
 
-- Bind the CTO runtime to authenticated web-request session allocation, PostgreSQL-backed project state, transactional outbox, run leases, authorization, evidence acceptance, and deployment lifecycle adapters.
-- Select and implement the first private API/worker/Redis/PostgreSQL/object-storage local topology; raw Mastra routes remain disabled at public ingress.
+- Consume dispatched commands in a private worker and execute them under a run lease. The transport half is verified: committed events reach the run's Redis topic, but nothing consumes them yet, so no agent has executed.
+- Select and implement the first private API/worker/Redis/PostgreSQL/object-storage local topology.
 - Finalize the launch authentication architecture and provider decision from current official documentation and security evidence.
 
 ### Next
 
-1. Implement Redis Streams command dispatch, bounded consumer recovery, and the durable outbox relay; the API streams persisted events through SSE with `Last-Event-ID` replay.
-2. Close the raw-Mastra-route exposure: register authenticated product routes and deny `/api/agents/*`, Studio, and worker endpoints at ingress.
-3. Configure the documented Mastra worker split (`MASTRA_WORKERS`, shared storage, `RedisStreamsPubSub`) on the existing `apps/api/src/mastra` composition root.
-4. Implement authenticated build-session allocation and bind the first browser request to its shared sandbox workspace and CTO controller session.
-5. Select the web, authentication, ORM/database library, browser-test, sandbox, preview, object-storage, and deployment adapters through documented current-version evaluation.
-6. Implement secure session persistence, rotation, idle/absolute expiry, revocation, and logout.
-7. Implement organization creation and owner membership as one transaction.
-8. Implement authenticated project creation and scoped project retrieval.
-9. Record safe audit events for sign-in, organization/project creation, session revocation, authorization denial, run dispatch, approval, and exposure changes.
-10. Add CSRF protection, redirect validation, identity-endpoint rate limits, and secure cookie configuration.
-11. Add integration tests for session lifecycle, tenant isolation, permission denial, event ordering, idempotent command recovery, and audit recording.
-12. Exercise the full launch vertical slice through the running API, private worker, Redis, PostgreSQL, and real local persistence.
-13. Bind the first resource-read vertical slice to the authorization contract.
-14. Exercise one authenticated build session through sandbox allocation, CTO execution, preview creation, reconnect, and Git checkpoint recovery.
-15. Implement the selected deployment adapter and verify an accepted checkpoint at its authorized URL before claiming the product-generation journey complete.
+1. Implement the private worker: consume a run command through a Redis consumer group, resolve the workload grant, acquire a run lease, restore the workspace, and acknowledge only after durable state is committed.
+2. Configure the documented Mastra worker split (`MASTRA_WORKERS`, shared storage, `RedisStreamsPubSub`) on the existing `apps/api/src/mastra` composition root.
+3. Select the web, authentication, ORM/database library, browser-test, sandbox, preview, object-storage, and deployment adapters through documented current-version evaluation.
+4. Implement organization creation and owner membership as one transaction, plus project creation, so membership provisioning is no longer a manual step.
+5. Implement secure session persistence wiring for sign-in, rotation, idle/absolute expiry, and logout behind HTTP.
+6. Add CSRF protection, redirect validation, identity-endpoint rate limits, and secure cookie configuration.
+7. Record safe audit events for sign-in, organization/project creation, session revocation, authorization denial, run dispatch, approval, and exposure changes.
+8. Add integration tests for session lifecycle, permission denial, and audit recording.
+9. Exercise one authenticated build session through sandbox allocation, CTO execution, preview creation, reconnect, and Git checkpoint recovery.
+10. Bind the first resource-read vertical slice to the authorization contract.
+11. Implement the selected deployment adapter and verify an accepted checkpoint at its authorized URL before claiming the product-generation journey complete.
 
 ### Blocked
 
