@@ -21,13 +21,17 @@
     "@mastra/duckdb": "^1.9.0",
     "@mastra/libsql": "^1.23.0",
     "@mastra/observability": "^1.17.8",
+    "@reasonateai/auth": "workspace:*",
     "@reasonateai/contracts": "workspace:*",
     "@reasonateai/cto-runtime": "workspace:*",
-    "@reasonateai/project-state": "workspace:*"
+    "@reasonateai/project-state": "workspace:*",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "^22.20.3",
+    "@types/pg": "8.23.1",
     "mastra": "^1.30.0",
+    "pg": "8.23.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
