@@ -56,6 +56,9 @@ importers:
       '@mastra/observability':
         specifier: ^1.17.8
         version: 1.17.8(@mastra/core@1.67.0(@grpc/grpc-js@1.14.4)(zod@4.6.5))(zod@4.6.5)
+      '@reasonateai/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
       '@reasonateai/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -65,13 +68,22 @@ importers:
       '@reasonateai/project-state':
         specifier: workspace:*
         version: link:../../packages/project-state
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.5
     devDependencies:
       '@types/node':
         specifier: ^22.20.3
         version: 22.20.3
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
       mastra:
         specifier: ^1.30.0
         version: 1.30.0(@hono/node-server@1.19.17(hono@4.13.8))(@mastra/core@1.67.0(@grpc/grpc-js@1.14.4)(zod@4.6.5))(typescript@6.0.3)(zod@4.6.5)
+      pg:
+        specifier: 8.23.0
+        version: 8.23.0
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
