@@ -530,11 +530,16 @@ export async function readTarget(
   const { path: pathPart, sel } = splitPathAndSel(trimmed);
   const absolutePath = resolveReadPath(pathPart, context.cwd);
 
-  // A format reader takes precedence over the text path: a database or an archive
-  // read as text would return binary noise presented as content.
-  const formatReader = options.readers?.find((reader) =>
-    reader.matches({ path: absolutePath, selector: sel })
-  );
+  // `raw` means the caller wants the original bytes, so no format reader may
+  // intercept it. Otherwise `data.db:raw` would be claimed by the database
+  // reader and fail as a missing table named `raw`, instead of returning the
+  // file. A format reader otherwise takes precedence over the text path, because
+  // a database or an archive read as text is binary noise presented as content.
+  const formatReader = selectorIsRaw(sel)
+    ? undefined
+    : options.readers?.find((reader) =>
+        reader.matches({ path: absolutePath, selector: sel })
+      );
 
   if (formatReader !== undefined) {
     const read = await formatReader.read({
