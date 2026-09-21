@@ -24,7 +24,10 @@ import type { ResourceRouter } from "../resources/router.js";
 import type { ResolveContext } from "../resources/types.js";
 import { ResourceError } from "../resources/types.js";
 import type { FormatReader, ReaderLimits } from "./readers/types.js";
-import { DEFAULT_READER_LIMITS } from "./readers/types.js";
+import {
+  DEFAULT_READER_LIMITS,
+  UnsupportedFormatError,
+} from "./readers/types.js";
 import {
   type LineRange,
   selectorIsConflicts,
@@ -66,7 +69,15 @@ export interface Truncation {
 }
 
 export interface ReadResult {
+  /**
+   * True when the source cannot be edited, so no edit anchor should be minted.
+   * A database row, an archive member, and a fetched page are not editable
+   * regions of a file.
+   */
+  immutable?: boolean | undefined;
   kind: ReadKind;
+  /** Facts worth surfacing beside the content, such as which format was read. */
+  notes?: string[] | undefined;
   /** The line ranges actually shown, for a ranged read. */
   shownRanges?: LineRange[] | undefined;
   /** Absolute path or canonical URL that was read. */
@@ -416,12 +427,46 @@ function resolveRanges(
   return [{ endLine: totalLines, startLine }];
 }
 
+/**
+ * Bytes inspected when deciding whether a file is text.
+ *
+ * A NUL byte is the reliable signal: no text encoding in use produces one inside
+ * ordinary content, while every binary format does. Checking a prefix rather than
+ * the whole file keeps this cheap on a large target.
+ */
+const BINARY_SNIFF_BYTES = 8000;
+
+/**
+ * Refuse a file that is not text.
+ *
+ * This is the guard that makes an unsupported format fail loudly instead of
+ * silently. Without it, a `.tar`, a `.pdf`, or any other format no reader claims
+ * would be decoded as UTF-8, and the replacement characters and control bytes
+ * that come out are indistinguishable from real content to a model reading them.
+ * Naming the file is the point: the caller learns the format is unsupported
+ * rather than that the file is empty or corrupt.
+ */
+export function assertTextContent(path: string, bytes: Uint8Array): void {
+  const sample = bytes.subarray(0, BINARY_SNIFF_BYTES);
+
+  if (!sample.includes(0)) {
+    return;
+  }
+
+  throw new UnsupportedFormatError(
+    `${path} is not text, and no reader handles its format. Reading it as text would return binary noise.`,
+    { cause: undefined }
+  );
+}
+
 async function readFileTarget(
   absolutePath: string,
   selector: string | undefined,
   options: ReadOptions
 ): Promise<ReadResult> {
-  const content = await readFile(absolutePath, "utf-8");
+  const bytes = await readFile(absolutePath);
+  assertTextContent(absolutePath, bytes);
+  const content = Buffer.from(bytes).toString("utf-8");
   const lines = splitLines(content);
 
   if (selectorIsConflicts(selector)) {
@@ -520,7 +565,9 @@ export async function readTarget(
     const bounded = await boundOutput(read.text, read.text, trimmed, options);
 
     return {
+      immutable: read.immutable,
       kind: "resource",
+      notes: read.notes,
       target: trimmed,
       text: bounded.text,
       truncation: bounded.truncation,
@@ -555,7 +602,9 @@ export async function readTarget(
     );
 
     return {
+      immutable: read.immutable,
       kind: "resource",
+      notes: read.notes,
       target: absolutePath,
       text: bounded.text,
       truncation: bounded.truncation,
