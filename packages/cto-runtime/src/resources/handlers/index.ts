@@ -14,6 +14,8 @@
  */
 
 import type { RunScope } from "../../run-scope.js";
+import { createFormatReaders } from "../../tools/readers/registry.js";
+import type { FormatReader } from "../../tools/readers/types.js";
 import type { AgentOutputStore, ArtifactStore } from "../artifacts.js";
 import { createAgentOutputStore, createArtifactStore } from "../artifacts.js";
 import { ResourceRouter } from "../router.js";
@@ -40,6 +42,14 @@ export interface RunResourceOptions {
 export interface RunResources {
   agentOutputs: AgentOutputStore;
   artifacts: ArtifactStore;
+  /**
+   * Format readers, in dispatch order.
+   *
+   * Returned here because one read needs both halves: the router for a resource
+   * URL, and the readers for a path whose format is not text. A caller that wired
+   * only the router would still hand a database or an archive to the text path.
+   */
+  readers: readonly FormatReader[];
   router: ResourceRouter;
 }
 
@@ -65,5 +75,10 @@ export function createRunResources(options: RunResourceOptions): RunResources {
     handlers.push(new DocsHandler(options.docsRoots));
   }
 
-  return { agentOutputs, artifacts, router: new ResourceRouter(handlers) };
+  return {
+    agentOutputs,
+    artifacts,
+    readers: createFormatReaders(),
+    router: new ResourceRouter(handlers),
+  };
 }

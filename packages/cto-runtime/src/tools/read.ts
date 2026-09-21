@@ -507,6 +507,93 @@ async function readFileTarget(
 }
 
 /**
+ * Split a reader-owned suffix off a path.
+ *
+ * A reader may own a grammar the tool's selector parser does not know —
+ * `db:table:key` or `archive.zip:member` — and the tool cannot tell that suffix
+ * from part of a filename. It can tell where it starts, though: after the last
+ * path separator. The suffix then runs to the end, or to the first `?` when the
+ * target carries a query.
+ *
+ * A colon before the last separator is the Windows drive, so it is never a
+ * suffix.
+ */
+export function splitReaderSuffix(
+  path: string
+): { base: string; suffix: string } | undefined {
+  const lastSeparator = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  const queryIndex = path.indexOf("?");
+  const colonIndex = path.lastIndexOf(":");
+
+  if (queryIndex > lastSeparator && queryIndex !== -1) {
+    // A query keeps its own `?`, which reader grammars consume as written.
+    return { base: path.slice(0, queryIndex), suffix: path.slice(queryIndex) };
+  }
+
+  if (colonIndex > lastSeparator && colonIndex !== -1) {
+    // A colon is dropped: the reader re-adds the separator it expects.
+    return {
+      base: path.slice(0, colonIndex),
+      suffix: path.slice(colonIndex + 1),
+    };
+  }
+
+  return undefined;
+}
+
+/** A reader matched to a target, with the path and selector it must be given. */
+interface ReaderMatch {
+  path: string;
+  reader: FormatReader;
+  selector: string | undefined;
+}
+
+/**
+ * Match a filesystem target to a format reader.
+ *
+ * `raw` never matches: it asks for the original bytes, so no reader may
+ * intercept it. Otherwise a reader owns the suffix grammar, and the tool's own
+ * selector parser does not know it — `db:table:key` and `archive.zip:member` are
+ * invisible to it. So a plain target that matches nothing is retried with the
+ * suffix split off, which makes those addresses reachable without the tool
+ * understanding the grammar it hands over.
+ */
+function resolveFormatReader(
+  readers: readonly FormatReader[] | undefined,
+  path: string,
+  selector: string | undefined
+): ReaderMatch | undefined {
+  if (selectorIsRaw(selector)) {
+    return undefined;
+  }
+
+  const find = (target: string, suffix: string | undefined) =>
+    readers?.find((reader) =>
+      reader.matches({ path: target, selector: suffix })
+    );
+
+  const direct = find(path, selector);
+  if (direct !== undefined) {
+    return { path, reader: direct, selector };
+  }
+
+  // A selector the tool already recognised is not a reader suffix.
+  if (selector !== undefined) {
+    return undefined;
+  }
+
+  const split = splitReaderSuffix(path);
+  if (split === undefined) {
+    return undefined;
+  }
+
+  const candidate = find(split.base, split.suffix);
+  return candidate === undefined
+    ? undefined
+    : { path: split.base, reader: candidate, selector: split.suffix };
+}
+
+/**
  * Read any target: a resource URL, a directory, or a file.
  *
  * Resource URLs go to the router so the resource layer stays the one place that
@@ -582,22 +669,18 @@ export async function readTarget(
   // reader and fail as a missing table named `raw`, instead of returning the
   // file. A format reader otherwise takes precedence over the text path, because
   // a database or an archive read as text is binary noise presented as content.
-  const formatReader = selectorIsRaw(sel)
-    ? undefined
-    : options.readers?.find((reader) =>
-        reader.matches({ path: absolutePath, selector: sel })
-      );
+  const match = resolveFormatReader(options.readers, absolutePath, sel);
 
-  if (formatReader !== undefined) {
-    const read = await formatReader.read({
+  if (match !== undefined) {
+    const read = await match.reader.read({
       limits: options.limits ?? DEFAULT_READER_LIMITS,
-      path: absolutePath,
-      selector: sel,
+      path: match.path,
+      selector: match.selector,
     });
     const bounded = await boundOutput(
       read.text,
       read.text,
-      absolutePath,
+      match.path,
       options
     );
 
@@ -605,7 +688,7 @@ export async function readTarget(
       immutable: read.immutable,
       kind: "resource",
       notes: read.notes,
-      target: absolutePath,
+      target: match.path,
       text: bounded.text,
       truncation: bounded.truncation,
     };

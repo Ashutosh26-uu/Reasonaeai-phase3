@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 
 import { createRunResources } from "../src/resources/handlers/index.js";
@@ -320,5 +321,43 @@ describe("reading through the resource layer", () => {
     const { read } = await harness(cwd);
 
     await expect(read("   ")).rejects.toThrow("A read target is required");
+  });
+});
+
+describe("readers are wired into a run", () => {
+  it("reads a database through the run readers instead of dumping bytes", async () => {
+    const cwd = await workspace({});
+    const databasePath = join(cwd, "data.db");
+    const database = new DatabaseSync(databasePath);
+    database.exec("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)");
+    database.exec("INSERT INTO notes (body) VALUES ('alpha')");
+    database.close();
+
+    const root = await mkdtemp(join(tmpdir(), "reasonate-store-"));
+    const { router, readers } = createRunResources({ cwd, root, scope });
+
+    const listing = await readTarget("data.db", { cwd, scope }, router, {
+      readers,
+    });
+    const rows = await readTarget("data.db:notes", { cwd, scope }, router, {
+      readers,
+    });
+
+    // Without the readers both of these would return binary noise as text.
+    expect(listing.text).toContain("notes");
+    expect(rows.text).toContain("alpha");
+    expect(rows.immutable).toBe(true);
+  });
+
+  it("refuses a binary format the run has no reader for, naming the file", async () => {
+    // A NUL byte is the signal: no text encoding produces one in ordinary content.
+    const cwd = await workspace({});
+    await writeFile(
+      join(cwd, "blob.bin"),
+      Buffer.from([0x00, 0x01, 0x02, 0xff])
+    );
+    const { read } = await harness(cwd);
+
+    await expect(read("blob.bin")).rejects.toThrow("is not text");
   });
 });
