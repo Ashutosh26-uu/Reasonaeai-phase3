@@ -39,8 +39,11 @@ export class SelectorError extends Error {
 const RANGE_CHUNK_SRC = String.raw`L?\d+(?:(?:[-+]|\.\.)L?\d+|-|\.\.)?`;
 const RANGE_LIST_SRC = `${RANGE_CHUNK_SRC}(?:,${RANGE_CHUNK_SRC})*`;
 
-/** A complete selector: a range list, `raw`, or `conflicts`. */
-const SELECTOR_RE = new RegExp(`^(?:${RANGE_LIST_SRC}|raw|conflicts)$`, "i");
+/** A complete selector: a range list, a `-N` tail count, `raw`, or `conflicts`. */
+const SELECTOR_RE = new RegExp(
+  `^(?:${RANGE_LIST_SRC}|-\\d+|raw|conflicts)$`,
+  "i"
+);
 /** A selector that is only a range list, so it yields line ranges. */
 const RANGE_LIST_ONLY_RE = new RegExp(`^${RANGE_LIST_SRC}$`, "i");
 /** A selector that is only the `raw` flag. */
@@ -49,6 +52,16 @@ const RAW_ONLY_RE = /^raw$/i;
 const CONFLICTS_ONLY_RE = /^conflicts$/i;
 
 const LINE_RANGE_CHUNK_RE = /^L?(\d+)(?:(\.\.|[-+])L?(\d+)?)?$/i;
+
+/**
+ * A tail selector: `-N`, meaning the last N lines.
+ *
+ * Kept separate from the range grammar because it names a count rather than a
+ * position, and it resolves against a length only known once the file is read.
+ * Without this, `:-60` would match no range at all and a read would silently
+ * return the whole file instead of the tail the caller asked for.
+ */
+const TAIL_CHUNK_RE = /^-(\d+)$/;
 
 const ASCII_DRIVE_LETTER_RE = /^[A-Za-z]$/;
 
@@ -205,6 +218,25 @@ export function selectorLineRanges(
       const ranges = parseLineRanges(part);
       if (ranges !== null) {
         return ranges;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+/** The number of trailing lines a `-N` selector names, or `undefined`. */
+export function selectorTailCount(sel: string | undefined): number | undefined {
+  if (sel === undefined) {
+    return undefined;
+  }
+
+  for (const part of sel.split(":")) {
+    const match: RegExpExecArray | null = TAIL_CHUNK_RE.exec(part);
+    if (match !== null) {
+      const count = Number.parseInt(match[1] as string, 10);
+      if (count > 0) {
+        return count;
       }
     }
   }
