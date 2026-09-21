@@ -36,6 +36,7 @@ import {
   selectorTailCount,
   splitPathAndSel,
 } from "./selectors.js";
+import { summarizeSource } from "./source-summary.js";
 
 /** Largest number of child directories listed for one directory. */
 const DIRECTORY_CHILD_LIMIT = 12;
@@ -486,6 +487,18 @@ async function readFileTarget(
       text: bounded.text,
       truncation: bounded.truncation,
     };
+  }
+
+  // A structural summary is opt-in: a caller that asked for a line range, `raw`,
+  // or `conflicts` gets exactly what it asked for. Only a plain read of a whole
+  // file offers the summary, so the tool never substitutes content for a request.
+  // A file below the size threshold returns no summary, which must fall through
+  // to the ordinary render rather than being treated as empty content.
+  if (selector === undefined) {
+    const summary = summarizeSource(content, absolutePath);
+    if (summary !== undefined) {
+      return { kind: "file", target: absolutePath, text: summary.content };
+    }
   }
 
   const ranges = resolveRanges(selector, lines.length);
