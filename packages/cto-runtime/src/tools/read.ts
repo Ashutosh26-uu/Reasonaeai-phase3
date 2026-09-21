@@ -23,6 +23,8 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import type { ResourceRouter } from "../resources/router.js";
 import type { ResolveContext } from "../resources/types.js";
 import { ResourceError } from "../resources/types.js";
+import type { FormatReader, ReaderLimits } from "./readers/types.js";
+import { DEFAULT_READER_LIMITS } from "./readers/types.js";
 import {
   type LineRange,
   selectorIsConflicts,
@@ -75,11 +77,24 @@ export interface ReadResult {
 }
 
 export interface ReadOptions {
+  /** Size limits passed to format readers. */
+  limits?: ReaderLimits | undefined;
   maxInlineBytes?: number | undefined;
   maxInlineLines?: number | undefined;
+  /**
+   * Format readers, tried before the target is treated as text.
+   *
+   * Order matters only for overlapping claims. A reader that claims an extension
+   * must actually be able to parse it: a reader that returns a best-effort dump
+   * of binary bytes is worse than no reader, because the model cannot tell the
+   * difference between content and noise.
+   */
+  readers?: readonly FormatReader[] | undefined;
   /** Writes spilled text and returns its artifact id. Omit to disable spilling. */
   spill?: ((content: string, extension: string) => Promise<number>) | undefined;
 }
+
+const HTTP_URL_RE = /^https?:\/\//i;
 
 /**
  * Normalize a path argument before it is resolved.
@@ -485,8 +500,62 @@ export async function readTarget(
     };
   }
 
+  if (HTTP_URL_RE.test(trimmed)) {
+    const urlReader = options.readers?.find((reader) =>
+      reader.matches({ path: trimmed, selector: undefined })
+    );
+
+    if (urlReader === undefined) {
+      throw new ResourceError(
+        `No reader handles the URL ${trimmed}`,
+        "Only http and https targets can be read."
+      );
+    }
+
+    const read = await urlReader.read({
+      limits: options.limits ?? DEFAULT_READER_LIMITS,
+      path: trimmed,
+      selector: undefined,
+    });
+    const bounded = await boundOutput(read.text, read.text, trimmed, options);
+
+    return {
+      kind: "resource",
+      target: trimmed,
+      text: bounded.text,
+      truncation: bounded.truncation,
+    };
+  }
+
   const { path: pathPart, sel } = splitPathAndSel(trimmed);
   const absolutePath = resolveReadPath(pathPart, context.cwd);
+
+  // A format reader takes precedence over the text path: a database or an archive
+  // read as text would return binary noise presented as content.
+  const formatReader = options.readers?.find((reader) =>
+    reader.matches({ path: absolutePath, selector: sel })
+  );
+
+  if (formatReader !== undefined) {
+    const read = await formatReader.read({
+      limits: options.limits ?? DEFAULT_READER_LIMITS,
+      path: absolutePath,
+      selector: sel,
+    });
+    const bounded = await boundOutput(
+      read.text,
+      read.text,
+      absolutePath,
+      options
+    );
+
+    return {
+      kind: "resource",
+      target: absolutePath,
+      text: bounded.text,
+      truncation: bounded.truncation,
+    };
+  }
 
   let info: Awaited<ReturnType<typeof stat>>;
   try {

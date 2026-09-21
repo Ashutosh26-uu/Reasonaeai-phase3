@@ -72,6 +72,9 @@
     "@mastra/core": "^1.67.0",
     "@mastra/memory": "^1.30.0",
     "@reasonateai/contracts": "workspace:*",
+    "fast-xml-parser": "^5.11.1",
+    "fflate": "^0.8.3",
+    "turndown": "^7.2.4",
     "zod": "catalog:"
   },
   "devDependencies": {
