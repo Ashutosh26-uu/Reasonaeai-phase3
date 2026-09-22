@@ -1,20 +1,16 @@
 {
-  "name": "@reasonateai/contracts",
+  "name": "@reasonateai/sandbox",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "exports": {
-    "./authorization": {
-      "types": "./src/authorization.ts",
-      "import": "./dist/authorization.js"
+    "./docker": {
+      "types": "./src/docker-sandbox.ts",
+      "import": "./dist/docker-sandbox.js"
     },
-    "./identity": {
-      "types": "./src/identity.ts",
-      "import": "./dist/identity.js"
-    },
-    "./sandbox": {
-      "types": "./src/sandbox.ts",
-      "import": "./dist/sandbox.js"
+    "./mock": {
+      "types": "./src/mock-sandbox.ts",
+      "import": "./dist/mock-sandbox.js"
     }
   },
   "scripts": {
@@ -24,9 +20,11 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@reasonateai/contracts": "workspace:*",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@types/node": "^22.13.10",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

@@ -18,6 +18,7 @@ This phase is active. Authentication and authorization precede the unified resou
 - Added `@reasonateai/contracts` with branded identifiers, user/workload principals, memberships, roles, permissions, sessions, workload capability limits, audit events, authorization requests, and typed decisions.
 - Added `@reasonateai/auth` with a centralized deny-by-default policy for organization roles, project roles, session state, exact tenant/project scope, and bounded workload capabilities.
 - Added contract and policy tests covering strict validation, administrative-grant rejection, role permissions, missing/inactive memberships, tenant/project isolation, session revocation/expiry, workload scope/expiry, and anonymous denial.
+- Added `@reasonateai/contracts/sandbox` and `@reasonateai/sandbox` delivering the provider-neutral sandbox contract alongside deterministic `MockSandboxProvider` and hardened `DockerSandboxProvider` with resource limits, timeout enforcement, path traversal defenses, and zero host Docker socket exposure.
 
 ### In progress
 
