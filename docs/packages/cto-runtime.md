@@ -114,19 +114,6 @@ Resolution is by canonical name, so an allowlist written `Read` still matches a 
 
 ---
 
-## Custom agents
-
-The custom-agent tool accepts a bounded `access` axis, never raw tool names:
-
-| Access | Effective tools |
-| --- | --- |
-| `read-only` | Scout's read-only set, resolved through the same tool filter |
-| `full` | Every permitted tool |
-
-The safety preamble is prepended to every custom agent and is stated as non-overridable by task instructions, so a CTO-authored prompt cannot widen its own grant.
-
----
-
 ## Loop budgets
 
 There are **no default step caps**. A cap that fires mid-task truncates legitimate work, and a run should be stopped by a budget that steers it toward finishing, by wall clock, or by spend — not by a number chosen before the task was understood. `maxSteps` and `maxTurns` are optional everywhere; when provided they are validated, so a typo cannot silently become a cap of one step.
@@ -165,6 +152,8 @@ The sandbox identity is a pure function of the scope, so a reconnect reuses the 
 | An incomplete scope fails closed | `test/run-scope.test.ts` — missing or malformed identifiers throw |
 | Sandbox identity isolates tenant, project, and session | `test/run-scope.test.ts` — each difference changes the id |
 | Sandbox identity is Docker-safe | `test/run-scope.test.ts` — matches the allowed character class |
+| Main CTO has only the bound custom mutation/read tools | `test/runtime.test.ts` — `read`, `write`, and `edit` are registered |
+| An existing file cannot be replaced without a current complete read | `test/write.test.ts` — a hash anchor and full seen-line provenance are required |
 
 ---
 
@@ -172,11 +161,11 @@ The sandbox identity is a pure function of the scope, so a reconnect reuses the 
 
 `createReasonateCtoRuntime` builds:
 
-1. A `createCodingAgent` CTO with `workspace: undefined`, because the workspace is injected at the controller level per request.
-2. The custom-agent tool, bound to the CTO's model, skills, and workspace resolver.
+1. A `createCodingAgent` CTO with the dynamically resolved verified workspace.
+2. Three custom tools: `read` resolves project paths and directories; registered resource URIs need a run-specific authorized handler that is not wired in this launch slice; `write` creates a file or replaces a fully read current file using its hash anchor; and `edit` applies exact or hashline-anchored edits.
 3. An `AgentController` carrying one `cto` mode, the core subagents, memory, and storage.
 
-The workspace is deliberately resolved per request rather than at construction, because the correct workspace depends on the verified run scope of the incoming request.
+The workspace and tool filesystem are deliberately resolved per request rather than at construction, because the correct workspace depends on the verified run scope of the incoming request. The generic host and Mastra filesystem mutation tools are not part of this tool set.
 
 ---
 
@@ -196,4 +185,4 @@ Covers composition, the agent contract, frontmatter parsing, directory discovery
 - Budgets are enforced as optional step caps only. Token and spend ceilings are not implemented, and the steering budget that should replace a hard cap does not exist yet.
 - Doom-loop detection for repeated identical behaviour is specified but not implemented.
 - Skills are described by parameter but no bundled skill set exists yet.
-- The custom-agent tool creates an agent per call with no pooling or concurrency bound.
+- Ephemeral custom-agent delegation is not registered until it can run through `AgentController` under the same verified workload grant.

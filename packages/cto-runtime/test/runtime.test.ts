@@ -37,6 +37,11 @@ describe("ReasonateAI CTO composition", () => {
     expect(await runtime.mainAgent.getInstructions()).toMatch(
       DEPLOYED_PRODUCT_PATTERN
     );
+    expect(Object.keys(await runtime.mainAgent.listTools()).sort()).toEqual([
+      "edit",
+      "read",
+      "write",
+    ]);
   });
 
   it("keeps scout read-only while coder and debugger can edit and execute", () => {

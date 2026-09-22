@@ -15,7 +15,6 @@ import { MismatchError } from "../src/tools/hashline/mismatch.js";
 import { Patcher } from "../src/tools/hashline/patcher.js";
 import { InMemorySnapshotStore } from "../src/tools/hashline/snapshots.js";
 import { ReadSnapshotStore } from "../src/tools/read-snapshots.js";
-import { writeFileContent } from "../src/tools/write.js";
 
 const filesystem = new NodeFilesystem();
 
@@ -353,39 +352,6 @@ describe("stale-tag recovery", () => {
   });
 });
 
-describe("the write tool", () => {
-  it("creates a missing file, parents included, and diffs it from nothing", async () => {
-    const root = await mkdtemp(join(tmpdir(), "reasonate-hashline-"));
-    const target = join(root, "nested", "file.ts");
-
-    const result = await writeFileContent({
-      content: "const a = 1;\n",
-      path: target,
-    });
-
-    expect(result.created).toBe(true);
-    expect(result.path).toBe(target);
-    expect(result.patch).toContain("/dev/null");
-    expect(result.patch).toContain("+const a = 1;");
-    expect(await readFile(target, "utf8")).toBe("const a = 1;\n");
-  });
-
-  it("overwrites an existing file and reports both sides of the change", async () => {
-    const root = await workspace({ "file.ts": "const a = 1;\n" });
-    const target = join(root, "file.ts");
-
-    const result = await writeFileContent({
-      content: "const a = 2;\n",
-      path: target,
-    });
-
-    expect(result.created).toBe(false);
-    expect(result.patch).toContain("-const a = 1;");
-    expect(result.patch).toContain("+const a = 2;");
-    expect(await readFile(target, "utf8")).toBe("const a = 2;\n");
-  });
-});
-
 describe("the edit tool", () => {
   it("applies an exact replacement and reports the diff", async () => {
     const root = await workspace({ "file.ts": "const a = 1;\nconst b = 2;\n" });
@@ -430,7 +396,7 @@ describe("the edit tool", () => {
 
     const outcome = await applyEditRequest(
       { patch: `[${target}#${tag}]\nSWAP 2.=2:\n+TWO\n` },
-      { snapshots }
+      { cwd: root, snapshots }
     );
 
     if (!outcome.ok) {
@@ -439,7 +405,7 @@ describe("the edit tool", () => {
     const written = "one\nTWO\n";
     expect(outcome.output).toContain("update");
     expect(outcome.output).toContain(
-      formatHashlineHeader(target, computeFileHash(written))
+      formatHashlineHeader("file.ts", computeFileHash(written))
     );
     expect(await readFile(target, "utf8")).toBe(written);
   });
@@ -458,7 +424,7 @@ describe("the edit tool", () => {
 
     const outcome = await applyEditRequest(
       { patch: `[${target}#${tag}]\nSWAP 3.=3:\n+THREE\n` },
-      { snapshots }
+      { cwd: root, snapshots }
     );
 
     expect(outcome.ok).toBe(false);

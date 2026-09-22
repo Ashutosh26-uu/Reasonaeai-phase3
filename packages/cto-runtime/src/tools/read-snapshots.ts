@@ -27,9 +27,14 @@ const CRLF_RE = /\r\n/g;
 
 export class ReadSnapshotStore {
   readonly store: SnapshotStore;
+  readonly #canonicalize: (filePath: string) => Promise<string>;
 
-  constructor(store: SnapshotStore = new InMemorySnapshotStore()) {
+  constructor(
+    store: SnapshotStore = new InMemorySnapshotStore(),
+    canonicalize: (filePath: string) => Promise<string> = canonicalNodePath
+  ) {
     this.store = store;
+    this.#canonicalize = canonicalize;
   }
 
   /**
@@ -57,14 +62,18 @@ export class ReadSnapshotStore {
    * resolved, or the resolved path as a last resort.
    */
   async canonicalPath(filePath: string): Promise<string> {
+    return await this.#canonicalize(filePath);
+  }
+}
+
+async function canonicalNodePath(filePath: string): Promise<string> {
+  try {
+    return await realpath(filePath);
+  } catch {
     try {
-      return await realpath(filePath);
+      return join(await realpath(dirname(filePath)), basename(filePath));
     } catch {
-      try {
-        return join(await realpath(dirname(filePath)), basename(filePath));
-      } catch {
-        return resolve(filePath);
-      }
+      return resolve(filePath);
     }
   }
 }

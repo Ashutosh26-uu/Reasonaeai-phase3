@@ -1,15 +1,22 @@
-import type { ToolsInput } from "@mastra/core/agent";
 import { AgentController } from "@mastra/core/agent-controller";
 import type { MastraBrowser } from "@mastra/core/browser";
 import { createCodingAgent } from "@mastra/core/coding-agent";
+import type { RequestContext } from "@mastra/core/request-context";
 import type { MastraCompositeStore } from "@mastra/core/storage";
+import type { Workspace, WorkspaceFilesystem } from "@mastra/core/workspace";
 import { Memory } from "@mastra/memory";
 import { materializeDelegatableSubagents } from "./agents/materialize.js";
-import {
-  createCustomAgentTool,
-  type RuntimeWorkspace,
-} from "./custom-agent.js";
 import { MAIN_AGENT_INSTRUCTIONS, REASONATE_CTO_NAME } from "./prompts.js";
+import { createWorkspaceEditTool } from "./tools/edit.js";
+import { ReadSnapshotStore } from "./tools/read-snapshots.js";
+import { createWorkspaceReadTool } from "./tools/workspace-read.js";
+import { createWorkspaceWriteTool } from "./tools/write.js";
+
+export type RuntimeWorkspace =
+  | Workspace
+  | ((input: {
+      requestContext: RequestContext;
+    }) => Promise<Workspace | undefined> | Workspace | undefined);
 
 /**
  * Optional hard caps on agent loop steps.
@@ -23,7 +30,6 @@ import { MAIN_AGENT_INSTRUCTIONS, REASONATE_CTO_NAME } from "./prompts.js";
  * accidental cap of one step.
  */
 export interface CtoRuntimeLimits {
-  customAgentMaxSteps?: number;
   debuggerMaxSteps?: number;
   mainMaxSteps?: number;
   scoutMaxSteps?: number;
@@ -46,8 +52,8 @@ export interface ReasonateCtoRuntimeConfig {
   skills?: string[];
   storage?: MastraCompositeStore;
   subagentModels?: Partial<CtoSubagentModels>;
-  tools?: ToolsInput;
   workspace: RuntimeWorkspace;
+  workspaceRoot?: string;
 }
 
 function resolveLimits(
@@ -72,17 +78,60 @@ function resolveLimits(
 export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
   const limits = resolveLimits(config.limits);
   const memory = config.memory ?? new Memory();
-  const customAgent = createCustomAgentTool({
-    ...(limits.customAgentMaxSteps === undefined
-      ? {}
-      : {
-          defaultMaxSteps: limits.customAgentMaxSteps,
-          maxSteps: limits.customAgentMaxSteps,
-        }),
-    model: config.model,
-    ...(config.skills ? { skills: config.skills } : {}),
-    workspace: config.workspace,
-  });
+  const snapshotsByRequest = new WeakMap<RequestContext, ReadSnapshotStore>();
+  const resolveWorkspace = async (requestContext: RequestContext) => {
+    const workspace =
+      typeof config.workspace === "function"
+        ? await config.workspace({ requestContext })
+        : config.workspace;
+    if (!workspace) {
+      throw new Error("The verified run workspace is unavailable.");
+    }
+    return workspace;
+  };
+  const resolveFilesystem = async (
+    requestContext: RequestContext
+  ): Promise<WorkspaceFilesystem> => {
+    const filesystem = await (
+      await resolveWorkspace(requestContext)
+    ).resolveFilesystem({ requestContext });
+    if (!filesystem) {
+      throw new Error("The verified run workspace has no filesystem provider.");
+    }
+    return filesystem;
+  };
+  const resolveSnapshots = (requestContext: RequestContext) => {
+    const existing = snapshotsByRequest.get(requestContext);
+    if (existing) {
+      return Promise.resolve(existing);
+    }
+    const snapshots = new ReadSnapshotStore(undefined, async (path) => path);
+    snapshotsByRequest.set(requestContext, snapshots);
+    return Promise.resolve(snapshots);
+  };
+  const tools = {
+    edit: createWorkspaceEditTool({
+      resolveFilesystem,
+      resolveSnapshots,
+      ...(config.workspaceRoot === undefined
+        ? {}
+        : { root: config.workspaceRoot }),
+    }),
+    read: createWorkspaceReadTool({
+      resolveFilesystem,
+      resolveSnapshots,
+      ...(config.workspaceRoot === undefined
+        ? {}
+        : { root: config.workspaceRoot }),
+    }),
+    write: createWorkspaceWriteTool({
+      resolveFilesystem,
+      resolveSnapshots,
+      ...(config.workspaceRoot === undefined
+        ? {}
+        : { root: config.workspaceRoot }),
+    }),
+  };
 
   const mainAgent = createCodingAgent({
     defaultOptions: {
@@ -98,7 +147,8 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     model: config.model,
     name: REASONATE_CTO_NAME,
     ...(config.skills ? { skills: config.skills } : {}),
-    workspace: undefined,
+    tools,
+    workspace: config.workspace,
   });
 
   const controller = new AgentController({
@@ -146,16 +196,11 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
         },
       },
     }),
-    tools: {
-      ...config.tools,
-      spawnCustomAgent: customAgent,
-    },
     workspace: config.workspace,
   });
 
   return {
     controller,
-    customAgent,
     limits,
     mainAgent,
   };

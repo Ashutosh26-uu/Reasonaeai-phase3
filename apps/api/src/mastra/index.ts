@@ -80,6 +80,7 @@ export const reasonateCtoRuntime = createReasonateCtoRuntime({
   model: frontierModel,
   storage,
   workspace: reasonateBuildWorkspace,
+  workspaceRoot: "/workspace",
 });
 
 export const mastra = new Mastra({

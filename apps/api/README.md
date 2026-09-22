@@ -8,11 +8,10 @@ Agent policy and prompts live in `@reasonateai/cto-runtime`; this application su
 
 | Runtime actor | Responsibility |
 | --- | --- |
-| ReasonateAI CTO | Full approved tool, skill, workspace, browser, command, debugging, verification, and deployment authority. It may execute directly or delegate while retaining completion responsibility. |
+| ReasonateAI CTO | Full approved workspace, command, debugging, verification, and deployment authority. It may execute directly or delegate while retaining completion responsibility. |
 | Scout | Focused read-only investigation. |
 | Coder | Bounded implementation or verification work with full workspace capabilities. |
 | Debugger | Reproduces, diagnoses, repairs, and reruns evidence-backed failures. |
-| Custom specialist | Ephemeral agent with CTO-authored system instructions, a predefined capability profile, skills, and a bounded step budget. |
 
 Frontend, backend, database, infrastructure, accessibility, security, and release engineering are objectives assigned to these workers rather than permanent agent types.
 
@@ -21,6 +20,8 @@ Frontend, backend, database, infrastructure, accessibility, security, and releas
 The first authorized browser request will create or resume a tenant-scoped build session. Its authenticated session, organization, project, run, Mastra controller thread, sandbox, evidence, checkpoint, and deployment records must remain correlated.
 
 The current workspace adapter derives one stable Docker sandbox identity from the verified organization, project, and build-session identifiers. The CTO and its authorized workers share that project workspace. A malformed or incomplete scope fails closed.
+
+The CTO receives three custom tools whose filesystem calls resolve through that scoped sandbox on every invocation: `read` reads project paths and directories; registered resource URIs need a run-specific authorized handler that is not wired in this launch slice; `write` creates a file or replaces a fully read file only when its current hash anchor is supplied; and `edit` performs exact or hashline-anchored edits. Mastra's generic filesystem mutation tools remain disabled.
 
 Current Docker limits:
 
@@ -32,8 +33,8 @@ Current Docker limits:
 - all Linux capabilities dropped
 - `no-new-privileges`
 - 120-second command timeout
-- approval required for workspace mutation and commands
-- read-before-write required for file writes and edits
+- non-networked command execution inside the sandbox
+- generic filesystem read/write/edit/delete/mkdir tools disabled in favor of the scoped `read`, `write`, and `edit` tools
 
 Generated application code never receives the host Docker socket.
 
@@ -50,7 +51,10 @@ pnpm --filter @reasonateai/api run start
 pnpm --filter @reasonateai/api run test
 pnpm --filter @reasonateai/api run typecheck
 pnpm --filter @reasonateai/api run check
+pnpm --filter @reasonateai/api run cto:chat
 ```
+
+`cto:chat` is a local terminal harness for the sandboxed CTO. Set `MASTRA_MODEL` and the matching provider credential before issuing a prompt. It starts with a new isolated run scope and Docker workspace each time; it does not exercise HTTP sign-in or the private worker, which remain separate launch-slice work.
 
 ## Current boundary
 

@@ -19,24 +19,35 @@
  */
 
 import { realpathSync } from "node:fs";
-import { readFile, stat, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 
+import type { RequestContext } from "@mastra/core/request-context";
 import { createTool } from "@mastra/core/tools";
+import type { WorkspaceFilesystem as MastraWorkspaceFilesystem } from "@mastra/core/workspace";
 import { createTwoFilesPatch } from "diff";
 import { z } from "zod";
 
 import { applyEdit } from "./edit-match.js";
-import { NodeFilesystem } from "./hashline/fs.js";
+import {
+  type Filesystem,
+  NodeFilesystem,
+  type WriteResult,
+} from "./hashline/fs.js";
 import { Patch } from "./hashline/input.js";
 import { Patcher } from "./hashline/patcher.js";
 import type { BlockResolver } from "./hashline/types.js";
 import { ReadSnapshotStore } from "./read-snapshots.js";
+import { WorkspaceHashlineFilesystem } from "./workspace-filesystem.js";
 
 /** Options for {@link applyEditRequest} and {@link createEditTool}. */
 export interface EditToolOptions {
   /** Base for the file path, and for patch paths. Defaults to `process.cwd()`. */
   cwd?: string | undefined;
+  /**
+   * Hashline storage. Production callers pass a workspace-backed adapter;
+   * Node storage remains available only for isolated unit tests and migrations.
+   */
+  filesystem?: Filesystem | undefined;
   /** Store the patcher resolves section tags against, and edits record into. */
   snapshots?: ReadSnapshotStore | undefined;
 }
@@ -160,7 +171,7 @@ const blockResolver: BlockResolver = ({ line, text }) => {
  * store keys on the same file the model read; and a section whose authored path
  * is missing may only be redirected to a tagged file inside `cwd`.
  */
-class WorkspaceFilesystem extends NodeFilesystem {
+class NodeWorkspaceFilesystem extends NodeFilesystem {
   readonly #cwd: string;
 
   constructor(cwd: string) {
@@ -169,11 +180,51 @@ class WorkspaceFilesystem extends NodeFilesystem {
   }
 
   override canonicalPath(filePath: string): string {
+    let canonical: string;
+    const candidate = isAbsolute(filePath)
+      ? filePath
+      : resolve(this.#cwd, filePath);
     try {
-      return realpathSync.native(filePath);
+      canonical = realpathSync.native(candidate);
     } catch {
-      return resolve(filePath);
+      canonical = resolve(candidate);
     }
+    const relativeToCwd = relative(this.#cwd, canonical);
+    if (
+      relativeToCwd === ".." ||
+      relativeToCwd.startsWith(`..${sep}`) ||
+      isAbsolute(relativeToCwd)
+    ) {
+      throw new Error("The path escapes the working directory.");
+    }
+    return canonical;
+  }
+
+  override async readText(filePath: string): Promise<string> {
+    return await super.readText(this.canonicalPath(filePath));
+  }
+
+  override async readBinary(filePath: string): Promise<Uint8Array> {
+    return await super.readBinary(this.canonicalPath(filePath));
+  }
+
+  override async writeText(
+    filePath: string,
+    content: string
+  ): Promise<WriteResult> {
+    return await super.writeText(this.canonicalPath(filePath), content);
+  }
+
+  override async delete(filePath: string): Promise<void> {
+    await super.delete(this.canonicalPath(filePath));
+  }
+
+  override async move(
+    from: string,
+    to: string,
+    content?: string
+  ): Promise<void> {
+    await super.move(this.canonicalPath(from), this.canonicalPath(to), content);
   }
 
   override allowTagPathRecovery(
@@ -191,20 +242,6 @@ class WorkspaceFilesystem extends NodeFilesystem {
 }
 
 /**
- * True when `target` exists. A path the process cannot stat is treated as
- * absent, which is what the original's `existsSync` check did.
- */
-async function pathExists(target: string): Promise<boolean> {
-  try {
-    await stat(target);
-    return true;
-  } catch {
-    // Not present, or not reachable: either way there is nothing to edit.
-    return false;
-  }
-}
-
-/**
  * Apply one edit request. Patch mode reports one line per section; exact
  * replacement mode refuses a missing file, refuses an unmatched or ambiguous
  * `oldString`, and writes only after the splice succeeded.
@@ -213,14 +250,17 @@ export async function applyEditRequest(
   args: EditRequestArgs,
   options: EditToolOptions = {}
 ): Promise<ApplyEditRequestResult> {
-  const cwd = resolve(options.cwd ?? process.cwd());
+  const cwd = options.filesystem
+    ? (options.cwd ?? "/")
+    : resolve(options.cwd ?? process.cwd());
+  const filesystem = options.filesystem ?? new NodeWorkspaceFilesystem(cwd);
   const snapshots = options.snapshots ?? new ReadSnapshotStore();
   const { newString, oldString, patch, path: filePath } = args;
   try {
     if (patch) {
       const patcher = new Patcher({
         blockResolver,
-        fs: new WorkspaceFilesystem(cwd),
+        fs: filesystem,
         snapshots: snapshots.store,
       });
       const result = await patcher.apply(Patch.parse(patch, { cwd }));
@@ -242,11 +282,11 @@ export async function applyEditRequest(
         ok: false,
       };
     }
-    const resolved = resolve(cwd, filePath);
-    if (!(await pathExists(resolved))) {
+    const resolved = filesystem.canonicalPath(resolve(cwd, filePath));
+    if (!(await filesystem.exists(resolved))) {
       return { error: `File not found: ${resolved}`, ok: false };
     }
-    const content = await readFile(resolved, "utf8");
+    const content = await filesystem.readText(resolved);
     const edited = applyEdit(content, oldString, newString);
     // `applyEdit` returns either the new text or the reason it refused.
     if (edited.error || edited.content === undefined) {
@@ -259,7 +299,7 @@ export async function applyEditRequest(
       };
     }
     const newContent = edited.content;
-    await writeFile(resolved, newContent, "utf8");
+    await filesystem.writeText(resolved, newContent);
     await snapshots.record(
       resolved,
       newContent,
@@ -287,7 +327,9 @@ export async function applyEditRequest(
 
 /** Build the `edit` tool: one exact replacement, or one hashline patch. */
 export function createEditTool(options: EditToolOptions = {}) {
-  const cwd = resolve(options.cwd ?? process.cwd());
+  const cwd = options.filesystem
+    ? (options.cwd ?? "/")
+    : resolve(options.cwd ?? process.cwd());
   const snapshots = options.snapshots ?? new ReadSnapshotStore();
   return createTool({
     description: `Edit an existing file with an exact replacement, or apply a complete native hashline patch returned by read.
@@ -295,7 +337,55 @@ Exact replacement: provide path, oldString, and newString. Matching is whitespac
 Hashline: provide patch only. Every edited section must use the current [path#TAG] header emitted by read. The patcher supports validated multi-section edits, create/delete/move operations, stale-version recovery, and seen-line enforcement. Patch paths and recovered destinations are restricted to the working directory.
 Always read before modifying code.`,
     execute: async (args) => {
-      const outcome = await applyEditRequest(args, { cwd, snapshots });
+      const outcome = await applyEditRequest(args, {
+        cwd,
+        ...(options.filesystem === undefined
+          ? {}
+          : { filesystem: options.filesystem }),
+        snapshots,
+      });
+      if (!outcome.ok) {
+        throw new Error(
+          outcome.error,
+          outcome.cause === undefined ? undefined : { cause: outcome.cause }
+        );
+      }
+      return outcome.output;
+    },
+    id: "edit",
+    inputSchema: editParameters,
+    outputSchema: z.string(),
+  });
+}
+
+/**
+ * Build the production edit tool. The filesystem is resolved from the current
+ * verified request context, preventing a model argument from selecting either
+ * another run's workspace or a host path.
+ */
+export function createWorkspaceEditTool(input: {
+  resolveFilesystem: (
+    requestContext: RequestContext
+  ) => Promise<MastraWorkspaceFilesystem>;
+  resolveSnapshots: (
+    requestContext: RequestContext
+  ) => Promise<ReadSnapshotStore>;
+  root?: string | undefined;
+}) {
+  return createTool({
+    description:
+      "Edit an existing project file with an exact replacement, or apply a complete native hashline patch returned by read. Every target remains in the verified project workspace; hashline sections require current anchors and reject stale or fabricated anchors.",
+    execute: async (args, context) => {
+      const filesystem = new WorkspaceHashlineFilesystem({
+        filesystem: await input.resolveFilesystem(context.requestContext),
+        ...(input.root === undefined ? {} : { root: input.root }),
+      });
+      const snapshots = await input.resolveSnapshots(context.requestContext);
+      const outcome = await applyEditRequest(args, {
+        cwd: input.root ?? "/",
+        filesystem,
+        snapshots,
+      });
       if (!outcome.ok) {
         throw new Error(
           outcome.error,

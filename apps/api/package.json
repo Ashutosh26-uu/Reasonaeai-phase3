@@ -10,6 +10,7 @@
   "scripts": {
     "build": "mastra build",
     "check": "ultracite check .",
+    "cto:chat": "tsx src/cli/cto-chat.ts",
     "dev": "mastra dev",
     "start": "mastra start",
     "test": "vitest run",
@@ -32,6 +33,7 @@
     "@types/pg": "8.23.1",
     "mastra": "^1.30.0",
     "pg": "8.23.0",
+    "tsx": "^4.23.15",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
