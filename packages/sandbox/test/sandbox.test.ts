@@ -85,10 +85,23 @@ describe("DockerSandboxProvider", () => {
     expect(catResult.exitCode).toBe(0);
     expect(catResult.stdout.trim()).toBe("ReasonateAI Docker Sandbox Verified");
 
-    // Path traversal rejection
+    // Non-zero exit code and stderr propagation
+    const failResult = await sandbox.runCommand({
+      args: ["-c", "echo 'critical error log' >&2; exit 42"],
+      command: "sh",
+    });
+    expect(failResult.exitCode).toBe(42);
+    expect(failResult.stderr.trim()).toBe("critical error log");
+    expect(failResult.timedOut).toBe(false);
+
+    // Path traversal rejection (relative and absolute)
     await expect(
       sandbox.writeFile("../escape.txt", "malicious")
     ).rejects.toThrow("Path traversal detected");
+
+    await expect(sandbox.writeFile("/etc/passwd", "malicious")).rejects.toThrow(
+      "Relative path expected, got absolute path"
+    );
 
     // Timeout enforcement
     const timeoutResult = await sandbox.runCommand({
@@ -102,5 +115,10 @@ describe("DockerSandboxProvider", () => {
     await sandbox.destroy();
     const finalState = await sandbox.getState();
     expect(finalState.status).toBe("destroyed");
+
+    // Rejection of execution on destroyed sandbox
+    await expect(
+      sandbox.runCommand({ args: [], command: "ls" })
+    ).rejects.toThrow("Cannot run command on sandbox in status: destroyed");
   });
 });

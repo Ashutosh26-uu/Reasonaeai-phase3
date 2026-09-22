@@ -6,7 +6,7 @@ import {
   rm,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, normalize, resolve } from "node:path";
+import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type {
   ISandbox,
@@ -177,7 +177,10 @@ export class DockerSandbox implements ISandbox {
       throw new Error("Relative path expected, got absolute path");
     }
     const safePath = normalize(join(this.hostWorkspaceDir, relativePath));
-    if (!safePath.startsWith(this.hostWorkspaceDir)) {
+    const isWithinWorkspace =
+      safePath === this.hostWorkspaceDir ||
+      safePath.startsWith(`${this.hostWorkspaceDir}${sep}`);
+    if (!isWithinWorkspace) {
       throw new Error("Path traversal detected outside sandbox workspace");
     }
     return safePath;
