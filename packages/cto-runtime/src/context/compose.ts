@@ -3,26 +3,30 @@
  *
  * The prompt is assembled per run from facts, not stored as one string. That
  * matters because most of what the agent needs to know is only knowable at run
- * time: which project it is in, what that project's rules say, which tools it
- * actually holds, and which resource schemes it can address. A static prompt
- * cannot state any of those truthfully, so it either omits them or lies.
+ * time: which project it is in, what that project's rules say, which
+ * environment its tools execute in, and which resource schemes it can address. A
+ * static prompt cannot state any of those truthfully, so it either omits them or
+ * lies.
  *
  * Sections appear in a fixed order, each independently renderable and each
  * omitted when empty:
  *
  * 1. The base prompt: role, policy, and workflow.
- * 2. The tool inventory, rendered from the tools the run actually holds.
- * 3. The resource catalog, rendered from the registered schemes.
- * 4. The environment block.
- * 5. Project references, when the project declares any.
- * 6. Project instruction files, most authoritative first.
+ * 2. The resource catalog, rendered from the registered schemes.
+ * 3. The environment block: model, date, run identity, sandbox facts.
+ * 4. Project references, when the project declares any.
+ * 5. Project instruction files, most authoritative first.
+ *
+ * Tool definitions are deliberately absent: the provider receives them as
+ * schemas alongside the prompt, so restating them here would spend context on a
+ * second, drift-prone copy.
  *
  * The result carries a `fingerprint` over the whole assembly, so a run can prove
  * which prompt it executed against and detect that a rules file changed mid-run.
  */
 
 import type { RunScope } from "../run-scope.js";
-import type { SandboxCapacity } from "./environment.js";
+import type { PlatformFacts, SandboxCapacity } from "./environment.js";
 import { findWorkspaceRoot, renderEnvironment } from "./environment.js";
 import type { ContextDiagnostic, InstructionSource } from "./instructions.js";
 import {
@@ -35,15 +39,6 @@ import {
   renderInstructionSource,
   selectInstructionSources,
 } from "./instructions.js";
-
-/** One tool as the prompt should describe it to the model. */
-export interface ToolSummary {
-  /** What the tool does, in one sentence. */
-  description: string;
-  /** Usage rules the model must follow when calling it. */
-  guidance?: readonly string[] | undefined;
-  name: string;
-}
 
 /** One resource scheme as the prompt should describe it. */
 export interface SchemeSummary {
@@ -70,15 +65,15 @@ export interface ComposeSystemPromptOptions {
   model: string;
   /** Injected so the rendered prompt is deterministic in tests. */
   now?: Date | undefined;
-  provider: string;
+  /** Facts about the environment the run executes in. Defaults to probing the host. */
+  platform?: PlatformFacts | undefined;
+  provider?: string | undefined;
   references?: readonly ProjectReference[] | undefined;
   sandboxId: string;
   /** The registered resource schemes. */
   schemes: readonly SchemeSummary[];
   scope: RunScope;
   sessionStartedAt: Date;
-  /** The tools this run holds. Required: the prompt must not overstate them. */
-  tools: readonly ToolSummary[];
 }
 
 /** The assembled prompt plus everything it was built from. */
@@ -94,7 +89,6 @@ export interface ComposedContext {
   /** Each section separately, for inspection and tests. */
   sections: {
     baseSystemPrompt: string;
-    toolInventory: string;
     resourceCatalog: string;
     environment: string;
     projectReferences: string;
@@ -138,18 +132,21 @@ export function composeSystemPrompt(
 
   const sections = {
     baseSystemPrompt: options.basePrompt,
-    environment: renderEnvironment({
-      capacity: options.capacity,
-      cwd: options.cwd,
-      isGitRepo: workspaceRoot !== undefined,
-      model: options.model,
-      now: options.now ?? new Date(),
-      provider: options.provider,
-      sandboxId: options.sandboxId,
-      scope: options.scope,
-      sessionStartedAt: options.sessionStartedAt,
-      workspaceRoot,
-    }),
+    environment: renderEnvironment(
+      {
+        capacity: options.capacity,
+        cwd: options.cwd,
+        isGitRepo: workspaceRoot !== undefined,
+        model: options.model,
+        now: options.now ?? new Date(),
+        provider: options.provider,
+        sandboxId: options.sandboxId,
+        scope: options.scope,
+        sessionStartedAt: options.sessionStartedAt,
+        workspaceRoot,
+      },
+      options.platform
+    ),
     instructionFiles: renderedSources,
     projectReferences: renderReferences(
       options.references ?? [],
@@ -157,12 +154,10 @@ export function composeSystemPrompt(
       diagnostics
     ),
     resourceCatalog: renderResourceCatalog(options.schemes),
-    toolInventory: renderToolInventory(options.tools),
   };
 
   const systemPrompt = [
     sections.baseSystemPrompt,
-    sections.toolInventory,
     sections.resourceCatalog,
     sections.environment,
     sections.projectReferences,
@@ -185,31 +180,6 @@ export function composeSystemPrompt(
     sources,
     systemPrompt,
   };
-}
-
-/**
- * Render the tool inventory.
- *
- * A run with no tools still gets the section, stating that plainly. An absent
- * section would leave the model guessing whether it has tools at all.
- */
-export function renderToolInventory(tools: readonly ToolSummary[]): string {
-  if (tools.length === 0) {
-    return "## Available tools\n\nNo tools are available for this run. Report what you cannot do instead of attempting it.";
-  }
-
-  const ordered = [...tools].sort((a, b) => a.name.localeCompare(b.name));
-
-  return [
-    "## Available tools",
-    "",
-    "These are the tools this run holds. Do not call a tool that is not listed here.",
-    "",
-    ...ordered.flatMap((tool) => [
-      `- **${tool.name}** — ${tool.description}`,
-      ...(tool.guidance ?? []).map((line) => `  - ${line}`),
-    ]),
-  ].join("\n");
 }
 
 /**

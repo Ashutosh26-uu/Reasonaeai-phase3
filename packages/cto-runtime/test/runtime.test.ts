@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+
+import { RequestContext } from "@mastra/core/request-context";
 import {
   LocalFilesystem,
   WORKSPACE_TOOLS,
@@ -10,17 +13,26 @@ import {
 } from "../src/agents/definitions/workers.js";
 import { materializeDelegatableSubagents } from "../src/agents/materialize.js";
 import { REASONATE_CTO_NAME } from "../src/prompts.js";
+import { readRunScope, runScopeKeys } from "../src/run-scope.js";
 import { createReasonateCtoRuntime } from "../src/runtime.js";
 
 const FULL_LIFECYCLE_PATTERN = /complete product lifecycle/i;
-const DEPLOYED_PRODUCT_PATTERN = /deployed, usable product/i;
 const INVALID_LIMIT_PATTERN = /between 1 and 256/i;
+const MISSING_SCOPE_PATTERN = /verified organization/i;
 
 const workspace = new Workspace({
   filesystem: new LocalFilesystem({ basePath: "." }),
   id: "runtime-test-workspace",
   name: "Runtime test workspace",
 });
+
+function verifiedRunContext(): RequestContext {
+  const requestContext = new RequestContext();
+  for (const key of Object.values(runScopeKeys)) {
+    requestContext.setRaw(key, randomUUID());
+  }
+  return requestContext;
+}
 
 describe("ReasonateAI CTO composition", () => {
   it("gives the main CTO an unrestricted mode and the full lifecycle identity", async () => {
@@ -34,14 +46,42 @@ describe("ReasonateAI CTO composition", () => {
     expect(runtime.mainAgent.getDescription()).toMatch(FULL_LIFECYCLE_PATTERN);
     expect(mode?.id).toBe("cto");
     expect(mode?.availableTools).toBeUndefined();
-    expect(await runtime.mainAgent.getInstructions()).toMatch(
-      DEPLOYED_PRODUCT_PATTERN
-    );
     expect(Object.keys(await runtime.mainAgent.listTools()).sort()).toEqual([
       "edit",
       "read",
       "write",
     ]);
+  });
+
+  it("composes the prompt for the verified run and refuses one without a scope", async () => {
+    const runtime = createReasonateCtoRuntime({
+      model: "openai/gpt-5-mini",
+      workspace,
+    });
+    const requestContext = verifiedRunContext();
+    const scope = readRunScope(requestContext);
+
+    const instructions = await runtime.mainAgent.getInstructions({
+      requestContext,
+    });
+
+    expect(typeof instructions).toBe("string");
+    const prompt = instructions as string;
+    expect(prompt).toContain(scope.organizationId);
+    expect(prompt).toContain(scope.runId);
+    expect(prompt).toContain(`reasonate-${scope.organizationId}`);
+
+    let failure: unknown;
+    try {
+      await runtime.mainAgent.getInstructions();
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(
+      failure instanceof Error ? failure.message : String(failure)
+    ).toMatch(MISSING_SCOPE_PATTERN);
   });
 
   it("keeps scout read-only while coder and debugger can edit and execute", () => {

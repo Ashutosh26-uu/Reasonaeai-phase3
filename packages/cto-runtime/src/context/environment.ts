@@ -54,8 +54,8 @@ export interface EnvironmentFacts {
   model: string;
   /** Current wall-clock time, injected so the block is deterministic in tests. */
   now: Date;
-  /** Provider identifier, so the exact model id can be named. */
-  provider: string;
+  /** Provider identifier, so the exact model id can be named. Absent when the run configures a bare model id. */
+  provider?: string | undefined;
   /** Sandbox identifier, correlating this environment with its container. */
   sandboxId: string;
   /** Verified identities this environment belongs to. */
@@ -150,7 +150,9 @@ export function renderEnvironment(
   const workspaceRoot = facts.workspaceRoot ?? facts.cwd;
 
   const lines = [
-    `You are powered by the model named ${facts.model}. The exact model ID is ${facts.provider}/${facts.model}.`,
+    facts.provider === undefined
+      ? `You are powered by the model with ID ${facts.model}.`
+      : `You are powered by the model named ${facts.model}. The exact model ID is ${facts.provider}/${facts.model}.`,
     "Here is useful information about the environment you are running in:",
     "<env>",
     `  Working directory: ${facts.cwd}`,

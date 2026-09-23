@@ -13,6 +13,7 @@ import {
   createProjectStateStore,
   type ProjectStateStore,
 } from "@reasonateai/project-state/postgres";
+import { frontierModel } from "./model";
 import { resolveSessionPrincipal } from "./principal";
 import {
   BUILD_SESSION_COLLECTION_PATH,
@@ -21,9 +22,11 @@ import {
 } from "./routes/build-sessions";
 import { createRunEventHandlers, RUN_EVENTS_PATH } from "./routes/run-events";
 import { serverMiddleware } from "./server";
-import { reasonateBuildWorkspace } from "./workspace";
-
-export const frontierModel = "deepseek/deepseek-flash";
+import {
+  buildSandboxEnvironment,
+  reasonateBuildWorkspace,
+  SANDBOX_WORKING_DIRECTORY,
+} from "./workspace";
 
 /**
  * The authoritative store. Created lazily so the artifact can be built without a
@@ -77,10 +80,11 @@ const storage = new MastraCompositeStore({
 });
 
 export const reasonateCtoRuntime = createReasonateCtoRuntime({
+  ...buildSandboxEnvironment,
   model: frontierModel,
   storage,
   workspace: reasonateBuildWorkspace,
-  workspaceRoot: "/workspace",
+  workspaceRoot: SANDBOX_WORKING_DIRECTORY,
 });
 
 export const mastra = new Mastra({

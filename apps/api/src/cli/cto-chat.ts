@@ -5,9 +5,15 @@ import { createInterface } from "node:readline/promises";
 import { RequestContext } from "@mastra/core/request-context";
 import { createReasonateCtoRuntime } from "@reasonateai/cto-runtime";
 import { runScopeKeys } from "@reasonateai/cto-runtime/run-scope";
-import { reasonateBuildWorkspace } from "../mastra/workspace.js";
+import { frontierModel } from "../mastra/model.js";
+import {
+  buildSandboxEnvironment,
+  reasonateBuildWorkspace,
+  SANDBOX_WORKING_DIRECTORY,
+} from "../mastra/workspace.js";
+import { describeFailure, reportRun } from "./run-report.js";
 
-const model = process.env.MASTRA_MODEL ?? "deepseek/deepseek-flash";
+const model = process.env.MASTRA_MODEL ?? frontierModel;
 
 function createRunContext(): RequestContext {
   const requestContext = new RequestContext();
@@ -24,12 +30,25 @@ function printHelp(): void {
   );
 }
 
+function reportFailure(error: unknown): void {
+  const failure = describeFailure(error);
+  stdout.write(`Run failed: ${failure.message}
+`);
+  if (failure.shape) {
+    stdout.write(`Rejected request shape:
+${failure.shape}
+`);
+  }
+  stdout.write("\n");
+}
+
 async function main(): Promise<void> {
   const requestContext = createRunContext();
   const runtime = createReasonateCtoRuntime({
+    ...buildSandboxEnvironment,
     model,
     workspace: reasonateBuildWorkspace,
-    workspaceRoot: "/workspace",
+    workspaceRoot: SANDBOX_WORKING_DIRECTORY,
   });
   const input = createInterface({
     input: stdin,
@@ -71,20 +90,25 @@ async function main(): Promise<void> {
       }
 
       const request = [...transcript, `User: ${prompt}`, "CTO:"].join("\n\n");
-      stdout.write("\nCTO: ");
       try {
-        const result = await runtime.mainAgent.generate(request, {
+        const stream = await runtime.mainAgent.stream(request, {
           requestContext,
         });
-        const response = result.text || "The model returned no text.";
-        transcript.push(`User: ${prompt}\n\nCTO: ${response}`);
-        if (transcript.length > 8) {
-          transcript.shift();
+        const report = await reportRun(stream.fullStream, (text) =>
+          stdout.write(text)
+        );
+        if (report.error === undefined) {
+          const response = report.text.trim() || "The model returned no text.";
+          transcript.push(`User: ${prompt}\n\nCTO: ${response}`);
+          if (transcript.length > 8) {
+            transcript.shift();
+          }
+        } else {
+          stdout.write(`Run failed: ${report.error}\n`);
         }
-        stdout.write(`${response}\n\n`);
+        stdout.write("\n");
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        stdout.write(`Run failed: ${message}\n\n`);
+        reportFailure(error);
       }
     }
   } finally {

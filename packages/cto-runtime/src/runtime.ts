@@ -6,7 +6,11 @@ import type { MastraCompositeStore } from "@mastra/core/storage";
 import type { Workspace, WorkspaceFilesystem } from "@mastra/core/workspace";
 import { Memory } from "@mastra/memory";
 import { materializeDelegatableSubagents } from "./agents/materialize.js";
+import { composeSystemPrompt } from "./context/compose.js";
+import type { PlatformFacts, SandboxCapacity } from "./context/environment.js";
+import { deepseekReasoningCompat } from "./model/deepseek-reasoning.js";
 import { MAIN_AGENT_INSTRUCTIONS, REASONATE_CTO_NAME } from "./prompts.js";
+import { readRunScope, sandboxIdFor } from "./run-scope.js";
 import { createWorkspaceEditTool } from "./tools/edit.js";
 import { ReadSnapshotStore } from "./tools/read-snapshots.js";
 import { createWorkspaceReadTool } from "./tools/workspace-read.js";
@@ -44,10 +48,22 @@ export interface CtoSubagentModels {
 
 export interface ReasonateCtoRuntimeConfig {
   browser?: MastraBrowser;
+  /**
+   * Enforced resources of the environment the agent's tools execute in. Omitted
+   * means the sandbox cannot report them, and the prompt says nothing rather
+   * than guessing: a plan sized to invented capacity fails later.
+   */
+  capacity?: SandboxCapacity | undefined;
   controllerId?: string;
   limits?: Partial<CtoRuntimeLimits>;
   memory?: Memory;
   model: string;
+  /**
+   * Facts about the environment the agent's tools execute in. Defaults to
+   * probing the host, which is wrong for a sandboxed run: the process runs on
+   * the host while every command runs inside the sandbox.
+   */
+  platform?: PlatformFacts | undefined;
   resourceId?: string;
   skills?: string[];
   storage?: MastraCompositeStore;
@@ -133,6 +149,41 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     }),
   };
 
+  const sessionStartedAt = new Date();
+  const instructionsByRequest = new WeakMap<RequestContext, string>();
+  /**
+   * The prompt is assembled once per run scope from the base role, the
+   * environment facts, and the project's own instruction files. It is cached
+   * because every model step resolves instructions: recomposing per step would
+   * re-read the instruction files and change the prompt prefix mid-run.
+   */
+  const resolveInstructions = ({
+    requestContext,
+  }: {
+    requestContext: RequestContext;
+  }): string => {
+    const composed = instructionsByRequest.get(requestContext);
+    if (composed !== undefined) {
+      return composed;
+    }
+    const scope = readRunScope(requestContext);
+    const [provider, ...modelParts] = config.model.split("/");
+    const prompt = composeSystemPrompt({
+      basePrompt: MAIN_AGENT_INSTRUCTIONS,
+      cwd: config.workspaceRoot ?? process.cwd(),
+      ...(config.capacity === undefined ? {} : { capacity: config.capacity }),
+      model: modelParts.length === 0 ? config.model : modelParts.join("/"),
+      ...(modelParts.length === 0 ? {} : { provider }),
+      ...(config.platform === undefined ? {} : { platform: config.platform }),
+      sandboxId: sandboxIdFor(scope),
+      schemes: [],
+      scope,
+      sessionStartedAt,
+    }).systemPrompt;
+    instructionsByRequest.set(requestContext, prompt);
+    return prompt;
+  };
+
   const mainAgent = createCodingAgent({
     defaultOptions: {
       autoResumeSuspendedTools: false,
@@ -143,7 +194,8 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     description:
       "ReasonateAI's autonomous CTO that owns the complete product lifecycle from intent through verified deployment.",
     id: "reasonate-cto",
-    instructions: MAIN_AGENT_INSTRUCTIONS,
+    inputProcessors: [deepseekReasoningCompat()],
+    instructions: resolveInstructions,
     model: config.model,
     name: REASONATE_CTO_NAME,
     ...(config.skills ? { skills: config.skills } : {}),

@@ -40,7 +40,15 @@ Generated application code never receives the host Docker socket.
 
 ## Model
 
-The current development model-router identifier is `deepseek/deepseek-flash`. Live provider credentials and production routing remain outside the active foundation phase.
+The current development model-router identifier is `deepseek/deepseek-flash`, pinned in `src/mastra/model.ts`. It is DeepSeek's moving alias for the latest V4 Flash model. Live provider credentials and production routing remain outside the active foundation phase.
+
+DeepSeek serves that alias in thinking mode, which requires the `reasoning_content` field to be replayed on every assistant message of a subsequent request. `@ai-sdk/deepseek` only guarantees that field for model ids containing `deepseek-v4`, so on this alias a request whose assistant message carried no reasoning was rejected with `The reasoning_content in the thinking mode must be passed back to the API`. `@reasonateai/cto-runtime` closes the gap with a `deepseek-reasoning-echo` provider-history compatibility rule, which adds a reasoning part to an assistant message that has none. The rule is scoped to DeepSeek models, leaves reasoning the model did produce untouched, and rewrites only the outbound prompt.
+
+## System prompt
+
+The CTO's prompt is composed per run, not stored as one string: the base role and policy from `@reasonateai/cto-runtime/src/prompts.ts`, then an `<env>` block naming the model, the date, the verified run identity, and the resources the sandbox enforces, then the project's own instruction files when it has any. Composition is cached per run scope, so the prompt prefix does not change between steps of one run.
+
+Two things are deliberately absent. Tool definitions are not restated: the provider receives them as schemas beside the prompt, so a second copy in prose would only drift. And sandbox facts are not probed from the host — `nproc` and `/proc/meminfo` inside the container describe the host machine, so the block reports the enforced cgroup quota (one CPU, 2 GiB) instead of the 12 CPUs and 7.6 GiB a probe would claim.
 
 ## Commands
 
@@ -55,6 +63,8 @@ pnpm --filter @reasonateai/api run cto:chat
 ```
 
 `cto:chat` is a local terminal harness for the sandboxed CTO. Set `MASTRA_MODEL` and the matching provider credential before issuing a prompt. It starts with a new isolated run scope and Docker workspace each time; it does not exercise HTTP sign-in or the private worker, which remain separate launch-slice work.
+
+The harness streams the run instead of awaiting a final answer, so the work the CTO performs is visible while it happens: each step boundary, the model's reasoning, every tool call with its arguments, every tool result, and a closing count of steps, tool calls, and elapsed time. A rejected provider call prints the failure plus the shape of the request that produced it — message roles in order, and per assistant message the tool-call count and whether `reasoning_content` was present — without echoing message content.
 
 ## Current boundary
 
