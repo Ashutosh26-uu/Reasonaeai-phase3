@@ -1,3 +1,4 @@
+import type { PermissionRules } from "@mastra/core/agent-controller";
 import { AgentController } from "@mastra/core/agent-controller";
 import type { MastraBrowser } from "@mastra/core/browser";
 import { createCodingAgent } from "@mastra/core/coding-agent";
@@ -38,6 +39,11 @@ export interface CtoRuntimeLimits {
   mainMaxSteps?: number;
   scoutMaxSteps?: number;
   workerMaxSteps?: number;
+}
+
+/** Controller state this runtime seeds for every session it drives. */
+interface CtoControllerState {
+  permissionRules: PermissionRules;
 }
 
 export interface CtoSubagentModels {
@@ -203,8 +209,19 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     workspace: config.workspace,
   });
 
-  const controller = new AgentController({
+  const controller = new AgentController<CtoControllerState>({
     id: config.controllerId ?? "reasonate-cto-controller",
+    initialState: {
+      /**
+       * Delegation is core CTO autonomy rather than a destructive external
+       * effect, so it is allowed outright; the workers remain bounded by the
+       * run grant, and every other tool keeps the controller default.
+       */
+      permissionRules: {
+        categories: {},
+        tools: { subagent: "allow" },
+      } satisfies PermissionRules,
+    },
     ...(config.resourceId ? { resourceId: config.resourceId } : {}),
     agent: mainAgent,
     ...(config.browser ? { browser: config.browser } : {}),
@@ -212,6 +229,7 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     memory,
     modes: [
       {
+        defaultModelId: config.model,
         description:
           "Full autonomous product lifecycle authority with all approved run capabilities.",
         id: "cto",
@@ -221,6 +239,7 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     ],
     ...(config.storage ? { storage: config.storage } : {}),
     subagents: materializeDelegatableSubagents({
+      defaultModelId: config.model,
       overrides: {
         coder: {
           ...(config.subagentModels?.coder
