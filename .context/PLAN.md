@@ -273,6 +273,8 @@ Spectra remains a dependency or workspace sibling. Generic improvements such as 
 
 ## 11. Delivery schedule
 
+> **Corrected.** The confirmed schedule is a September 9, 2026 kick-off, a non-negotiable feature freeze on October 8, 2026, and a live MVP on October 13, 2026, with no extensions. `.context/PHASE.md` is the authoritative statement of time and scope. The block boundaries below were drafted against a September 16 start and are indicative only.
+
 ### September 16–18: foundation and contracts
 
 - Finalize product scope and acceptance scenarios.

@@ -6,6 +6,19 @@ Establish the repository, governance, identity model, centralized authorization 
 
 This phase is active. Authentication and authorization precede resource and tool execution because every run requires a verified, scoped principal. The public API is the control plane; a private worker fleet executes authorized runs through the shared Mastra composition root. PostgreSQL is the authoritative state store, Redis Streams carries distributed commands and live events, private object storage holds immutable artifacts, Git checkpoints recover mutable workspaces, and ReasonateAI retains ownership of typed project state, authorization, capability profiles, tool gates, approvals, budgets, audit, evidence, deployment policy, and completion.
 
+## Delivery schedule
+
+Confirmed and non-negotiable. This is the authoritative statement of time for the project; the block boundaries in `.context/PLAN.md` §11 were drafted against a later start and are indicative only.
+
+- **Kick-off:** September 9, 2026.
+- **Feature freeze:** October 8, 2026. Scope, contracts, models, and demonstration workflows freeze; the release candidate and its known limitations are recorded explicitly.
+- **MVP live:** October 13, 2026. The live deployment is reachable at its authorized address, rehearsed from a clean user account.
+- **Timeline:** 30 days. There are no extensions.
+
+A blocked module does not stop the run. Ship everything else and make the blocker visible: replace the unavailable integration with an explicit mock adapter behind the same replaceable contract, state it plainly in the interface and in this file, and keep moving. A mock never masquerades as a completed production integration.
+
+The model policy in `.context/SPEC.md` is binding: paid frontier-model APIs are prohibited, so no deployment, development, or demonstration path may call OpenAI, Anthropic, or Google hosted models.
+
 ## Scope
 
 ### Completed
