@@ -32,7 +32,6 @@ Rejecting an item requires recording the decision and reason before removing it.
 
 - Safe user-authored executable skills after isolation, provenance, review, signing, permission, and revocation controls exist.
 - Additional specialist models selected through repeatable cost-per-verified-task evaluation.
-- More advanced multi-agent orchestration only where measurements show bounded temporary delegation is insufficient.
 - Organization-managed agent policies, model allowlists, and budget controls.
 
 ## Retrieval and memory
@@ -43,7 +42,7 @@ Rejecting an item requires recording the decision and reason before removing it.
 
 ## Deployment and operations
 
-- Fully autonomous production-cloud deployment after approval, secret, tenancy, audit, rollback, cost, and provider-isolation controls are proven.
+- Additional autonomous deployment providers after the first approval-gated preview/release adapter proves tenancy, audit, rollback, cost, and provider isolation.
 - Additional sandbox providers behind the stable `SandboxProvider` contract.
 - Multi-region execution, data residency, disaster recovery, and enterprise retention controls.
 - Customer-controlled cloud accounts and private network connectivity.
