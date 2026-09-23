@@ -1,4 +1,6 @@
-import type { PermissionRules } from "@mastra/core/agent-controller";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { AgentController } from "@mastra/core/agent-controller";
 import type { MastraBrowser } from "@mastra/core/browser";
 import { createCodingAgent } from "@mastra/core/coding-agent";
@@ -11,6 +13,10 @@ import { composeSystemPrompt } from "./context/compose.js";
 import type { PlatformFacts, SandboxCapacity } from "./context/environment.js";
 import { deepseekReasoningCompat } from "./model/deepseek-reasoning.js";
 import { MAIN_AGENT_INSTRUCTIONS, REASONATE_CTO_NAME } from "./prompts.js";
+import {
+  createRunResources,
+  type RunResources,
+} from "./resources/handlers/index.js";
 import { readRunScope, sandboxIdFor } from "./run-scope.js";
 import { createWorkspaceEditTool } from "./tools/edit.js";
 import { ReadSnapshotStore } from "./tools/read-snapshots.js";
@@ -41,9 +47,15 @@ export interface CtoRuntimeLimits {
   workerMaxSteps?: number;
 }
 
-/** Controller state this runtime seeds for every session it drives. */
+/**
+ * Session state this runtime seeds for every run it drives.
+ *
+ * `yolo` is the controller's session-wide approval switch: with it set, a tool
+ * call resolves to allowed instead of parking on an approval gate that a
+ * headless run can never answer.
+ */
 interface CtoControllerState {
-  permissionRules: PermissionRules;
+  yolo: boolean;
 }
 
 export interface CtoSubagentModels {
@@ -71,6 +83,12 @@ export interface ReasonateCtoRuntimeConfig {
    */
   platform?: PlatformFacts | undefined;
   resourceId?: string;
+  /**
+   * Host directory under which run-scoped resource stores live: spilled read
+   * output, worker output, and anything a resource URL resolves to. Defaults to
+   * a process-wide temporary directory so a run never writes into the repository.
+   */
+  resourcesRoot?: string;
   skills?: string[];
   storage?: MastraCompositeStore;
   subagentModels?: Partial<CtoSubagentModels>;
@@ -122,6 +140,28 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     }
     return filesystem;
   };
+  const resourcesByRequest = new WeakMap<RequestContext, RunResources>();
+  const resourcesRoot =
+    config.resourcesRoot ?? join(tmpdir(), "reasonate-run-resources");
+  /**
+   * The resource layer for one run: the router a resource URL dispatches
+   * through, and the stores its handlers read. Built per run and cached against
+   * the request context, because a shared router would let one run answer
+   * another run's read.
+   */
+  const resolveResources = (requestContext: RequestContext): RunResources => {
+    const existing = resourcesByRequest.get(requestContext);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const resources = createRunResources({
+      cwd: config.workspaceRoot ?? process.cwd(),
+      root: resourcesRoot,
+      scope: readRunScope(requestContext),
+    });
+    resourcesByRequest.set(requestContext, resources);
+    return resources;
+  };
   const resolveSnapshots = (requestContext: RequestContext) => {
     const existing = snapshotsByRequest.get(requestContext);
     if (existing) {
@@ -141,6 +181,12 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     }),
     read: createWorkspaceReadTool({
       resolveFilesystem,
+      resolveResourceContext: async (requestContext) => ({
+        cwd: config.workspaceRoot ?? process.cwd(),
+        scope: readRunScope(requestContext),
+      }),
+      resolveRouter: async (requestContext) =>
+        resolveResources(requestContext).router,
       resolveSnapshots,
       ...(config.workspaceRoot === undefined
         ? {}
@@ -182,7 +228,7 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
       ...(modelParts.length === 0 ? {} : { provider }),
       ...(config.platform === undefined ? {} : { platform: config.platform }),
       sandboxId: sandboxIdFor(scope),
-      schemes: [],
+      schemes: resolveResources(requestContext).router.describeSchemes(),
       scope,
       sessionStartedAt,
     }).systemPrompt;
@@ -213,14 +259,15 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     id: config.controllerId ?? "reasonate-cto-controller",
     initialState: {
       /**
-       * Delegation is core CTO autonomy rather than a destructive external
-       * effect, so it is allowed outright; the workers remain bounded by the
-       * run grant, and every other tool keeps the controller default.
+       * The controller's approval gate is a shell for an interactive harness: a
+       * parked tool waits for a click a headless run never receives, so the run
+       * hangs instead of acting. Approval policy for this product is enforced by
+       * the centralized authorization layer and the run's capability grant, which
+       * is what actually bounds the tool surface — and the controller resolves a
+       * tool's category policy only when a category resolver is configured, so a
+       * per-category policy here would silently leave every call parked.
        */
-      permissionRules: {
-        categories: {},
-        tools: { subagent: "allow" },
-      } satisfies PermissionRules,
+      yolo: true,
     },
     ...(config.resourceId ? { resourceId: config.resourceId } : {}),
     agent: mainAgent,
