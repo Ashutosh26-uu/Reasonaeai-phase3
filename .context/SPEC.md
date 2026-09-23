@@ -285,6 +285,7 @@ Directories are created only when their phase has complete behavior to place in 
 
 ## Model strategy
 
+- **Paid frontier-model APIs are prohibited.** OpenAI GPT-class, Anthropic Claude, and Google hosted models may not be called from any environment — production, development, preproduction, or demonstration. The product carries no third-party recurring inference cost. Every model call runs on open-weight inference behind spending limits, or on local inference through an OpenAI-compatible endpoint.
 - Model integrations use Mastra's provider/model routing behind spending and authorization policy.
 - The primary implementation candidates are current open-weight models selected by repeatable multimodal, coding-agent, ASR, TTS, latency, license, and cost evaluations; no stale family or version is the default.
 - Hosted open-weight inference may be used behind spending limits; local inference remains supported through an OpenAI-compatible endpoint.
