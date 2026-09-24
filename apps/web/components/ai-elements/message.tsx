@@ -13,6 +13,7 @@ import {
 } from "@reasonateai/ui/components/tooltip";
 import { cn } from "@reasonateai/ui/lib/utils";
 import { createCodePlugin } from "@streamdown/code";
+import { math } from "@streamdown/math";
 import { createMermaidPlugin } from "@streamdown/mermaid";
 import type { UIMessage } from "ai";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
@@ -325,6 +326,7 @@ export type MessageResponseProps = Omit<
 
 const streamdownPlugins = {
   code: createCodePlugin({ themes: ["github-light", "github-dark"] }),
+  math,
   mermaid: createMermaidPlugin({
     config: {
       securityLevel: "strict",

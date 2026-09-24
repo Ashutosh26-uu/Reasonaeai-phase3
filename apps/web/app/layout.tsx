@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "@reasonateai/ui/globals.css";
+import "katex/dist/katex.min.css";
 
 export const metadata: Metadata = {
   description:

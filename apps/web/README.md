@@ -26,7 +26,7 @@ The initial theme uses restrained charcoal and warm-white values. The icon is di
 
 The browser will call only company-owned `/v1` product routes with server-managed cookies and CSRF protection. It will not call Mastra's raw agent, controller, or Studio routes, nor use an AI Gateway key. The product API owns the durable event stream and replay cursor; AI Elements are presentation components for those validated events.
 
-`streamdown`, `@streamdown/code`, and `@streamdown/mermaid` render Markdown, Shiki-highlighted code, and Mermaid diagrams. The renderer must retain sanitization, restrict links and external images for untrusted agent content, and use Mermaid's strict security level. An unknown code language remains readable as plain code.
+`streamdown` with its code, Mermaid, and math plugins renders Markdown, Shiki-highlighted code, Mermaid diagrams, and LaTeX equations. Math uses KaTeX with its stylesheet loaded by the app; it supports inline and display equations delimited by `$$`. MathJax is not part of the runtime, so MathJax-only extensions are outside this scaffold. The renderer must retain sanitization, restrict links and external images for untrusted agent content, and use Mermaid's strict security level. An unknown code language remains readable as plain code.
 
 ## Current boundary
 
