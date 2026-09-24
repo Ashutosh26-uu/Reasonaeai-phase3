@@ -1,5 +1,4 @@
 import { WORKSPACE_TOOLS, Workspace } from "@mastra/core/workspace";
-import { DockerSandbox } from "@mastra/docker";
 import type {
   PlatformFacts,
   SandboxCapacity,
@@ -9,6 +8,7 @@ import {
   readRunScope,
   sandboxIdFor,
 } from "@reasonateai/cto-runtime/run-scope";
+import { createMastraSandbox } from "@reasonateai/sandbox/mastra";
 import { SandboxFilesystem } from "./sandbox-filesystem";
 
 const SANDBOX_CPU_PERIOD = 100_000;
@@ -48,27 +48,17 @@ export const buildSandboxEnvironment: {
 
 function createBuildSandbox(scope: RunScope) {
   const sandboxId = sandboxIdFor(scope);
-  return new DockerSandbox({
-    capDrop: ["ALL"],
-    cpuPeriod: SANDBOX_CPU_PERIOD,
-    cpuQuota: SANDBOX_CPU_QUOTA,
+  return createMastraSandbox({
+    cpuLimit: SANDBOX_CPU_QUOTA / SANDBOX_CPU_PERIOD,
     env: { HOME: SANDBOX_WORKING_DIRECTORY },
     id: sandboxId,
     image: SANDBOX_IMAGE,
-    memory: SANDBOX_MEMORY_BYTES,
-    memorySwap: SANDBOX_MEMORY_BYTES,
-    mounts: [
-      {
-        source: `${sandboxId}-workspace`,
-        target: SANDBOX_WORKING_DIRECTORY,
-        type: "volume",
-      },
-    ],
-    network: "none",
-    pidsLimit: 256,
-    securityOpt: ["no-new-privileges:true"],
-    timeout: 120_000,
-    workingDirectory: SANDBOX_WORKING_DIRECTORY,
+    memoryLimitMb: Math.floor(SANDBOX_MEMORY_BYTES / (1024 * 1024)),
+    networkMode: "none",
+    projectId: scope.projectId,
+    runId: scope.runId,
+    timeoutMs: 120_000,
+    workdir: SANDBOX_WORKING_DIRECTORY,
   });
 }
 

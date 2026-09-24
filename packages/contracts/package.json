@@ -23,6 +23,10 @@
     "./identity": {
       "types": "./src/identity.ts",
       "import": "./dist/identity.js"
+    },
+    "./sandbox": {
+      "types": "./src/sandbox.ts",
+      "import": "./dist/sandbox.js"
     }
   },
   "scripts": {
