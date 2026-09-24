@@ -7,6 +7,7 @@ import {
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createProjectStateStore } from "../src/postgres.js";
+import { deleteOrganizations } from "./support/database.js";
 
 const connectionString = process.env.DATABASE_URL;
 const TENANT_SCOPE_ERROR = /tenant scope|does not exist/i;
@@ -53,10 +54,7 @@ describeWithDatabase("project state store", () => {
   });
 
   afterAll(async () => {
-    await pool.query(
-      "delete from organizations where organization_id = any($1::uuid[])",
-      [[organizationId, otherOrganizationId]]
-    );
+    await deleteOrganizations(pool, [organizationId, otherOrganizationId]);
     await pool.end();
     await store.close();
   });
@@ -181,9 +179,16 @@ describeWithDatabase("project state store", () => {
     });
     expect(afterFirst.map((event) => event.type)).toEqual(["agent.progress"]);
 
-    const pending = await store.listPendingOutbox(200);
-    const queued = pending.filter(({ payload }) => payload.runId === runId);
-    expect(queued.length).toBe(replayed.length);
+    // Every suite shares one database and the listing is a bounded window, so
+    // assert on the two events this test appended: a run's queue row is written
+    // with its ledger row, which is what makes delivery exactly once per event.
+    const pending = await store.listPendingOutbox(500);
+    const queuedEventIds = new Set([first.eventId, second.eventId]);
+    const queued = pending.filter(
+      ({ payload }) =>
+        payload.runId === runId && queuedEventIds.has(payload.eventId)
+    );
+    expect(queued).toHaveLength(2);
     expect(queued.every(({ payload }) => payload.sequence > 0)).toBe(true);
     expect(
       queued.every(({ topic }) => topic === `reasonateai.run.events.${runId}`)
@@ -192,10 +197,10 @@ describeWithDatabase("project state store", () => {
     await store.markOutboxPublished(
       queued.map(({ outboxId }) => Number(outboxId))
     );
-    const remaining = await store.listPendingOutbox(200);
-    expect(remaining.some(({ payload }) => payload.runId === runId)).toBe(
-      false
-    );
+    const remaining = await store.listPendingOutbox(500);
+    expect(
+      remaining.some(({ payload }) => queuedEventIds.has(payload.eventId))
+    ).toBe(false);
   });
 
   it("grants a run lease to exactly one holder and releases it explicitly", async () => {

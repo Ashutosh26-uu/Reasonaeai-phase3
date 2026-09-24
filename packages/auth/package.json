@@ -7,6 +7,10 @@
     "./authorize": {
       "types": "./src/authorize.ts",
       "import": "./dist/authorize.js"
+    },
+    "./entitlements": {
+      "types": "./src/entitlements.ts",
+      "import": "./dist/entitlements.js"
     }
   },
   "scripts": {

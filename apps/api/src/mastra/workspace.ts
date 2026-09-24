@@ -13,7 +13,7 @@ import { SandboxFilesystem } from "./sandbox-filesystem";
 
 const SANDBOX_CPU_PERIOD = 100_000;
 const SANDBOX_CPU_QUOTA = 100_000;
-const SANDBOX_IMAGE = "node:22-slim";
+const SANDBOX_IMAGE = "node:22";
 const SANDBOX_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
 export const SANDBOX_WORKING_DIRECTORY = "/workspace";
 

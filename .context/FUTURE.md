@@ -48,6 +48,10 @@ Rejecting an item requires recording the decision and reason before removing it.
 - Customer-controlled cloud accounts and private network connectivity.
 - Policy-controlled scheduled and event-triggered agent runs.
 
+## Billing and plans
+
+- Plan selection, subscription billing, and self-service limit changes. The product already enforces plan entitlements and rate limits, but an organization carries no plan column, so every organization is evaluated against the single default plan until billing owns that column and its lifecycle.
+
 ## Collaboration and governance
 
 - Real-time collaborative specification and plan editing.

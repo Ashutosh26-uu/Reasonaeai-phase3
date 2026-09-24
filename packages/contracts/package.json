@@ -12,6 +12,10 @@
       "types": "./src/authorization.ts",
       "import": "./dist/authorization.js"
     },
+    "./entitlements": {
+      "types": "./src/entitlements.ts",
+      "import": "./dist/entitlements.js"
+    },
     "./execution": {
       "types": "./src/execution.ts",
       "import": "./dist/execution.js"

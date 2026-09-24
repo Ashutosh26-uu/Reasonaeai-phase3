@@ -12,6 +12,7 @@ import { createClient } from "redis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createProjectStateStore } from "../src/postgres.js";
 import { createOutboxRelay, createRedisStreamPublisher } from "../src/relay.js";
+import { deleteOrganizations } from "./support/database.js";
 
 const connectionString = process.env.DATABASE_URL;
 const redisUrl = process.env.REDIS_URL;
@@ -81,9 +82,7 @@ describeWithServices("outbox relay", () => {
   });
 
   afterAll(async () => {
-    await pool.query("delete from organizations where organization_id = $1", [
-      organizationId,
-    ]);
+    await deleteOrganizations(pool, [organizationId]);
     await publisher.close();
     await reader.quit();
     await pool.end();

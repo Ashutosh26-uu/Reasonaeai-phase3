@@ -53,6 +53,7 @@ The product includes:
 - Real-browser verification, evidence-driven repair loops, and deployment of an accepted checkpoint.
 - A stable deployment URL with explicit authenticated, unlisted, or public exposure and a rollback or forward-recovery path.
 - Human approval, clarification, credential submission, pause, resume, exposure, and rollback.
+- Per-organization plan entitlements enforced at admission and charged from metered usage: concurrent runs, projects, sandbox minutes, workspace bytes, tokens, spend, allowed models, and request rate limits. An organization's plan is a product decision; until billing owns that column, every organization is evaluated against the documented default plan.
 
 ### Explicitly deferred
 

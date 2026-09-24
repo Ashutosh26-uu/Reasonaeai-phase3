@@ -12,6 +12,7 @@
     "check": "ultracite check .",
     "cto:chat": "tsx src/cli/cto-chat.ts",
     "dev": "mastra dev",
+    "smoke:checkpoint": "tsx src/cli/smoke-checkpoint.ts",
     "start": "mastra start",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"

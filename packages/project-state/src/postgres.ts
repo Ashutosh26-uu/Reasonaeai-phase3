@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as wait } from "node:timers/promises";
 import {
   type BuildSession,
   type BuildSessionId,
@@ -28,9 +29,12 @@ import {
   createMembershipRepository,
   type MembershipRepository,
 } from "./memberships.js";
+import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
 import { PROJECT_STATE_MIGRATION_SQL } from "./schema.js";
 import { AUTH_SESSION_MIGRATION_SQL } from "./session-schema.js";
 import { createSessionRepository, type SessionRepository } from "./sessions.js";
+import { createUsageRepository, type UsageRepository } from "./usage.js";
+import { USAGE_MIGRATION_SQL } from "./usage-schema.js";
 
 export interface TenantScope {
   organizationId: OrganizationId;
@@ -47,6 +51,23 @@ export interface OutboxRecord {
   outboxId: string;
   payload: RunEventEnvelope;
   topic: string;
+}
+
+/** One outbox row a relay has taken responsibility for publishing. */
+export interface OutboxClaim {
+  outboxId: string;
+  payload: unknown;
+  topic: string;
+}
+
+export interface OutboxRepository {
+  /**
+   * Takes up to `limit` unpublished rows for this relay, skipping rows another
+   * relay holds, so two relays never publish the same row. A claim that is not
+   * marked published before its lease lapses becomes claimable again, which is
+   * what keeps delivery at-least-once rather than at-most-once.
+   */
+  claim: (limit: number) => Promise<OutboxClaim[]>;
 }
 
 export interface ArtifactRecord {
@@ -82,6 +103,45 @@ const ACTIVE_BUILD_SESSION_STATUSES = [
  * value works as long as every migrator in the fleet uses the same one.
  */
 const MIGRATION_LOCK_KEY = 8_274_196_301_552_001;
+
+/**
+ * How long one relay's claim on an outbox row is honoured before another relay
+ * may take it. Long enough that a publish and its mark complete well inside it,
+ * short enough that a relay that dies mid-batch does not stall the topic.
+ */
+const OUTBOX_CLAIM_LEASE_MS = 60_000;
+
+/**
+ * A migration's DDL needs an access-exclusive lock on every table it changes.
+ * Waiting for it indefinitely stalls all writers behind the migration, and a
+ * writer that already holds a read lock while it upgrades past the queued
+ * request deadlocks instead of waiting, which Postgres resolves by killing one
+ * of the two. Giving up on the lock quickly keeps writers moving, and the
+ * retry around the migration finishes it once the writer in the way committed.
+ */
+const MIGRATION_LOCK_TIMEOUT_MS = 5000;
+
+/** Bounded, so a migration cannot spin forever against a permanently busy table. */
+const MIGRATION_ATTEMPTS = 6;
+
+/** Linear backoff, so replicas that start together do not retry in lockstep. */
+const MIGRATION_RETRY_DELAY_MS = 250;
+
+/**
+ * `lock_not_available` is our own lock timeout, `deadlock_detected` is Postgres
+ * breaking the cycle for us, and two concurrent `create table if not exists`
+ * can still race into a duplicate object or a duplicate system-catalog key.
+ */
+const RETRYABLE_MIGRATION_CODES = new Set(["40P01", "55P03", "23505", "42P07"]);
+
+function isRetryableMigrationError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return false;
+  }
+
+  const { code } = error;
+  return typeof code === "string" && RETRYABLE_MIGRATION_CODES.has(code);
+}
 
 function asIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
@@ -151,6 +211,8 @@ export interface ProjectStateStore {
   markOutboxPublished: (outboxIds: number[]) => Promise<void>;
   memberships: MembershipRepository;
   migrate: () => Promise<void>;
+  outbox: OutboxRepository;
+  rateLimiter: RateLimiter;
   recordArtifact: (
     manifest: ArtifactManifest,
     status: string
@@ -176,6 +238,7 @@ export interface ProjectStateStore {
     scope: TenantScope;
     status: RunStatus;
   }) => Promise<boolean>;
+  usage: UsageRepository;
 }
 
 async function insertRunEvent(
@@ -317,6 +380,8 @@ export function createProjectStateStore(config: {
   connectionString: string;
   maxConnections?: number;
   pool?: Pool;
+  /** Redis used for rate-limit counters; defaults to `REDIS_URL`. */
+  redisUrl?: string;
   sessionIdleTtlMs?: number;
 }): ProjectStateStore {
   const pool =
@@ -330,6 +395,9 @@ export function createProjectStateStore(config: {
     idleTtlMs: config.sessionIdleTtlMs ?? 1000 * 60 * 60 * 24 * 14,
   });
   const memberships = createMembershipRepository(pool);
+  const rateLimiter = createRateLimiter({
+    url: config.redisUrl ?? process.env.REDIS_URL,
+  });
 
   async function withTransaction<T>(
     run: (client: PoolClient) => Promise<T>
@@ -347,6 +415,8 @@ export function createProjectStateStore(config: {
       client.release();
     }
   }
+
+  const usage = createUsageRepository(pool, { withTransaction });
 
   async function allocateBuildSession(input: {
     idempotencyKey: string;
@@ -660,6 +730,50 @@ export function createProjectStateStore(config: {
     );
   }
 
+  /**
+   * Takes rows for one relay. `for update skip locked` makes the read and the
+   * mark one transaction, so a row is either this relay's or invisible to the
+   * other relay running the same statement, never both. The mark is what makes
+   * the claim outlive the transaction; the lease in the predicate is what lets
+   * a relay that died mid-batch be recovered by the next one.
+   */
+  async function claimOutbox(limit: number): Promise<OutboxClaim[]> {
+    return await withTransaction(async (client) => {
+      const result = await client.query<{
+        outbox_id: string;
+        payload: unknown;
+        topic: string;
+      }>(
+        `select outbox_id, topic, payload
+           from outbox
+          where published_at is null
+            and (claimed_at is null
+                 or claimed_at < now() - make_interval(secs => $2::double precision))
+          order by outbox_id asc
+          limit $1
+          for update skip locked`,
+        [limit, OUTBOX_CLAIM_LEASE_MS / 1000]
+      );
+
+      const claimed = result.rows.map((row) => ({
+        outboxId: String(row.outbox_id),
+        payload: row.payload,
+        topic: row.topic,
+      }));
+
+      if (claimed.length > 0) {
+        await client.query(
+          `update outbox
+              set claimed_at = now()
+            where outbox_id = any($1::bigint[])`,
+          [claimed.map(({ outboxId }) => Number(outboxId))]
+        );
+      }
+
+      return claimed;
+    });
+  }
+
   async function recordArtifact(
     manifest: ArtifactManifest,
     status: string
@@ -785,6 +899,7 @@ export function createProjectStateStore(config: {
     appendRunEvent,
     claimRunLease,
     close: async () => {
+      await rateLimiter.close();
       await pool.end();
     },
     getBuildSession,
@@ -795,22 +910,48 @@ export function createProjectStateStore(config: {
     memberships,
     migrate: async () => {
       // `create table if not exists` is not concurrency-safe: two processes
-      // racing the same DDL collide in the system catalog. Replicas starting
-      // together must serialize, so take a transaction-scoped advisory lock
-      // that releases automatically when the migration transaction ends.
-      await withTransaction(async (client) => {
-        await client.query("select pg_advisory_xact_lock($1)", [
-          MIGRATION_LOCK_KEY,
-        ]);
-        await client.query(PROJECT_STATE_MIGRATION_SQL);
-        await client.query(AUTH_SESSION_MIGRATION_SQL);
-        await client.query(MEMBERSHIP_MIGRATION_SQL);
-      });
+      // racing the same DDL collide in the system catalog, so replicas starting
+      // together serialize on a transaction-scoped advisory lock that releases
+      // when the migration transaction ends. The retry covers the other half of
+      // the problem: DDL takes an access-exclusive lock, and a writer that holds
+      // a read lock while it upgrades past that queued request deadlocks with
+      // the migration. Bounded lock waiting plus a retry keeps both moving.
+      const attemptMigration = async (attempt: number): Promise<void> => {
+        try {
+          await withTransaction(async (client) => {
+            await client.query(
+              `set local lock_timeout = '${MIGRATION_LOCK_TIMEOUT_MS}ms'`
+            );
+            await client.query("select pg_advisory_xact_lock($1)", [
+              MIGRATION_LOCK_KEY,
+            ]);
+            await client.query(PROJECT_STATE_MIGRATION_SQL);
+            await client.query(AUTH_SESSION_MIGRATION_SQL);
+            await client.query(MEMBERSHIP_MIGRATION_SQL);
+            await client.query(USAGE_MIGRATION_SQL);
+          });
+        } catch (error) {
+          if (
+            attempt >= MIGRATION_ATTEMPTS ||
+            !isRetryableMigrationError(error)
+          ) {
+            throw error;
+          }
+
+          await wait(MIGRATION_RETRY_DELAY_MS * attempt);
+          await attemptMigration(attempt + 1);
+        }
+      };
+
+      await attemptMigration(1);
     },
+    outbox: { claim: claimOutbox },
+    rateLimiter,
     recordArtifact,
     recordDeployment,
     releaseRunLease,
     sessions,
     setRunStatus,
+    usage,
   };
 }
