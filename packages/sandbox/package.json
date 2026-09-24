@@ -11,6 +11,10 @@
     "./mock": {
       "types": "./src/mock-sandbox.ts",
       "import": "./dist/mock-sandbox.js"
+    },
+    "./mastra": {
+      "types": "./src/mastra-adapter.ts",
+      "import": "./dist/mastra-adapter.js"
     }
   },
   "scripts": {
@@ -20,6 +24,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@mastra/core": "^1.67.0",
     "@reasonateai/contracts": "workspace:*",
     "zod": "catalog:"
   },

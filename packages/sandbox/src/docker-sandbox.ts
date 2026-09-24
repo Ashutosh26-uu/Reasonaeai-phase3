@@ -27,18 +27,22 @@ const execFileAsync = promisify(execFile);
 
 export class DockerSandbox implements ISandbox {
   readonly id: SandboxId;
-  private readonly config: SandboxConfig;
-  private readonly containerName: string;
+  readonly config: SandboxConfig;
+  readonly containerName: string;
   private readonly createdAt: string;
-  private readonly hostWorkspaceDir: string;
+  readonly hostWorkspaceDir: string;
   private status: SandboxState["status"] = "pending";
   private stoppedAt: string | null = null;
 
   constructor(config: SandboxConfig) {
     this.config = config;
-    this.containerName = `reasonate-sbx-${config.id}`;
+    const sanitizedId = config.id.replaceAll(/[^a-zA-Z0-9_.-]/g, "-");
+    this.containerName = `reasonate-sbx-${sanitizedId}`;
     this.createdAt = new Date().toISOString();
-    this.hostWorkspaceDir = resolve(tmpdir(), `reasonate-sandbox-${config.id}`);
+    this.hostWorkspaceDir = resolve(
+      tmpdir(),
+      `reasonate-sandbox-${sanitizedId}`
+    );
     this.id = config.id;
   }
 
@@ -53,13 +57,22 @@ export class DockerSandbox implements ISandbox {
       `--memory=${this.config.memoryLimitMb}m`,
       `--cpus=${this.config.cpuLimit}`,
       `--network=${this.config.networkMode}`,
+      "--security-opt=no-new-privileges:true",
+      "--pids-limit=256",
+      "--label",
+      `reasonate.sandbox.id=${this.config.id}`,
       "-w",
       this.config.workdir,
       "-v",
       `${this.hostWorkspaceDir}:${this.config.workdir}`,
     ];
 
-    for (const [key, value] of Object.entries(this.config.env)) {
+    const env = {
+      HOME: this.config.workdir,
+      ...this.config.env,
+    };
+
+    for (const [key, value] of Object.entries(env)) {
       dockerArgs.push("-e", `${key}=${value}`);
     }
 
@@ -208,7 +221,7 @@ export class DockerSandbox implements ISandbox {
 
   private readonly cleanup = async (): Promise<void> => {
     try {
-      await execFileAsync("docker", ["rm", "-f", this.containerName]);
+      await execFileAsync("docker", ["rm", "-f", "-v", this.containerName]);
     } catch {
       // Ignore if container already removed
     }
@@ -223,6 +236,29 @@ export class DockerSandbox implements ISandbox {
     await this.cleanup();
     this.status = "destroyed";
     this.stoppedAt = new Date().toISOString();
+  };
+
+  static readonly cleanupOrphanedContainers = async (
+    sandboxId?: string
+  ): Promise<void> => {
+    try {
+      const filter = sandboxId
+        ? `label=reasonate.sandbox.id=${sandboxId}`
+        : "label=reasonate.sandbox.id";
+      const { stdout } = await execFileAsync("docker", [
+        "ps",
+        "-a",
+        "-q",
+        "--filter",
+        filter,
+      ]);
+      const containerIds = stdout.trim().split("\n").filter(Boolean);
+      if (containerIds.length > 0) {
+        await execFileAsync("docker", ["rm", "-f", "-v", ...containerIds]);
+      }
+    } catch {
+      // Best-effort cleanup
+    }
   };
 }
 

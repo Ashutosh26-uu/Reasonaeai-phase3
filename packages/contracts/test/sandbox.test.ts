@@ -27,6 +27,17 @@ describe("sandbox contracts", () => {
     expect(parsed.workdir).toBe("/workspace");
   });
 
+  it("parses scoped alphanumeric sandbox IDs", () => {
+    const scopedId = "reasonate-org1-proj1-session1";
+    const parsed = SandboxConfigSchema.parse({
+      id: scopedId,
+      image: "node:22-alpine",
+      projectId,
+      runId,
+    });
+    expect(parsed.id).toBe(scopedId);
+  });
+
   it("rejects unknown config fields due to strictObject", () => {
     const result = SandboxConfigSchema.safeParse({
       id: sandboxId,

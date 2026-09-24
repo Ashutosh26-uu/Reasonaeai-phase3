@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { IsoDateTimeSchema, ProjectIdSchema, RunIdSchema } from "./identity.js";
 
-export const SandboxIdSchema = z.uuid().brand<"SandboxId">();
+export const SandboxIdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[a-zA-Z0-9_.-]+$/)
+  .brand<"SandboxId">();
 export type SandboxId = z.infer<typeof SandboxIdSchema>;
 
 export const sandboxStatuses = [

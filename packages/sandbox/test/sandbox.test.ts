@@ -1,6 +1,14 @@
+import { execFile } from "node:child_process";
+import { stat } from "node:fs/promises";
+import { promisify } from "node:util";
 import { afterAll, describe, expect, it } from "vitest";
-import { DockerSandboxProvider } from "../src/docker-sandbox.js";
+import {
+  type DockerSandbox,
+  DockerSandboxProvider,
+} from "../src/docker-sandbox.js";
 import { MockSandboxProvider } from "../src/mock-sandbox.js";
+
+const execFileAsync = promisify(execFile);
 
 const projectId = "22222222-2222-4222-8222-222222222222";
 const mockSandboxId = "33333333-3333-4333-8333-333333333333";
@@ -120,5 +128,60 @@ describe("DockerSandboxProvider", () => {
     await expect(
       sandbox.runCommand({ args: [], command: "ls" })
     ).rejects.toThrow("Cannot run command on sandbox in status: destroyed");
+  });
+
+  it("guarantees zero lingering containers, volumes, or host directories after create-run-destroy cycles", async () => {
+    const cycleSandboxId = "77777777-7777-4777-8777-777777777777";
+    const sandbox = await provider.create({
+      cpuLimit: 1.0,
+      id: cycleSandboxId,
+      image: "alpine:latest",
+      memoryLimitMb: 128,
+      networkMode: "none",
+      projectId,
+      runId: null,
+      timeoutMs: 10_000,
+    });
+
+    const dockerSandbox = sandbox as DockerSandbox;
+    const hostDir = dockerSandbox.hostWorkspaceDir;
+
+    // Verify container is running in Docker with expected audit label
+    const checkRunning = await execFileAsync("docker", [
+      "ps",
+      "-q",
+      "--filter",
+      `name=${dockerSandbox.containerName}`,
+      "--filter",
+      `label=reasonate.sandbox.id=${cycleSandboxId}`,
+    ]);
+    expect(checkRunning.stdout.trim()).not.toBe("");
+
+    // Run command and write files
+    await sandbox.writeFile("data.txt", "ephemeral content");
+    const res = await sandbox.runCommand({
+      args: ["data.txt"],
+      command: "cat",
+    });
+    expect(res.stdout.trim()).toBe("ephemeral content");
+
+    // Destroy sandbox
+    await sandbox.destroy();
+
+    // Verify container is removed from Docker
+    const checkStopped = await execFileAsync("docker", [
+      "ps",
+      "-a",
+      "-q",
+      "--filter",
+      `name=${dockerSandbox.containerName}`,
+    ]);
+    expect(checkStopped.stdout.trim()).toBe("");
+
+    // Verify host directory is completely removed
+    const dirExists = await stat(hostDir)
+      .then(() => true)
+      .catch(() => false);
+    expect(dirExists).toBe(false);
   });
 });
