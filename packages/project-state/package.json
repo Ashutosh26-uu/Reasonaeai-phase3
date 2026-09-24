@@ -1,0 +1,46 @@
+{
+  "name": "@reasonateai/project-state",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./postgres": {
+      "types": "./src/postgres.ts",
+      "import": "./dist/postgres.js"
+    },
+    "./memberships": {
+      "types": "./src/memberships.ts",
+      "import": "./dist/memberships.js"
+    },
+    "./relay": {
+      "types": "./src/relay.ts",
+      "import": "./dist/relay.js"
+    },
+    "./schema": {
+      "types": "./src/schema.ts",
+      "import": "./dist/schema.js"
+    },
+    "./sessions": {
+      "types": "./src/sessions.ts",
+      "import": "./dist/sessions.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "ultracite check .",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@reasonateai/contracts": "workspace:*",
+    "pg": "8.23.0",
+    "redis": "6.2.1",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "@types/pg": "8.23.1",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

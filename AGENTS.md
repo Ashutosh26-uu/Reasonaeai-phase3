@@ -133,6 +133,14 @@ Formatting and linting are owned by Ultracite/Biome. Do not add ESLint, Prettier
 - Resources are nouns addressed by paths or URIs; tools are verbs. Resource handlers do not bypass centralized authorization.
 - Secrets are brokered. They never enter model context, resource reads, logs, artifacts, screenshots, browser storage, or source control.
 - Persist important transitions and emit auditable events for security-sensitive state changes.
+- Mastra is the primary agent platform. Each build session has one run-scoped, full-capability ReasonateAI CTO operating within its verified grant. It may plan, inspect, edit, execute, debug, verify, and deploy directly, or delegate bounded work to a read-only scout, full-capability coder, repair-capable debugger, or ephemeral custom agent. Frontend, backend, database, infrastructure, security, and release engineering are task objectives, not permanent agent services.
+- The authenticated web session, build session, controller thread, run, shared project sandbox, evidence, checkpoint, and deployment records must remain explicitly correlated. Authorized agents for one build session share that project workspace; cross-session or cross-tenant workspace reuse is prohibited.
+- Mastra's model router is the provider/model adapter layer. The CTO owns planning, required approval, implementation, delegation, integration, verification, deployment, and completion; every worker remains constrained by a short-lived workload grant and may not bypass company policy or communicate through unrecorded direct chat.
+- Mastra does not replace centralized authorization, capability/tool gates, approval policy, budgets, audit, tenant isolation, secret brokerage, evidence acceptance, deployment policy, or recovery.
+- PostgreSQL is authoritative for commands, state transitions, idempotency keys, run leases, artifact metadata, and a sequenced event ledger. A transactional outbox publishes to Redis Streams; Redis is transport and never the sole record of work or user-visible state.
+- A mutable sandbox filesystem is restored from private Git checkpoints and durable project state. Immutable artifacts live in private tenant-scoped object storage behind validated manifests and short-lived authorized URLs. Parallel workers require task ownership and per-file mutation locks before sharing a workspace.
+- The public API exposes only company-owned authenticated product routes. Raw Mastra agent/controller routes, worker endpoints, sandbox control, and deployment control are private; browser commands use HTTPS JSON and browser progress uses replayable SSE.
+- Controller sessions are process-local convenience state. Restart recovery reconstructs them from durable build-session, run, approval, and thread records; never use a controller session as an authorization or recovery authority.
 
 ## Required patterns
 
@@ -153,8 +161,8 @@ Formatting and linting are owned by Ultracite/Biome. Do not add ESLint, Prettier
 - User cookies or broad API keys passed to agents, workers, previews, or sandboxes.
 - Cross-tenant queries followed by application-side filtering.
 - Generic “manager,” “helper,” or “utils” modules that hide domain ownership.
-- Permanent role-specific agent services when bounded temporary delegation is sufficient.
-- A vector database, distributed service, queue, cache, or abstraction added before measured need.
+- Role-specific agents must be created for a scoped run and destroyed or revoked when it ends; permanent background agent services and unbounded delegation are prohibited.
+- A vector database may augment scoped retrieval only after its provenance, tenant isolation, deletion, cost, and evaluation requirements are implemented; it is never the authoritative project state.
 - Retrying non-idempotent operations without a key or recovery strategy.
 - Logging raw request bodies, authorization headers, cookies, tokens, prompts containing secrets, or environment dumps.
 - Tests that assert implementation details, source text, or mocks without exercising observable behavior.
