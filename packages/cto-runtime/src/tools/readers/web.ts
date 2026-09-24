@@ -168,8 +168,14 @@ const XML_PARSER = new XMLParser({
   textNodeName: "#text",
 });
 
-/** Elements that are page furniture rather than the content of the page. */
-const CHROME_ELEMENTS: readonly string[] = [
+/**
+ * Elements that are page furniture rather than the content of the page.
+ *
+ * Declared as literals rather than `string[]` because the markdown converter
+ * accepts only known tag names, and widening them to `string` is what makes the
+ * filter argument unassignable.
+ */
+const CHROME_ELEMENTS = [
   "aside",
   "base",
   "footer",
@@ -185,7 +191,7 @@ const CHROME_ELEMENTS: readonly string[] = [
   "style",
   "template",
   "title",
-];
+] as const;
 
 /** Options for a reader instance. The default reader permits nothing private. */
 export interface WebReaderOptions {

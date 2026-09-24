@@ -1,0 +1,23 @@
+# Normalize line endings to LF in the repository and in every working tree.
+#
+# The formatter requires LF, but with git's default `core.autocrlf=true` on
+# Windows every checkout and merge rewrites tracked files to CRLF, which makes
+# `pnpm check` fail on files nobody edited. Declaring the policy here keeps the
+# working tree, the index, and CI in agreement regardless of platform.
+* text=auto eol=lf
+
+# Binary assets must never be line-ending converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.sqlite binary
+*.db binary

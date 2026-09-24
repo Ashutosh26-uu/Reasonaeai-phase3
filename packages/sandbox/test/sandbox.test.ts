@@ -10,6 +10,17 @@ import { MockSandboxProvider } from "../src/mock-sandbox.js";
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * The Docker provider shells out to the `docker` CLI, so its tests need a
+ * reachable daemon. They are skipped rather than failed when there is none, so
+ * the repository gates stay meaningful on a machine without Docker instead of
+ * reporting a red suite for an absent dependency.
+ */
+const dockerAvailable = await execFileAsync("docker", ["info"]).then(
+  () => true,
+  () => false
+);
+
 const projectId = "22222222-2222-4222-8222-222222222222";
 const mockSandboxId = "33333333-3333-4333-8333-333333333333";
 const dockerSandboxId = "44444444-4444-4444-8444-444444444444";
@@ -56,7 +67,7 @@ describe("MockSandboxProvider", () => {
   });
 });
 
-describe("DockerSandboxProvider", () => {
+describe.skipIf(!dockerAvailable)("DockerSandboxProvider", () => {
   const provider = new DockerSandboxProvider();
 
   afterAll(async () => {
@@ -128,7 +139,9 @@ describe("DockerSandboxProvider", () => {
     await expect(
       sandbox.runCommand({ args: [], command: "ls" })
     ).rejects.toThrow("Cannot run command on sandbox in status: destroyed");
-  });
+    // Creating a container and pulling its image exceeds the default five-second
+    // budget on a cold cache, so the budget is explicit rather than incidental.
+  }, 120_000);
 
   it("guarantees zero lingering containers, volumes, or host directories after create-run-destroy cycles", async () => {
     const cycleSandboxId = "77777777-7777-4777-8777-777777777777";
@@ -183,5 +196,7 @@ describe("DockerSandboxProvider", () => {
       .then(() => true)
       .catch(() => false);
     expect(dirExists).toBe(false);
-  });
+    // Each cycle creates and destroys a real container, which exceeds the
+    // default five-second budget once the whole suite runs in parallel.
+  }, 120_000);
 });
