@@ -53,7 +53,7 @@ describe("MastraWorkspaceSandboxAdapter with MockSandbox", () => {
     // executeCommand mapping
     let stdoutCaptured = "";
     const cmdResult = await adapter.executeCommand("npm", ["run", "build"], {
-      onStdout: (data) => {
+      onStdout: (data: string) => {
         stdoutCaptured += data;
       },
     });

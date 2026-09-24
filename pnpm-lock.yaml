@@ -150,6 +150,9 @@ importers:
       '@types/node':
         specifier: ^22.20.3
         version: 22.20.3
+      '@types/turndown':
+        specifier: ^5.0.6
+        version: 5.0.6
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1312,6 +1315,9 @@ packages:
 
   '@types/resolve@1.20.2':
     resolution: {integrity: sha512-60BCwRFOZCQhDncwQdxxeOEEkbc5dIMccYLwbxsS4TUNeVECQ/pBJ0j09mrHOl/JJvpRPGwO9SvE4nR2Nb/a4Q==}
+
+  '@types/turndown@5.0.6':
+    resolution: {integrity: sha512-ru00MoyeeouE5BX4gRL+6m/BsDfbRayOskWqUvh7CLGW+UXxHQItqALa38kKnOiZPqJrtzJUgAC2+F0rL1S4Pg==}
 
   '@types/unist@3.0.3':
     resolution: {integrity: sha512-ko/gIFJRv177XgZsZcBwnqJN5x/Gien8qNOn0D5bQU/zAzVf9Zt3BlcUiLqhV9y4ARk0GbT3tnUiPNgnTXzc/Q==}
@@ -4031,6 +4037,8 @@ snapshots:
       pg-types: 2.2.0
 
   '@types/resolve@1.20.2': {}
+
+  '@types/turndown@5.0.6': {}
 
   '@types/unist@3.0.3': {}
 
