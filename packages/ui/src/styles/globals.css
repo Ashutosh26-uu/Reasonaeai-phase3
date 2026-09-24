@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+@source "../components";
+@source "../../../../apps/web";
+@source "../../../../apps/web/node_modules/streamdown/dist/*.js";
+@source "../../../../apps/web/node_modules/@streamdown/code/dist/*.js";
+@source "../../../../apps/web/node_modules/@streamdown/mermaid/dist/*.js";
+
+:root {
+  --background: oklch(0.165 0.006 250);
+  --foreground: oklch(0.95 0.006 100);
+  --card: oklch(0.205 0.006 250);
+  --card-foreground: oklch(0.95 0.006 100);
+  --popover: oklch(0.205 0.006 250);
+  --popover-foreground: oklch(0.95 0.006 100);
+  --primary: oklch(0.94 0.006 100);
+  --primary-foreground: oklch(0.16 0.006 250);
+  --secondary: oklch(0.27 0.005 250);
+  --secondary-foreground: oklch(0.92 0.006 100);
+  --muted: oklch(0.245 0.005 250);
+  --muted-foreground: oklch(0.71 0.006 250);
+  --accent: oklch(0.29 0.005 250);
+  --accent-foreground: oklch(0.95 0.006 100);
+  --destructive: oklch(0.67 0.18 25);
+  --border: oklch(0.34 0.006 250);
+  --input: oklch(0.34 0.006 250);
+  --ring: oklch(0.77 0.006 100);
+  --radius: 0.75rem;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+* {
+  border-color: var(--border);
+}
+
+html {
+  background: var(--background);
+}
+
+body {
+  margin: 0;
+  font-family: Arial, Helvetica, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  color: var(--foreground);
+  background: var(--background);
+}
+
+::selection {
+  background: oklch(0.82 0.006 100 / 0.35);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
