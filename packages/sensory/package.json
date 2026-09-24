@@ -1,0 +1,26 @@
+{
+  "name": "@reasonateai/sensory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./asr": {
+      "types": "./src/asr/index.ts",
+      "import": "./dist/asr/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "ultracite check .",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@reasonateai/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
