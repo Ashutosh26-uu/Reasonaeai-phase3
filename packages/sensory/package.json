@@ -7,10 +7,18 @@
     "./asr": {
       "types": "./src/asr/index.ts",
       "import": "./dist/asr/index.js"
+    },
+    "./tts": {
+      "types": "./src/tts/index.ts",
+      "import": "./dist/tts/index.js"
+    },
+    "./tts/piper": {
+      "types": "./src/tts/piper.ts",
+      "import": "./dist/tts/piper.js"
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && cp src/asr/whisper_worker.py dist/asr/whisper_worker.py",
+    "build": "tsc -p tsconfig.build.json && cp src/asr/whisper_worker.py dist/asr/whisper_worker.py && cp src/tts/piper_worker.py dist/tts/piper_worker.py",
     "check": "ultracite check .",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
