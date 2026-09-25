@@ -16,6 +16,7 @@ import {
 import { createMagicLinkSender } from "./adapters/magic-link-sender";
 import { createCsrfMiddleware } from "./middleware";
 import { frontierModel } from "./model";
+import { startOutboxRelay } from "./outbox-relay";
 import { resolveSessionPrincipal } from "./principal";
 import {
   AUTH_CALLBACK_PATH,
@@ -295,3 +296,34 @@ export const mastra = new Mastra({
   },
   storage,
 });
+
+/**
+ * Committed events reach a run's topic only if something moves them there, so
+ * this process — the one that commits them — is the one that publishes them.
+ * The record is already durable in PostgreSQL before the relay sees it, which
+ * is what makes a broker outage cost delivery time and nothing else.
+ *
+ * The store is resolved on each drain rather than here, so importing this
+ * module still neither requires a database nor opens a connection to one; a
+ * drain that cannot resolve it fails, is logged, and is retried.
+ */
+export const outboxRelay = startOutboxRelay({
+  redisUrl: process.env.REDIS_URL,
+  store: {
+    listPendingOutbox: (limit) => stateStore().listPendingOutbox(limit),
+    markOutboxPublished: (outboxIds) =>
+      stateStore().markOutboxPublished(outboxIds),
+  },
+});
+
+/**
+ * The generated server drains HTTP and shuts Mastra down on these signals, and
+ * then exits the process. Releasing the transport is registered here, and is
+ * allowed to be cut short: a record is marked delivered only after it is
+ * published, so an interrupted drain republishes rather than loses.
+ */
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => {
+    outboxRelay?.stop().catch(() => undefined);
+  });
+}

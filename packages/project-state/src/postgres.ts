@@ -11,8 +11,11 @@ import {
 import {
   type BuildSession,
   type BuildSessionId,
+  BuildSessionIdSchema,
   BuildSessionSchema,
   type SandboxEnvironment,
+  type SandboxEnvironmentId,
+  SandboxEnvironmentIdSchema,
   SandboxEnvironmentSchema,
 } from "@reasonateai/contracts/execution";
 import {
@@ -23,6 +26,7 @@ import {
   type RunLease,
   RunLeaseSchema,
   type RunStatus,
+  RunStatusSchema,
   runEventTopic,
 } from "@reasonateai/contracts/execution-protocol";
 import {
@@ -33,6 +37,7 @@ import {
   ProjectIdSchema,
   type ProjectRole,
   type RunId,
+  RunIdSchema,
   type SessionId,
   type UserId,
 } from "@reasonateai/contracts/identity";
@@ -117,6 +122,45 @@ export interface DeploymentRecord {
   url: string | null;
 }
 
+/**
+ * A queued run a worker may claim, with everything the worker needs to scope
+ * and restore it. The workspace and sandbox come from the run's own build
+ * session and sandbox environment row, so a worker that was handed nothing but
+ * a run identifier never has to invent either.
+ */
+export interface RunnableRun {
+  buildSessionId: BuildSessionId;
+  organizationId: OrganizationId;
+  projectId: ProjectId;
+  runId: RunId;
+  sandboxEnvironmentId: SandboxEnvironmentId;
+  workspaceUri: string;
+}
+
+/** The durable run row, as the execution plane reads it. */
+export interface RunRecord {
+  buildSessionId: BuildSessionId;
+  createdAt: string;
+  organizationId: OrganizationId;
+  projectId: ProjectId;
+  runId: RunId;
+  status: RunStatus;
+  updatedAt: string;
+}
+
+/**
+ * The terminal outcome a worker reports for a run. It is the worker's word for
+ * what happened, not the ledger's status: `RunStatus` has no `succeeded`, so a
+ * successful finish is recorded as `completed`.
+ */
+export type RunFinishStatus = "succeeded" | "failed" | "cancelled";
+
+/** One worker's hold on a run, as committed to `run_leases`. */
+export interface RunLeaseGrant {
+  expiresAt: Date;
+  leaseId: string;
+}
+
 const ACTIVE_BUILD_SESSION_STATUSES = [
   "provisioning",
   "ready",
@@ -124,6 +168,20 @@ const ACTIVE_BUILD_SESSION_STATUSES = [
   "awaiting_approval",
   "blocked",
 ] as const;
+
+/**
+ * The statuses a run cannot leave. A terminal run is never claimed, and the
+ * first terminal outcome stands: a late completion neither overwrites it nor
+ * counts as having applied.
+ */
+const TERMINAL_RUN_STATUSES = ["completed", "failed", "cancelled"] as const;
+
+/** The ledger's status for each outcome a worker can report. */
+const FINISHED_RUN_STATUS = {
+  cancelled: "cancelled",
+  failed: "failed",
+  succeeded: "completed",
+} as const satisfies Record<RunFinishStatus, RunStatus>;
 
 /**
  * Arbitrary but stable advisory-lock key for this schema's migrations. Any
@@ -217,6 +275,19 @@ export interface ProjectStateStore {
     type: RunEventType;
   }) => Promise<RunEventEnvelope>;
   audit: AuditRepository;
+  /**
+   * Takes the run lease and moves the run to `running` in one statement, so a
+   * run is never running without a lease nor leased while queued. The lease is
+   * taken only when the run has not reached a terminal status and no live lease
+   * covers it, so a run abandoned by a dead worker becomes claimable again once
+   * its lease lapses while two live holders can never both win. `undefined`
+   * means another holder owns a live lease, or the run is already terminal.
+   */
+  beginRun: (input: {
+    holder: string;
+    runId: RunId;
+    ttlMs: number;
+  }) => Promise<RunLeaseGrant | undefined>;
   claimRunLease: (input: {
     holder: string;
     runId: RunId;
@@ -253,10 +324,31 @@ export interface ProjectStateStore {
     role: ProjectRole;
     userId: UserId;
   }) => Promise<ProjectView>;
+  /**
+   * Ends the run: the terminal status and the release of the lease commit
+   * together. Repeating the call converges rather than erroring, and a holder
+   * whose lease was taken over cannot end the run at all.
+   */
+  finishRun: (input: {
+    holder: string;
+    leaseId: string;
+    runId: RunId;
+    status: RunFinishStatus;
+  }) => Promise<boolean>;
   getBuildSession: (
     scope: TenantScope,
     buildSessionId: BuildSessionId
   ) => Promise<BuildSession | undefined>;
+  /**
+   * The run row, read through the caller's organization and project: a run
+   * outside that tenant scope is not found rather than filtered afterwards, so
+   * a caller cannot learn that another tenant's run exists.
+   */
+  getRun: (input: {
+    organizationId: OrganizationId;
+    projectId: ProjectId;
+    runId: RunId;
+  }) => Promise<RunRecord | undefined>;
   listArtifacts: (scope: TenantScope) => Promise<ArtifactRecord[]>;
   /**
    * The caller's own organizations, for the session view. Membership is
@@ -273,6 +365,14 @@ export interface ProjectStateStore {
     runId: RunId;
     scope: TenantScope;
   }) => Promise<RunEventEnvelope[]>;
+  /**
+   * The dispatch poll: runs that have not ended and that no live lease covers,
+   * oldest first, so the worker fleet discovers work from PostgreSQL rather
+   * than from a channel that can lose it. A run whose lease lapsed is still
+   * listed — that is how work abandoned by a dead worker is picked up again —
+   * because the claim, not the listing, decides the winner.
+   */
+  listRunnableRuns: (input: { limit: number }) => Promise<RunnableRun[]>;
   magicLinks: MagicLinkRepository;
   markOutboxPublished: (outboxIds: number[]) => Promise<void>;
   memberships: MembershipRepository;
@@ -297,6 +397,18 @@ export interface ProjectStateStore {
     leaseId: string;
     runId: RunId;
     scope: TenantScope;
+  }) => Promise<boolean>;
+  /**
+   * Extends the lease the caller still holds, and only that one: the row must
+   * still carry this holder and this lease id and must not have lapsed. A lease
+   * that expired mid-run reports `false` instead of being silently revived, and
+   * the lease id is kept, so a held lease stays releasable by the same id
+   * across renewals.
+   */
+  renewRunLease: (input: {
+    holder: string;
+    leaseId: string;
+    ttlMs: number;
   }) => Promise<boolean>;
   sessions: SessionRepository;
   setRunStatus: (input: {
@@ -628,6 +740,244 @@ export function createProjectStateStore(config: {
     return await withTransaction(
       async (client) => await insertRunEvent(client, input)
     );
+  }
+
+  /**
+   * The run's dispatch poll: the runs a claim would accept, oldest first. A run
+   * is offered while it has not reached a terminal status and no live lease
+   * covers it, which is exactly the predicate `beginRun` applies, so the poll
+   * and the claim agree about what is runnable.
+   *
+   * A lapsed lease is therefore still offered — that is the only way a run
+   * abandoned by a worker that died is ever picked up again — and rejection
+   * here would be a decision made against a snapshot the claim is about to act
+   * on anyway. Ordering is by creation, oldest first, with the run id breaking
+   * ties so a fleet of workers polling the same window walks runs in the same
+   * order.
+   *
+   * The joins are tenant-qualified on both sides, so a listing can never pair a
+   * run with another tenant's build session or sandbox, and they are inner
+   * joins, so a run whose session or sandbox row is missing is not offered as
+   * runnable work the worker could not start.
+   */
+  async function listRunnableRuns(input: {
+    limit: number;
+  }): Promise<RunnableRun[]> {
+    const result = await pool.query(
+      `select r.run_id,
+              r.organization_id,
+              r.project_id,
+              r.build_session_id,
+              bs.sandbox_environment_id,
+              se.workspace_uri
+         from runs r
+         join build_sessions bs
+           on bs.build_session_id = r.build_session_id
+          and bs.organization_id = r.organization_id
+          and bs.project_id = r.project_id
+         join sandbox_environments se
+           on se.sandbox_environment_id = bs.sandbox_environment_id
+          and se.organization_id = r.organization_id
+          and se.project_id = r.project_id
+        where r.status <> all($2::text[])
+          and not exists (
+            select 1
+              from run_leases lease
+             where lease.run_id = r.run_id
+               and lease.expires_at > now()
+          )
+        order by r.created_at asc, r.run_id asc
+        limit $1`,
+      [input.limit, [...TERMINAL_RUN_STATUSES]]
+    );
+
+    return result.rows.map((row) => ({
+      buildSessionId: BuildSessionIdSchema.parse(row.build_session_id),
+      organizationId: OrganizationIdSchema.parse(row.organization_id),
+      projectId: ProjectIdSchema.parse(row.project_id),
+      runId: RunIdSchema.parse(row.run_id),
+      sandboxEnvironmentId: SandboxEnvironmentIdSchema.parse(
+        row.sandbox_environment_id
+      ),
+      workspaceUri: SandboxEnvironmentSchema.shape.workspaceUri.parse(
+        row.workspace_uri
+      ),
+    }));
+  }
+
+  /**
+   * The run row through the caller's tenant scope. Both the organization and
+   * the project are in the predicate, so a run belonging to another tenant —
+   * or to another project of the caller's own organization — is absent from the
+   * result rather than fetched and filtered, which is what keeps a caller from
+   * learning that it exists.
+   */
+  async function getRun(input: {
+    organizationId: OrganizationId;
+    projectId: ProjectId;
+    runId: RunId;
+  }): Promise<RunRecord | undefined> {
+    const result = await pool.query(
+      `select run_id, organization_id, project_id, build_session_id, status,
+              created_at, updated_at
+         from runs
+        where run_id = $1
+          and organization_id = $2
+          and project_id = $3`,
+      [input.runId, input.organizationId, input.projectId]
+    );
+
+    const [row] = result.rows;
+    if (!row) {
+      return undefined;
+    }
+
+    return {
+      buildSessionId: BuildSessionIdSchema.parse(row.build_session_id),
+      createdAt: asIso(row.created_at as Date),
+      organizationId: OrganizationIdSchema.parse(row.organization_id),
+      projectId: ProjectIdSchema.parse(row.project_id),
+      runId: RunIdSchema.parse(row.run_id),
+      status: RunStatusSchema.parse(row.status),
+      updatedAt: asIso(row.updated_at as Date),
+    };
+  }
+
+  /**
+   * The claim. Taking the lease and moving the run to `running` is one
+   * statement, so no observer ever sees a leased run that is still queued or a
+   * running run without the lease that authorises it.
+   *
+   * The lease is written only for a run that has not reached a terminal status,
+   * and against an existing lease only when that lease has lapsed. A run left
+   * `running` by a worker that died is therefore reclaimable once its lease
+   * expires, and the winner's lease id replaces the dead holder's — recovery
+   * without ever letting two holders own one run. A live lease held by anyone,
+   * including the caller itself, yields no row: `beginRun` takes or renews
+   * nothing that exists, and a holder that wants more time renews it instead.
+   */
+  async function beginRun(input: {
+    holder: string;
+    runId: RunId;
+    ttlMs: number;
+  }): Promise<RunLeaseGrant | undefined> {
+    const result = await pool.query<{ expires_at: Date; lease_id: string }>(
+      `with claimed as (
+         insert into run_leases (run_id, lease_id, holder, expires_at)
+         select r.run_id, $2::uuid, $3::text,
+                now() + make_interval(secs => $4::double precision)
+           from runs r
+          where r.run_id = $1::uuid
+            and r.status <> all($5::text[])
+         on conflict (run_id) do update
+            set lease_id = excluded.lease_id,
+                holder = excluded.holder,
+                expires_at = excluded.expires_at,
+                updated_at = now()
+          where run_leases.expires_at <= now()
+         returning lease_id, expires_at
+       )
+       update runs
+          set status = 'running', updated_at = now()
+         from claimed
+        where runs.run_id = $1::uuid
+          and runs.status <> all($5::text[])
+       returning claimed.lease_id, claimed.expires_at`,
+      [
+        input.runId,
+        randomUUID(),
+        input.holder,
+        input.ttlMs / 1000,
+        [...TERMINAL_RUN_STATUSES],
+      ]
+    );
+
+    const [row] = result.rows;
+    if (!row) {
+      return undefined;
+    }
+
+    return { expiresAt: row.expires_at, leaseId: row.lease_id };
+  }
+
+  /**
+   * Extends a live lease in place. Every part of the identity is matched — the
+   * lease id, the holder, and the fact that it has not already lapsed — so a
+   * renewal can never revive a lease another worker may already have taken
+   * over, and an expired one is reported as `false` for the holder to act on
+   * instead of being quietly extended. The lease id survives the renewal, which
+   * is what lets the holder release or finish with the id it was granted.
+   */
+  async function renewRunLease(input: {
+    holder: string;
+    leaseId: string;
+    ttlMs: number;
+  }): Promise<boolean> {
+    const result = await pool.query(
+      `update run_leases
+          set expires_at = now() + make_interval(secs => $3::double precision),
+              updated_at = now()
+        where lease_id = $1::uuid
+          and holder = $2::text
+          and expires_at > now()
+        returning run_id`,
+      [input.leaseId, input.holder, input.ttlMs / 1000]
+    );
+
+    return result.rowCount === 1;
+  }
+
+  /**
+   * The run's end. Releasing the lease and writing the terminal status are one
+   * transaction, so a run is never left terminal while a live lease still
+   * covers it, nor running after it has ended.
+   *
+   * The release matches only the caller's own lease identity, and the status
+   * write is refused while any live lease remains, so a holder whose lease
+   * lapsed and was taken over cannot end someone else's run. The call is
+   * idempotent: a repeat after a crash finds the lease already gone and the run
+   * already at the requested status and still reports success, while a run that
+   * ended differently — the first terminal outcome stands — reports `false`
+   * rather than reporting work that did not happen.
+   */
+  async function finishRun(input: {
+    holder: string;
+    leaseId: string;
+    runId: RunId;
+    status: RunFinishStatus;
+  }): Promise<boolean> {
+    const status = FINISHED_RUN_STATUS[input.status];
+
+    return await withTransaction(async (client) => {
+      await client.query(
+        `delete from run_leases
+          where run_id = $1
+            and lease_id = $2
+            and holder = $3`,
+        [input.runId, input.leaseId, input.holder]
+      );
+
+      await client.query(
+        `update runs
+            set status = $2, updated_at = now()
+          where run_id = $1
+            and status <> all($3::text[])
+            and not exists (
+              select 1
+                from run_leases lease
+               where lease.run_id = $1
+                 and lease.expires_at > now()
+            )`,
+        [input.runId, status, [...TERMINAL_RUN_STATUSES]]
+      );
+
+      const current = await client.query<{ status: string }>(
+        "select status from runs where run_id = $1",
+        [input.runId]
+      );
+
+      return current.rows[0]?.status === status;
+    });
   }
 
   /**
@@ -1083,6 +1433,7 @@ export function createProjectStateStore(config: {
     allocateBuildSession,
     appendRunEvent,
     audit,
+    beginRun,
     claimRunLease,
     close: async () => {
       await rateLimiter.close();
@@ -1090,11 +1441,14 @@ export function createProjectStateStore(config: {
     },
     createOrganizationWithOwner,
     createProject,
+    finishRun,
     getBuildSession,
+    getRun,
     listArtifacts,
     listOrganizationMemberships,
     listPendingOutbox,
     listRunEvents,
+    listRunnableRuns,
     magicLinks,
     markOutboxPublished,
     memberships,
@@ -1144,6 +1498,7 @@ export function createProjectStateStore(config: {
     recordArtifact,
     recordDeployment,
     releaseRunLease,
+    renewRunLease,
     sessions,
     setRunStatus,
     usage,

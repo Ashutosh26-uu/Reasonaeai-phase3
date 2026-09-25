@@ -28,6 +28,9 @@ export function createRedisStreamPublisher(config: {
   const keyPrefix = config.keyPrefix ?? DEFAULT_REDIS_KEY_PREFIX;
   const maxStreamLength = config.maxStreamLength ?? 10_000;
   const client = createClient({ url: config.url });
+  // A transport error rejects the publish in flight; the listener only stops an
+  // unhandled 'error' event from taking the process down.
+  client.on("error", () => undefined);
   let connecting: Promise<unknown> | undefined;
 
   async function connected(): Promise<unknown> {
