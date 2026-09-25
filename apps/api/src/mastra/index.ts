@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Mastra } from "@mastra/core/mastra";
 import { registerApiRoute } from "@mastra/core/server";
 import { MastraCompositeStore } from "@mastra/core/storage";
@@ -8,6 +10,8 @@ import {
   Observability,
   SensitiveDataFilter,
 } from "@mastra/observability";
+import type { ArtifactStore } from "@reasonateai/artifact-store";
+import { createLocalArtifactStore } from "@reasonateai/artifact-store/local";
 import { createReasonateCtoRuntime } from "@reasonateai/cto-runtime";
 import {
   createProjectStateStore,
@@ -18,6 +22,12 @@ import { createCsrfMiddleware } from "./middleware";
 import { frontierModel } from "./model";
 import { startOutboxRelay } from "./outbox-relay";
 import { resolveSessionPrincipal } from "./principal";
+import {
+  ARTIFACT_ACCESS_PATH,
+  ARTIFACT_COLLECTION_PATH,
+  ARTIFACT_DOWNLOAD_PATH,
+  createArtifactHandlers,
+} from "./routes/artifacts";
 import {
   AUTH_CALLBACK_PATH,
   AUTH_SESSION_PATH,
@@ -70,6 +80,41 @@ function stateStore(): ProjectStateStore {
     sessionIdleTtlMs: SESSION_IDLE_TTL_MS,
   });
   return projectStateStore;
+}
+
+/**
+ * Where the local filesystem artifact store keeps its tenant-scoped objects.
+ * A deployment points the same provider-neutral contract at private object
+ * storage; locally it is a private host directory outside the repository, so a
+ * run never writes artifacts into version control.
+ */
+const artifactRoot =
+  process.env.REASONATE_ARTIFACT_ROOT ?? join(tmpdir(), "reasonate-artifacts");
+
+/**
+ * The secret that keys short-lived artifact download URLs. Like the session
+ * secret it is read when the first URL is minted rather than at import, so the
+ * artifact can be built without the deployment's secrets and a deployment that
+ * never provides one fails its first signed URL loudly.
+ */
+function artifactUrlSecret(): string {
+  const secret = process.env.REASONATE_ARTIFACT_URL_SECRET;
+  if (!secret) {
+    throw new Error(
+      "REASONATE_ARTIFACT_URL_SECRET is required: signed artifact URLs cannot be protected without it."
+    );
+  }
+  return secret;
+}
+
+let artifactStore: ArtifactStore | undefined;
+
+function localArtifacts(): ArtifactStore {
+  if (artifactStore) {
+    return artifactStore;
+  }
+  artifactStore = createLocalArtifactStore({ root: artifactRoot });
+  return artifactStore;
 }
 
 const environment = process.env.NODE_ENV ?? "";
@@ -152,6 +197,14 @@ const runEventHandlers = createRunEventHandlers({
   store: stateStore,
 });
 
+const artifactHandlers = createArtifactHandlers({
+  artifacts: localArtifacts,
+  publicOrigin,
+  resolvePrincipal: resolvePrincipalFrom,
+  secret: artifactUrlSecret,
+  store: stateStore,
+});
+
 const storage = new MastraCompositeStore({
   default: new LibSQLStore({
     authToken: process.env.TURSO_AUTH_TOKEN || undefined,
@@ -227,6 +280,46 @@ export const mastra = new Mastra({
             "Streams a run's durable events as server-sent events, replaying from Last-Event-ID before following live.",
           summary: "Follow build session events",
           tags: ["Build sessions"],
+        },
+      }),
+      registerApiRoute(ARTIFACT_COLLECTION_PATH, {
+        handler: (c) => artifactHandlers.record(c),
+        method: "POST",
+        openapi: {
+          description:
+            "Records an artifact for a run: the bytes are written to tenant-scoped object storage and their metadata is persisted, so the two agree.",
+          summary: "Record an artifact",
+          tags: ["Artifacts"],
+        },
+      }),
+      registerApiRoute(ARTIFACT_COLLECTION_PATH, {
+        handler: (c) => artifactHandlers.list(c),
+        method: "GET",
+        openapi: {
+          description:
+            "Lists the caller's artifacts for a project. A caller outside the organization or project is refused rather than shown an empty list.",
+          summary: "List a project's artifacts",
+          tags: ["Artifacts"],
+        },
+      }),
+      registerApiRoute(ARTIFACT_ACCESS_PATH, {
+        handler: (c) => artifactHandlers.access(c),
+        method: "GET",
+        openapi: {
+          description:
+            "Mints a short-lived signed download URL for one artifact after authorization. It returns a URL, never the bytes and never a permanent link.",
+          summary: "Mint artifact access",
+          tags: ["Artifacts"],
+        },
+      }),
+      registerApiRoute(ARTIFACT_DOWNLOAD_PATH, {
+        handler: (c) => artifactHandlers.download(c),
+        method: "GET",
+        openapi: {
+          description:
+            "Streams artifact bytes for a verified signed token. A tampered, expired, or foreign-tenant token is refused with no bytes.",
+          summary: "Download an artifact",
+          tags: ["Artifacts"],
         },
       }),
       registerApiRoute(MAGIC_LINKS_PATH, {

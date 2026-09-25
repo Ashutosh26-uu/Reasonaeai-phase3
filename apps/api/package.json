@@ -23,6 +23,7 @@
     "@mastra/duckdb": "^1.9.0",
     "@mastra/libsql": "^1.23.0",
     "@mastra/observability": "^1.17.8",
+    "@reasonateai/artifact-store": "workspace:*",
     "@reasonateai/auth": "workspace:*",
     "@reasonateai/contracts": "workspace:*",
     "@reasonateai/cto-runtime": "workspace:*",
