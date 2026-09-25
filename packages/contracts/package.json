@@ -8,6 +8,10 @@
       "types": "./src/api-error.ts",
       "import": "./dist/api-error.js"
     },
+    "./auth": {
+      "types": "./src/auth.ts",
+      "import": "./dist/auth.js"
+    },
     "./authorization": {
       "types": "./src/authorization.ts",
       "import": "./dist/authorization.js"

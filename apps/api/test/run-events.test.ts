@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { SESSION_COOKIE } from "@reasonateai/contracts/auth";
 import {
   type RunEventEnvelope,
   runEventTopic,
@@ -367,7 +368,7 @@ describeWithDatabase("run event stream", () => {
       idleTtlMs: HOUR,
       userId,
     });
-    cookie = `reasonate_session=${issued.token}`;
+    cookie = `${SESSION_COOKIE}=${issued.token}`;
   });
 
   afterAll(async () => {

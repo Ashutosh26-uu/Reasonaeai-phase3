@@ -3,6 +3,7 @@ import {
   ApiErrorSchema,
   apiErrorStatus,
 } from "@reasonateai/contracts/api-error";
+import { SESSION_COOKIE } from "@reasonateai/contracts/auth";
 import {
   SessionSchema,
   type UserPrincipal,
@@ -10,17 +11,18 @@ import {
 } from "@reasonateai/contracts/identity";
 import type { SessionRepository } from "@reasonateai/project-state/sessions";
 
-export const SESSION_COOKIE_NAME = "reasonate_session";
 export const PRINCIPAL_CONTEXT_KEY = "reasonateai.principal";
 
 /**
  * Reads one cookie from a `Cookie` header without decoding or normalizing the
- * value. Session tokens are base64url and contain no separators, so the value
- * is taken verbatim and never URL-decoded into a different value.
+ * value. Session tokens and CSRF tokens are base64url and contain no
+ * separators, so the value is taken verbatim and never URL-decoded into a
+ * different value. This is the only cookie parser in the API: the session
+ * cookie and its CSRF companion are read by the same rules.
  */
-export function readSessionCookie(
+export function readCookie(
   cookieHeader: string | undefined,
-  name: string = SESSION_COOKIE_NAME
+  name: string
 ): string | undefined {
   if (!cookieHeader) {
     return undefined;
@@ -41,7 +43,12 @@ export function readSessionCookie(
   return undefined;
 }
 
-function effectiveExpiry(session: {
+/**
+ * The earlier of a session's two deadlines, which is the moment trust in it
+ * ends. Idle expiry moves with activity and absolute expiry does not, so
+ * whichever comes first is the one a principal may rely on.
+ */
+export function effectiveSessionExpiry(session: {
   absoluteExpiresAt: string;
   idleExpiresAt: string;
 }): string {
@@ -49,6 +56,22 @@ function effectiveExpiry(session: {
     new Date(session.absoluteExpiresAt).getTime()
     ? session.idleExpiresAt
     : session.absoluteExpiresAt;
+}
+
+/**
+ * The body of a request, or `undefined` when it is not JSON at all. A caller
+ * that sends a body this API cannot read is a boundary failure like any other
+ * invalid input, so it is answered with the route's typed refusal rather than
+ * escaping as a framework-level 500.
+ */
+export async function readJsonBody(request: {
+  json: () => Promise<unknown>;
+}): Promise<unknown> {
+  try {
+    return await request.json();
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -67,7 +90,10 @@ export async function resolveSessionPrincipal(input: {
   now?: Date;
   sessions: SessionRepository;
 }): Promise<UserPrincipal | undefined> {
-  const token = readSessionCookie(input.cookieHeader, input.cookieName);
+  const token = readCookie(
+    input.cookieHeader,
+    input.cookieName ?? SESSION_COOKIE
+  );
   if (!token) {
     return undefined;
   }
@@ -77,7 +103,7 @@ export async function resolveSessionPrincipal(input: {
     return undefined;
   }
 
-  const expiresAt = effectiveExpiry(session);
+  const expiresAt = effectiveSessionExpiry(session);
   const now = input.now ?? new Date();
   if (new Date(expiresAt).getTime() <= now.getTime()) {
     return undefined;

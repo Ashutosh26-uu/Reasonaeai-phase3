@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as wait } from "node:timers/promises";
 import {
+  type CreateOrganizationResponse,
+  CreateOrganizationResponseSchema,
+  type OrganizationSummary,
+  OrganizationSummarySchema,
+  type ProjectView,
+  ProjectViewSchema,
+} from "@reasonateai/contracts/auth";
+import {
   type BuildSession,
   type BuildSessionId,
   BuildSessionSchema,
@@ -17,13 +25,31 @@ import {
   type RunStatus,
   runEventTopic,
 } from "@reasonateai/contracts/execution-protocol";
-import type {
-  OrganizationId,
-  ProjectId,
-  RunId,
-  SessionId,
+import {
+  type AuditEvent,
+  type OrganizationId,
+  OrganizationIdSchema,
+  type ProjectId,
+  ProjectIdSchema,
+  type ProjectRole,
+  type RunId,
+  type SessionId,
+  type UserId,
 } from "@reasonateai/contracts/identity";
 import { Pool, type PoolClient } from "pg";
+import {
+  type AuditRepository,
+  createAuditRepository,
+  recordWith,
+} from "./audit.js";
+import {
+  AUDIT_MIGRATION_SQL,
+  AUTH_TOKEN_MIGRATION_SQL,
+} from "./auth-schema.js";
+import {
+  createMagicLinkRepository,
+  type MagicLinkRepository,
+} from "./magic-links.js";
 import { MEMBERSHIP_MIGRATION_SQL } from "./membership-schema.js";
 import {
   createMembershipRepository,
@@ -35,6 +61,7 @@ import { AUTH_SESSION_MIGRATION_SQL } from "./session-schema.js";
 import { createSessionRepository, type SessionRepository } from "./sessions.js";
 import { createUsageRepository, type UsageRepository } from "./usage.js";
 import { USAGE_MIGRATION_SQL } from "./usage-schema.js";
+import { createUserRepository, type UserRepository } from "./users.js";
 
 export interface TenantScope {
   organizationId: OrganizationId;
@@ -189,6 +216,7 @@ export interface ProjectStateStore {
     scope: TenantScope;
     type: RunEventType;
   }) => Promise<RunEventEnvelope>;
+  audit: AuditRepository;
   claimRunLease: (input: {
     holder: string;
     runId: RunId;
@@ -196,11 +224,48 @@ export interface ProjectStateStore {
     ttlMs: number;
   }) => Promise<RunLease | undefined>;
   close: () => Promise<void>;
+  /**
+   * Creates an organization and its owner membership, and records the audit
+   * event that describes it, in one transaction: a tenant without an owner, or
+   * an owner in a tenant nothing recorded, cannot exist.
+   *
+   * The organization identifier comes from the event's own `organizationId`
+   * when the caller minted one and is generated here otherwise, so the stored
+   * event always names the organization it was committed with.
+   */
+  createOrganizationWithOwner: (input: {
+    audit: AuditEvent;
+    name: string;
+    userId: UserId;
+  }) => Promise<CreateOrganizationResponse>;
+  /**
+   * Creates a project, its membership for the caller, and the audit event that
+   * describes it, in one transaction.
+   *
+   * The project identifier comes from the event's own `projectId` when the
+   * caller minted one and is generated here otherwise; the audit row is stamped
+   * with `organizationId`, which is the scope the caller was authorized for.
+   */
+  createProject: (input: {
+    audit: AuditEvent;
+    name: string;
+    organizationId: OrganizationId;
+    role: ProjectRole;
+    userId: UserId;
+  }) => Promise<ProjectView>;
   getBuildSession: (
     scope: TenantScope,
     buildSessionId: BuildSessionId
   ) => Promise<BuildSession | undefined>;
   listArtifacts: (scope: TenantScope) => Promise<ArtifactRecord[]>;
+  /**
+   * The caller's own organizations, for the session view. Membership is
+   * resolved from the caller's identifier and nowhere else, so a caller cannot
+   * ask about another user's tenancy.
+   */
+  listOrganizationMemberships: (input: {
+    userId: UserId;
+  }) => Promise<OrganizationSummary[]>;
   listPendingOutbox: (limit: number) => Promise<OutboxRecord[]>;
   listRunEvents: (input: {
     afterSequence: number;
@@ -208,6 +273,7 @@ export interface ProjectStateStore {
     runId: RunId;
     scope: TenantScope;
   }) => Promise<RunEventEnvelope[]>;
+  magicLinks: MagicLinkRepository;
   markOutboxPublished: (outboxIds: number[]) => Promise<void>;
   memberships: MembershipRepository;
   migrate: () => Promise<void>;
@@ -239,6 +305,7 @@ export interface ProjectStateStore {
     status: RunStatus;
   }) => Promise<boolean>;
   usage: UsageRepository;
+  users: UserRepository;
 }
 
 async function insertRunEvent(
@@ -398,6 +465,9 @@ export function createProjectStateStore(config: {
   const rateLimiter = createRateLimiter({
     url: config.redisUrl ?? process.env.REDIS_URL,
   });
+  const audit = createAuditRepository(pool);
+  const magicLinks = createMagicLinkRepository(pool);
+  const users = createUserRepository(pool);
 
   async function withTransaction<T>(
     run: (client: PoolClient) => Promise<T>
@@ -558,6 +628,93 @@ export function createProjectStateStore(config: {
     return await withTransaction(
       async (client) => await insertRunEvent(client, input)
     );
+  }
+
+  /**
+   * The event is written through this transaction's client rather than the
+   * pool, which is what makes an organization, its owner membership, and the
+   * record of its creation one atomic change: a failure anywhere in it rolls
+   * back all three, so neither an ownerless tenant nor an unrecorded one can
+   * survive. The identifier is taken from the event when the caller already
+   * minted it, and the event is stored with whichever identifier this
+   * transaction committed.
+   */
+  async function createOrganizationWithOwner(input: {
+    audit: AuditEvent;
+    name: string;
+    userId: UserId;
+  }): Promise<CreateOrganizationResponse> {
+    return await withTransaction(async (client) => {
+      const organizationId =
+        input.audit.organizationId ?? OrganizationIdSchema.parse(randomUUID());
+
+      await client.query(
+        "insert into organizations (organization_id, name) values ($1, $2)",
+        [organizationId, input.name]
+      );
+
+      await client.query(
+        `insert into organization_memberships
+           (organization_id, user_id, role, status)
+         values ($1, $2, 'owner', 'active')`,
+        [organizationId, input.userId]
+      );
+
+      await recordWith(client, { ...input.audit, organizationId });
+
+      return CreateOrganizationResponseSchema.parse({
+        membershipRole: "owner",
+        name: input.name,
+        organizationId,
+      });
+    });
+  }
+
+  /**
+   * Project, membership, and audit row commit together, as organization
+   * creation does. The project identifier is taken from the event when the
+   * caller minted it, and the audit row is stamped with the organization the
+   * caller was authorized for rather than with whatever the event named, so a
+   * trail entry cannot describe a project in an organization the creation did
+   * not use.
+   */
+  async function createProject(input: {
+    audit: AuditEvent;
+    name: string;
+    organizationId: OrganizationId;
+    role: ProjectRole;
+    userId: UserId;
+  }): Promise<ProjectView> {
+    return await withTransaction(async (client) => {
+      const projectId =
+        input.audit.projectId ?? ProjectIdSchema.parse(randomUUID());
+
+      await client.query(
+        `insert into projects (project_id, organization_id, name)
+         values ($1, $2, $3)`,
+        [projectId, input.organizationId, input.name]
+      );
+
+      await client.query(
+        `insert into project_memberships
+           (organization_id, project_id, user_id, role, status)
+         values ($1, $2, $3, $4, 'active')`,
+        [input.organizationId, projectId, input.userId, input.role]
+      );
+
+      await recordWith(client, {
+        ...input.audit,
+        organizationId: input.organizationId,
+        projectId,
+      });
+
+      return ProjectViewSchema.parse({
+        name: input.name,
+        organizationId: input.organizationId,
+        projectId,
+        role: input.role,
+      });
+    });
   }
 
   async function claimRunLease(input: {
@@ -836,6 +993,34 @@ export function createProjectStateStore(config: {
     }));
   }
 
+  /**
+   * Only active memberships are listed. An invited or suspended membership is
+   * not a tenancy the caller can act in, and the session view has no field that
+   * could qualify it, so offering one would present an organization that every
+   * authorization decision afterwards refuses.
+   */
+  async function listOrganizationMemberships(input: {
+    userId: UserId;
+  }): Promise<OrganizationSummary[]> {
+    const result = await pool.query(
+      `select o.organization_id, o.name, m.role
+         from organization_memberships m
+         join organizations o on o.organization_id = m.organization_id
+        where m.user_id = $1
+          and m.status = 'active'
+        order by o.created_at asc, o.organization_id asc`,
+      [input.userId]
+    );
+
+    return result.rows.map((row) =>
+      OrganizationSummarySchema.parse({
+        name: row.name,
+        organizationId: row.organization_id,
+        role: row.role,
+      })
+    );
+  }
+
   async function recordDeployment(input: {
     deploymentId: string;
     exposure: string;
@@ -897,15 +1082,20 @@ export function createProjectStateStore(config: {
   return {
     allocateBuildSession,
     appendRunEvent,
+    audit,
     claimRunLease,
     close: async () => {
       await rateLimiter.close();
       await pool.end();
     },
+    createOrganizationWithOwner,
+    createProject,
     getBuildSession,
     listArtifacts,
+    listOrganizationMemberships,
     listPendingOutbox,
     listRunEvents,
+    magicLinks,
     markOutboxPublished,
     memberships,
     migrate: async () => {
@@ -929,6 +1119,10 @@ export function createProjectStateStore(config: {
             await client.query(AUTH_SESSION_MIGRATION_SQL);
             await client.query(MEMBERSHIP_MIGRATION_SQL);
             await client.query(USAGE_MIGRATION_SQL);
+            // Both reference the organization, project, and user tables above,
+            // so they are applied after them in this same transaction.
+            await client.query(AUTH_TOKEN_MIGRATION_SQL);
+            await client.query(AUDIT_MIGRATION_SQL);
           });
         } catch (error) {
           if (
@@ -953,5 +1147,6 @@ export function createProjectStateStore(config: {
     sessions,
     setRunStatus,
     usage,
+    users,
   };
 }

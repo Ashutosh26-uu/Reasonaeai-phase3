@@ -31,6 +31,20 @@ export interface RateLimiter {
     organizationId: string;
     requestsPerDay: number;
   }) => Promise<RateLimitDecision>;
+  /**
+   * The same decision keyed on an arbitrary caller-chosen key.
+   *
+   * Sign-in has no organization to count against: the request arrives before
+   * the caller is anyone, so the identity endpoints key on what is known at that
+   * moment — the requesting address, or the address being signed in. `consume`
+   * is this with the organization as the key, so both share one implementation
+   * and one window definition.
+   */
+  consumeKey: (input: {
+    burstPerMinute: number;
+    key: string;
+    requestsPerDay: number;
+  }) => Promise<RateLimitDecision>;
 }
 
 const MINUTE_MS = 60_000;
@@ -110,6 +124,48 @@ export function createRateLimiter(config: {
     return client;
   }
 
+  const consumeKey: RateLimiter["consumeKey"] = async (input) => {
+    const now = Date.now();
+    // Buckets are aligned to the UTC clock, so every replica counts a request
+    // in the same window without coordinating.
+    const minuteBucket = Math.floor(now / MINUTE_MS);
+    const dayBucket = Math.floor(now / DAY_MS);
+    const minuteTtl = Math.ceil((MINUTE_MS - (now % MINUTE_MS)) / 1000);
+    const dayTtl = Math.ceil((DAY_MS - (now % DAY_MS)) / 1000);
+
+    let reply: unknown;
+    try {
+      const active = await connected();
+      reply = await active.eval(COUNT_REQUEST_SCRIPT, {
+        arguments: [String(minuteTtl), String(dayTtl)],
+        keys: [
+          `${keyPrefix}:ratelimit:${input.key}:minute:${minuteBucket}`,
+          `${keyPrefix}:ratelimit:${input.key}:day:${dayBucket}`,
+        ],
+      });
+    } catch (error) {
+      throw new Error(UNAVAILABLE, { cause: error });
+    }
+
+    const observation = readCounters(reply);
+
+    const minuteOver = observation.perMinute > input.burstPerMinute;
+    const dayOver = observation.perDay > input.requestsPerDay;
+    if (!(minuteOver || dayOver)) {
+      return { allowed: true, observed: observation };
+    }
+
+    return {
+      allowed: false,
+      observed: observation,
+      retryAfterSeconds: Math.max(
+        1,
+        minuteOver ? minuteTtl : 0,
+        dayOver ? dayTtl : 0
+      ),
+    };
+  };
+
   return {
     close: async () => {
       if (client?.isOpen) {
@@ -117,46 +173,13 @@ export function createRateLimiter(config: {
       }
     },
 
-    consume: async (input) => {
-      const now = Date.now();
-      // Buckets are aligned to the UTC clock, so every replica counts a request
-      // in the same window without coordinating.
-      const minuteBucket = Math.floor(now / MINUTE_MS);
-      const dayBucket = Math.floor(now / DAY_MS);
-      const minuteTtl = Math.ceil((MINUTE_MS - (now % MINUTE_MS)) / 1000);
-      const dayTtl = Math.ceil((DAY_MS - (now % DAY_MS)) / 1000);
+    consume: async (input) =>
+      await consumeKey({
+        burstPerMinute: input.burstPerMinute,
+        key: input.organizationId,
+        requestsPerDay: input.requestsPerDay,
+      }),
 
-      let reply: unknown;
-      try {
-        const active = await connected();
-        reply = await active.eval(COUNT_REQUEST_SCRIPT, {
-          arguments: [String(minuteTtl), String(dayTtl)],
-          keys: [
-            `${keyPrefix}:ratelimit:${input.organizationId}:minute:${minuteBucket}`,
-            `${keyPrefix}:ratelimit:${input.organizationId}:day:${dayBucket}`,
-          ],
-        });
-      } catch (error) {
-        throw new Error(UNAVAILABLE, { cause: error });
-      }
-
-      const observation = readCounters(reply);
-
-      const minuteOver = observation.perMinute > input.burstPerMinute;
-      const dayOver = observation.perDay > input.requestsPerDay;
-      if (!(minuteOver || dayOver)) {
-        return { allowed: true, observed: observation };
-      }
-
-      return {
-        allowed: false,
-        observed: observation,
-        retryAfterSeconds: Math.max(
-          1,
-          minuteOver ? minuteTtl : 0,
-          dayOver ? dayTtl : 0
-        ),
-      };
-    },
+    consumeKey,
   };
 }
