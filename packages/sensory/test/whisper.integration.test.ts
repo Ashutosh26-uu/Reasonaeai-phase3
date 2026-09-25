@@ -4,7 +4,9 @@ import { createWhisperProvider } from "../src/asr/whisper.js";
 
 describe("Whisper provider integration", () => {
   it("transcribes audio using OpenAI Whisper", async () => {
-    const audio = await readFile("/kaggle/working/test_audio.mp3");
+    const audio = await readFile(
+      new URL("./fixtures/login-page.mp3", import.meta.url)
+    );
 
     const provider = createWhisperProvider({
       model: "base",

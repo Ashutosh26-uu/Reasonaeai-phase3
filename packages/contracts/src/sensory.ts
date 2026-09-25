@@ -67,6 +67,7 @@ export interface TTSAdapter {
 export const VisionInputSchema = z.strictObject({
   image: z.instanceof(Uint8Array),
   mimeType: z.string().min(1),
+  prompt: z.string().min(1).nullable(),
 });
 
 export type VisionInput = z.infer<typeof VisionInputSchema>;

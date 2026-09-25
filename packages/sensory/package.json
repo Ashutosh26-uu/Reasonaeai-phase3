@@ -8,6 +8,10 @@
       "types": "./src/asr/index.ts",
       "import": "./dist/asr/index.js"
     },
+    "./asr/whisper": {
+      "types": "./src/asr/whisper.ts",
+      "import": "./dist/asr/whisper.js"
+    },
     "./tts": {
       "types": "./src/tts/index.ts",
       "import": "./dist/tts/index.js"
@@ -15,6 +19,18 @@
     "./tts/piper": {
       "types": "./src/tts/piper.ts",
       "import": "./dist/tts/piper.js"
+    },
+    "./vision": {
+      "types": "./src/vision/vision.adapter.ts",
+      "import": "./dist/vision/vision.adapter.js"
+    },
+    "./vision/provider": {
+      "types": "./src/vision/vision.openai-compatible.provider.ts",
+      "import": "./dist/vision/vision.openai-compatible.provider.js"
+    },
+    "./gateway": {
+      "types": "./src/gateway/index.ts",
+      "import": "./dist/gateway/index.js"
     }
   },
   "scripts": {
