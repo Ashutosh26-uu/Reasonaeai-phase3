@@ -46,6 +46,7 @@ export const RunCommandTypeSchema = z.enum([
 export type RunCommandType = z.infer<typeof RunCommandTypeSchema>;
 
 export const RunEventTypeSchema = z.enum([
+  // --- Existing events (unchanged) ---
   "run.queued",
   "run.claimed",
   "sandbox.allocated",
@@ -65,6 +66,19 @@ export const RunEventTypeSchema = z.enum([
   "run.completed",
   "run.failed",
   "run.cancelled",
+  // --- New events for Checkpoint, Preview, Evidence, Deployment ---
+  /** Emitted by createCheckpointTool when git commit succeeds. */
+  "checkpoint.created",
+  /** Emitted by POST /v1/checkpoints/:id/restore when restoration is recorded. */
+  "checkpoint.restored",
+  /** Emitted by createPreviewTool or PATCH /v1/previews/:id on any status change. */
+  "preview.updated",
+  /** Emitted by createPreviewTool when health polling fails. */
+  "preview.failed",
+  /** Emitted by createEvidenceTool when an evidence record and artifact are persisted. */
+  "evidence.recorded",
+  /** Emitted by POST /v1/deployments/:id/rollback when rollback is recorded. */
+  "deployment.rolled_back",
 ]);
 export type RunEventType = z.infer<typeof RunEventTypeSchema>;
 

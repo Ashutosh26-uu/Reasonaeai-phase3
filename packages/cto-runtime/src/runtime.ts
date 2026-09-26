@@ -8,6 +8,8 @@ import type { RequestContext } from "@mastra/core/request-context";
 import type { MastraCompositeStore } from "@mastra/core/storage";
 import type { Workspace, WorkspaceFilesystem } from "@mastra/core/workspace";
 import { Memory } from "@mastra/memory";
+import type { ISandbox } from "@reasonateai/contracts/sandbox";
+import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
 import { materializeDelegatableSubagents } from "./agents/materialize.js";
 import { composeSystemPrompt } from "./context/compose.js";
 import type { PlatformFacts, SandboxCapacity } from "./context/environment.js";
@@ -18,7 +20,11 @@ import {
   type RunResources,
 } from "./resources/handlers/index.js";
 import { readRunScope, sandboxIdFor } from "./run-scope.js";
+import { createCheckpointTool } from "./tools/checkpoint.js";
+import { createDeploymentTool } from "./tools/deployment.js";
 import { createWorkspaceEditTool } from "./tools/edit.js";
+import { createEvidenceTool } from "./tools/evidence.js";
+import { createPreviewTool } from "./tools/preview.js";
 import { ReadSnapshotStore } from "./tools/read-snapshots.js";
 import { createWorkspaceReadTool } from "./tools/workspace-read.js";
 import { createWorkspaceWriteTool } from "./tools/write.js";
@@ -82,6 +88,9 @@ export interface ReasonateCtoRuntimeConfig {
    * the host while every command runs inside the sandbox.
    */
   platform?: PlatformFacts | undefined;
+  resolveSandbox?: (
+    requestContext: RequestContext
+  ) => Promise<ISandbox | undefined> | ISandbox | undefined;
   resourceId?: string;
   /**
    * Host directory under which run-scoped resource stores live: spilled read
@@ -91,6 +100,7 @@ export interface ReasonateCtoRuntimeConfig {
   resourcesRoot?: string;
   skills?: string[];
   storage?: MastraCompositeStore;
+  store?: () => ProjectStateStore;
   subagentModels?: Partial<CtoSubagentModels>;
   workspace: RuntimeWorkspace;
   workspaceRoot?: string;
@@ -199,6 +209,24 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
         ? {}
         : { root: config.workspaceRoot }),
     }),
+    ...(config.store
+      ? {
+          checkpoint: createCheckpointTool({
+            resolveSandbox: config.resolveSandbox,
+            store: config.store,
+          }),
+          deployment: createDeploymentTool({
+            store: config.store,
+          }),
+          evidence: createEvidenceTool({
+            store: config.store,
+          }),
+          preview: createPreviewTool({
+            resolveSandbox: config.resolveSandbox,
+            store: config.store,
+          }),
+        }
+      : {}),
   };
 
   const sessionStartedAt = new Date();

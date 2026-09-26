@@ -3,9 +3,14 @@ import {
   AllocateBuildSessionRequestSchema,
   BuildSessionAllocationSchema,
   BuildSessionSchema,
+  CreateDeploymentRequestSchema,
   canAdvanceProductLifecycle,
   DeploymentSchema,
+  EvidenceRecordSchema,
+  GitCheckpointSchema,
   isShareableDeployment,
+  PreviewSessionSchema,
+  RollbackDeploymentRequestSchema,
 } from "../src/execution.js";
 
 const ids = {
@@ -118,5 +123,76 @@ describe("product execution contracts", () => {
     expect(
       isShareableDeployment({ ...deployment, status: "deploying", url: null })
     ).toBe(false);
+  });
+
+  it("validates GitCheckpointSchema, PreviewSessionSchema, EvidenceRecordSchema, and Deployment request schemas", () => {
+    const checkpointId = "00000000-0000-4000-8000-000000000010";
+    const previewId = "00000000-0000-4000-8000-000000000011";
+    const evidenceId = "00000000-0000-4000-8000-000000000012";
+    const artifactId = "00000000-0000-4000-8000-000000000013";
+
+    const checkpoint = GitCheckpointSchema.parse({
+      author: "CTO Agent",
+      buildSessionId: ids.buildSessionId,
+      checkpointId,
+      commitHash: "a".repeat(40),
+      message: "feat: add user authentication",
+      occurredAt: now,
+      organizationId: ids.organizationId,
+      parentHash: "b".repeat(40),
+      projectId: ids.projectId,
+      runId: ids.runId,
+    });
+    expect(checkpoint.commitHash).toHaveLength(40);
+
+    const preview = PreviewSessionSchema.parse({
+      buildSessionId: ids.buildSessionId,
+      createdAt: now,
+      errorDetails: null,
+      expiresAt: now,
+      healthUrl: "http://localhost:3000/health",
+      organizationId: ids.organizationId,
+      port: 3000,
+      previewId,
+      projectId: ids.projectId,
+      proxyUrl: null,
+      sandboxEnvironmentId: ids.sandboxEnvironmentId,
+      sandboxId: "sandbox-build-session-123",
+      status: "ready",
+      updatedAt: now,
+    });
+    expect(preview.status).toBe("ready");
+
+    const evidence = EvidenceRecordSchema.parse({
+      artifactId,
+      buildSessionId: ids.buildSessionId,
+      createdAt: now,
+      evidenceId,
+      kind: "screenshot",
+      metadata: { height: 720, width: 1280 },
+      organizationId: ids.organizationId,
+      projectId: ids.projectId,
+      runId: ids.runId,
+      status: "passed",
+      summary: "Verified login screen layout",
+    });
+    expect(evidence.kind).toBe("screenshot");
+
+    const createReq = CreateDeploymentRequestSchema.parse({
+      exposure: "public",
+      organizationId: ids.organizationId,
+      projectId: ids.projectId,
+      providerReference: "cloud-run-rev-1",
+      sourceCheckpoint: "a".repeat(40),
+    });
+    expect(createReq.providerReference).toBe("cloud-run-rev-1");
+
+    const rollbackReq = RollbackDeploymentRequestSchema.parse({
+      organizationId: ids.organizationId,
+      projectId: ids.projectId,
+      reason: "Regression in v2",
+      targetDeploymentId: ids.deploymentId,
+    });
+    expect(rollbackReq.reason).toBe("Regression in v2");
   });
 });

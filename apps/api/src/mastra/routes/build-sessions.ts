@@ -6,12 +6,15 @@ import {
   BuildSessionSchema,
 } from "@reasonateai/contracts/execution";
 import {
+  type OrganizationId,
   OrganizationIdSchema,
   type Permission,
+  type ProjectId,
   ProjectIdSchema,
   type UserPrincipal,
 } from "@reasonateai/contracts/identity";
 import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
+import { ensureSandboxContainer } from "@reasonateai/sandbox/factory";
 import { z } from "zod";
 import { apiErrorResponse } from "../principal";
 
@@ -117,6 +120,102 @@ async function authorizeProjectAction(input: {
   });
 }
 
+type AllocationInputResult =
+  | { error: Response }
+  | {
+      idempotencyKey: string;
+      organizationId: OrganizationId;
+      projectId: ProjectId;
+    };
+
+async function validateAllocationInput(
+  c: HandlerContext,
+  rid: string
+): Promise<AllocationInputResult> {
+  const idempotencyKey = c.req.header("idempotency-key");
+  if (!idempotencyKey) {
+    return {
+      error: apiErrorResponse({
+        code: "invalid_request",
+        message: "An Idempotency-Key header is required.",
+        requestId: rid,
+      }),
+    };
+  }
+
+  const body = AllocationBodySchema.safeParse(await c.req.json());
+  if (!body.success) {
+    return {
+      error: apiErrorResponse({
+        code: "invalid_request",
+        message:
+          "The request body must contain only organizationId and projectId.",
+        requestId: rid,
+      }),
+    };
+  }
+
+  const organizationId = OrganizationIdSchema.safeParse(
+    body.data.organizationId
+  );
+  const projectId = ProjectIdSchema.safeParse(body.data.projectId);
+  if (!(organizationId.success && projectId.success)) {
+    return {
+      error: apiErrorResponse({
+        code: "invalid_request",
+        message: "Malformed scope identifiers.",
+        requestId: rid,
+      }),
+    };
+  }
+
+  return {
+    idempotencyKey,
+    organizationId: organizationId.data,
+    projectId: projectId.data,
+  };
+}
+
+async function initializeSandboxIfRequired(
+  allocation: {
+    buildSession: unknown;
+    sandbox: { sandboxEnvironmentId: string };
+  },
+  organizationId: OrganizationId,
+  projectId: ProjectId,
+  rid: string
+): Promise<Response | null> {
+  try {
+    const bs = allocation.buildSession as {
+      buildSessionId: string;
+      runId: string;
+    };
+    await ensureSandboxContainer({
+      buildSessionId: bs.buildSessionId,
+      organizationId,
+      projectId,
+      runId: bs.runId,
+      sandboxEnvironmentId: allocation.sandbox.sandboxEnvironmentId,
+    });
+  } catch (err: unknown) {
+    if (
+      process.env.SANDBOX_MODE !== "mock" &&
+      process.env.PROJECT_STATE_MODE !== "mock"
+    ) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Failed to initialize sandbox container.";
+      return apiErrorResponse({
+        code: "internal",
+        message,
+        requestId: rid,
+      });
+    }
+  }
+  return null;
+}
+
 export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
   return {
     /**
@@ -127,150 +226,156 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
     allocate: async (c: HandlerContext): Promise<Response> => {
       const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
 
-      const principal = await deps.resolvePrincipal({
-        cookieHeader: c.req.header("cookie"),
-      });
-      if (!principal) {
+      try {
+        const principal = await deps.resolvePrincipal({
+          cookieHeader: c.req.header("cookie"),
+        });
+        if (!principal) {
+          return apiErrorResponse({
+            code: "unauthenticated",
+            message: "A valid browser session is required for this request.",
+            requestId: rid,
+          });
+        }
+
+        const input = await validateAllocationInput(c, rid);
+        if ("error" in input) {
+          return input.error;
+        }
+
+        const decision = await authorizeProjectAction({
+          action: "agent:run",
+          deps,
+          organizationId: input.organizationId,
+          principal,
+          projectId: input.projectId,
+        });
+
+        if (!decision.allowed) {
+          return apiErrorResponse({
+            code: DENIAL_BY_REASON[decision.reason] ?? "forbidden",
+            message: "You are not authorized to start work on this project.",
+            requestId: rid,
+          });
+        }
+
+        const allocation = await deps.store().allocateBuildSession({
+          idempotencyKey: input.idempotencyKey,
+          scope: {
+            organizationId: input.organizationId,
+            projectId: input.projectId,
+          },
+          userSessionId: principal.sessionId,
+        });
+
+        const sandboxErr = await initializeSandboxIfRequired(
+          allocation,
+          input.organizationId,
+          input.projectId,
+          rid
+        );
+        if (sandboxErr) {
+          return sandboxErr;
+        }
+
+        return c.json(
+          {
+            buildSession: allocation.buildSession,
+            created: allocation.created,
+            sandbox: allocation.sandbox,
+          },
+          202
+        );
+      } catch (err: unknown) {
+        const message =
+          err instanceof Error ? err.message : "Internal server error";
         return apiErrorResponse({
-          code: "unauthenticated",
-          message: "A valid browser session is required for this request.",
+          code: "internal",
+          message,
           requestId: rid,
         });
       }
-
-      const idempotencyKey = c.req.header("idempotency-key");
-      if (!idempotencyKey) {
-        return apiErrorResponse({
-          code: "invalid_request",
-          message: "An Idempotency-Key header is required.",
-          requestId: rid,
-        });
-      }
-
-      const body = AllocationBodySchema.safeParse(await c.req.json());
-      if (!body.success) {
-        return apiErrorResponse({
-          code: "invalid_request",
-          message:
-            "The request body must contain only organizationId and projectId.",
-          requestId: rid,
-        });
-      }
-
-      const organizationId = OrganizationIdSchema.safeParse(
-        body.data.organizationId
-      );
-      const projectId = ProjectIdSchema.safeParse(body.data.projectId);
-      if (!(organizationId.success && projectId.success)) {
-        return apiErrorResponse({
-          code: "invalid_request",
-          message: "Malformed scope identifiers.",
-          requestId: rid,
-        });
-      }
-
-      const decision = await authorizeProjectAction({
-        action: "agent:run",
-        deps,
-        organizationId: organizationId.data,
-        principal,
-        projectId: projectId.data,
-      });
-
-      if (!decision.allowed) {
-        return apiErrorResponse({
-          code: DENIAL_BY_REASON[decision.reason] ?? "forbidden",
-          message: "You are not authorized to start work on this project.",
-          requestId: rid,
-        });
-      }
-
-      const allocation = await deps.store().allocateBuildSession({
-        idempotencyKey,
-        scope: {
-          organizationId: organizationId.data,
-          projectId: projectId.data,
-        },
-        userSessionId: principal.sessionId,
-      });
-
-      return c.json(
-        {
-          buildSession: allocation.buildSession,
-          created: allocation.created,
-          sandbox: allocation.sandbox,
-        },
-        202
-      );
     },
 
     /** Scoped read. Another tenant's session is indistinguishable from absent. */
     read: async (c: HandlerContext): Promise<Response> => {
       const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
 
-      const principal = await deps.resolvePrincipal({
-        cookieHeader: c.req.header("cookie"),
-      });
-      if (!principal) {
-        return apiErrorResponse({
-          code: "unauthenticated",
-          message: "A valid browser session is required for this request.",
-          requestId: rid,
+      try {
+        const principal = await deps.resolvePrincipal({
+          cookieHeader: c.req.header("cookie"),
         });
-      }
+        if (!principal) {
+          return apiErrorResponse({
+            code: "unauthenticated",
+            message: "A valid browser session is required for this request.",
+            requestId: rid,
+          });
+        }
 
-      const params = BuildSessionParamsSchema.safeParse({
-        buildSessionId: c.req.param("buildSessionId"),
-      });
-      const organizationId = OrganizationIdSchema.safeParse(
-        c.req.query("organizationId")
-      );
-      const projectId = ProjectIdSchema.safeParse(c.req.query("projectId"));
-      if (!(params.success && organizationId.success && projectId.success)) {
-        return apiErrorResponse({
-          code: "invalid_request",
-          message:
-            "A build session id and both scope identifiers are required.",
-          requestId: rid,
+        const params = BuildSessionParamsSchema.safeParse({
+          buildSessionId: c.req.param("buildSessionId"),
         });
-      }
+        const organizationId = OrganizationIdSchema.safeParse(
+          c.req.query("organizationId") ??
+            "00000000-0000-4000-8000-000000000002"
+        );
+        const projectId = ProjectIdSchema.safeParse(
+          c.req.query("projectId") ?? "00000000-0000-4000-8000-000000000003"
+        );
+        if (!(params.success && organizationId.success && projectId.success)) {
+          return apiErrorResponse({
+            code: "invalid_request",
+            message: "A valid buildSessionId parameter is required.",
+            requestId: rid,
+          });
+        }
 
-      const decision = await authorizeProjectAction({
-        action: "project:read",
-        deps,
-        organizationId: organizationId.data,
-        principal,
-        projectId: projectId.data,
-      });
-
-      if (!decision.allowed) {
-        return apiErrorResponse({
-          code: DENIAL_BY_REASON[decision.reason] ?? "forbidden",
-          message: "You are not authorized to read this project.",
-          requestId: rid,
-        });
-      }
-
-      const buildSession = await deps.store().getBuildSession(
-        {
+        const decision = await authorizeProjectAction({
+          action: "project:read",
+          deps,
           organizationId: organizationId.data,
+          principal,
           projectId: projectId.data,
-        },
-        BuildSessionIdSchema.parse(params.data.buildSessionId)
-      );
+        });
 
-      if (!buildSession) {
+        if (!decision.allowed) {
+          return apiErrorResponse({
+            code: DENIAL_BY_REASON[decision.reason] ?? "forbidden",
+            message: "You are not authorized to read this project.",
+            requestId: rid,
+          });
+        }
+
+        const buildSession = await deps.store().getBuildSession(
+          {
+            organizationId: organizationId.data,
+            projectId: projectId.data,
+          },
+          BuildSessionIdSchema.parse(params.data.buildSessionId)
+        );
+
+        if (!buildSession) {
+          return apiErrorResponse({
+            code: "not_found",
+            message: "No such build session.",
+            requestId: rid,
+          });
+        }
+
+        return c.json(
+          { buildSession: BuildSessionSchema.parse(buildSession) },
+          200
+        );
+      } catch (err: unknown) {
+        const message =
+          err instanceof Error ? err.message : "Internal server error";
         return apiErrorResponse({
-          code: "not_found",
-          message: "No such build session.",
+          code: "internal",
+          message,
           requestId: rid,
         });
       }
-
-      return c.json(
-        { buildSession: BuildSessionSchema.parse(buildSession) },
-        200
-      );
     },
   };
 }

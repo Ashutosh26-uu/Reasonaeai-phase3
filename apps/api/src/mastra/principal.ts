@@ -97,10 +97,14 @@ export function apiErrorResponse(input: {
   message: string;
   requestId: string;
 }): Response {
+  const safeMessage =
+    input.message.length > 512
+      ? `${input.message.slice(0, 508)}...`
+      : input.message || "An unexpected error occurred.";
   const body = ApiErrorSchema.parse({
     error: {
       code: input.code,
-      message: input.message,
+      message: safeMessage,
       requestId: input.requestId,
     },
   });
