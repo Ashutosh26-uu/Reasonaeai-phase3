@@ -17,6 +17,12 @@ export interface WorkerOverride {
 export type WorkerOverrides = Record<string, WorkerOverride | undefined>;
 
 export interface MaterializeOptions {
+  /**
+   * Model every worker falls back to. Without one, a worker is built with no
+   * model id at all and the controller refuses to spawn it, so delegation is
+   * unreachable even though the definition and its tools are valid.
+   */
+  defaultModelId?: string | undefined;
   overrides?: WorkerOverrides;
   toolUniverse?: readonly string[];
 }
@@ -26,7 +32,8 @@ export interface MaterializeOptions {
  *
  * Tools come from the definition through the one resolution rule, so a Mastra
  * agent can never hold a tool its definition did not grant. A step cap is applied
- * only when one is configured.
+ * only when one is configured. The model resolves from the worker override, then
+ * the definition, then the run's model.
  */
 export function materializeSubagent(
   definition: AgentDefinition,
@@ -34,7 +41,8 @@ export function materializeSubagent(
 ): AgentControllerSubagent {
   const override = options.overrides?.[definition.name];
   const maxTurns = override?.maxTurns ?? definition.maxTurns;
-  const modelId = override?.model ?? definition.model?.id;
+  const modelId =
+    override?.model ?? definition.model?.id ?? options.defaultModelId;
 
   return {
     allowedWorkspaceTools: filterToolsByDefinition(

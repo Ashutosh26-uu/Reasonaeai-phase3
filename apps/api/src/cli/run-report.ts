@@ -1,7 +1,11 @@
-import type { ChunkType } from "@mastra/core/stream";
+import type {
+  AgentControllerEvent,
+  Session,
+} from "@mastra/core/agent-controller";
 
 const ARG_LIMIT = 300;
 const RESULT_LIMIT = 600;
+const TASK_LIMIT = 240;
 
 function shorten(value: string, limit: number): string {
   return value.length > limit
@@ -101,118 +105,344 @@ export function describeFailure(error: unknown): FailureReport {
   return { message, shape: messages.map(describeMessage).join("\n") };
 }
 
+/** The assistant text carried by a streamed or persisted message. */
+function textOf(message: unknown): string {
+  if (
+    message === null ||
+    typeof message !== "object" ||
+    !("content" in message)
+  ) {
+    return "";
+  }
+  const { content } = message;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (
+    content === null ||
+    typeof content !== "object" ||
+    !("parts" in content) ||
+    !Array.isArray(content.parts)
+  ) {
+    return "";
+  }
+  let text = "";
+  for (const part of content.parts) {
+    if (
+      part !== null &&
+      typeof part === "object" &&
+      "type" in part &&
+      part.type === "text" &&
+      "text" in part &&
+      typeof part.text === "string"
+    ) {
+      text += part.text;
+    }
+  }
+  return text;
+}
+
+type MessageEvent = Extract<
+  AgentControllerEvent,
+  { type: "message_start" | "message_update" | "message_end" }
+>;
+type ToolEvent = Extract<
+  AgentControllerEvent,
+  {
+    type:
+      | "command_exit"
+      | "shell_output"
+      | "tool_end"
+      | "tool_input_delta"
+      | "tool_input_start"
+      | "tool_start";
+  }
+>;
+type WorkerEvent = Extract<
+  AgentControllerEvent,
+  {
+    type:
+      | "subagent_end"
+      | "subagent_start"
+      | "subagent_text_delta"
+      | "subagent_tool_end"
+      | "subagent_tool_start";
+  }
+>;
+type RunEvent = Extract<
+  AgentControllerEvent,
+  { type: "agent_end" | "error" | "info" }
+>;
+
+interface RenderState {
+  endReason?: string;
+  error?: string;
+  /** Characters of the streaming message already written. */
+  streamedLength: number;
+  /** Id of the message currently streaming; a new id restarts the count. */
+  streamedMessageId?: string;
+  text: string;
+  toolCalls: number;
+  workers: number;
+  write: (text: string) => void;
+}
+
+/**
+ * Writes only the text not yet written, so a message that arrives repeatedly
+ * while it streams produces each delta exactly once.
+ */
+function renderMessage(state: RenderState, event: MessageEvent): void {
+  if (event.type === "message_end" && textOf(event.message) === "") {
+    return;
+  }
+  const messageId =
+    "id" in event.message ? String(event.message.id) : "current";
+  const full = textOf(event.message);
+  if (messageId !== state.streamedMessageId) {
+    state.streamedMessageId = messageId;
+    state.streamedLength = 0;
+  }
+  if (full.length > state.streamedLength) {
+    state.write(full.slice(state.streamedLength));
+    state.text += full.slice(state.streamedLength);
+    state.streamedLength = full.length;
+  }
+  if (event.type === "message_end") {
+    state.write("\n");
+  }
+}
+
+/** How a finished tool call resolved, distinguishing a refusal from a failure. */
+function outcomeOf(event: { denied?: boolean; isError: boolean }): string {
+  if (event.denied === true) {
+    return "denied";
+  }
+  return event.isError ? "failed" : "returned";
+}
+
+function renderTool(state: RenderState, event: ToolEvent): void {
+  switch (event.type) {
+    case "tool_input_start": {
+      state.write(`\n[tool] ${event.toolName} `);
+      break;
+    }
+    case "tool_input_delta": {
+      state.write(
+        shorten(
+          typeof event.argsTextDelta === "string"
+            ? event.argsTextDelta
+            : stringify(event.argsTextDelta),
+          ARG_LIMIT
+        )
+      );
+      break;
+    }
+    case "tool_start": {
+      state.toolCalls += 1;
+      state.write(
+        `\n[tool] ${event.toolName} ${shorten(stringify(event.args), ARG_LIMIT)}\n`
+      );
+      break;
+    }
+    case "shell_output": {
+      const prefix = event.stream === "stderr" ? "  ! " : "  | ";
+      const body = event.output
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => prefix + line)
+        .join("\n");
+      if (body !== "") {
+        state.write(`${body}\n`);
+      }
+      break;
+    }
+    case "command_exit": {
+      state.write(`  -> exit ${event.exitCode}\n`);
+      break;
+    }
+    default: {
+      state.write(
+        `[tool] ${outcomeOf(event)} ${shorten(
+          stringify(event.result),
+          RESULT_LIMIT
+        )}\n`
+      );
+      break;
+    }
+  }
+}
+
+function renderWorker(state: RenderState, event: WorkerEvent): void {
+  switch (event.type) {
+    case "subagent_start": {
+      state.workers += 1;
+      state.write(
+        `\n[worker] ${event.agentType} (${event.modelId}) ${shorten(
+          event.task,
+          TASK_LIMIT
+        )}\n`
+      );
+      break;
+    }
+    case "subagent_text_delta": {
+      state.write(`  ${event.textDelta}\n`);
+      break;
+    }
+    case "subagent_tool_start": {
+      state.write(
+        `  [worker tool] ${event.subToolName} ${shorten(
+          stringify(event.subToolArgs),
+          ARG_LIMIT
+        )}\n`
+      );
+      break;
+    }
+    case "subagent_tool_end": {
+      state.write(
+        `  [worker tool] ${event.subToolName} ${outcomeOf(event)} ${shorten(
+          stringify(event.subToolResult),
+          RESULT_LIMIT
+        )}\n`
+      );
+      break;
+    }
+    default: {
+      state.write(
+        `[worker] ${event.agentType} ${outcomeOf(event)} in ${
+          event.durationMs
+        }ms: ${shorten(event.result, RESULT_LIMIT)}\n`
+      );
+      break;
+    }
+  }
+}
+
+function renderRunEvent(state: RenderState, event: RunEvent): void {
+  switch (event.type) {
+    case "agent_end": {
+      state.endReason = event.reason ?? "complete";
+      break;
+    }
+    case "info": {
+      state.write(`[info] ${event.message}\n`);
+      break;
+    }
+    default: {
+      const failure = describeFailure(event.error);
+      state.error ??= failure.message;
+      const retry =
+        event.retryable === true
+          ? ` (retryable, attempt ${event.retryAttempt ?? "?"})`
+          : "";
+      state.write(`\n[error] ${failure.message}${retry}\n`);
+      if (failure.shape) {
+        state.write(`Rejected request shape:\n${failure.shape}\n`);
+      }
+      break;
+    }
+  }
+}
+
+function renderEvent(state: RenderState, event: AgentControllerEvent): void {
+  switch (event.type) {
+    case "message_end":
+    case "message_start":
+    case "message_update": {
+      renderMessage(state, event);
+      break;
+    }
+    case "command_exit":
+    case "shell_output":
+    case "tool_end":
+    case "tool_input_delta":
+    case "tool_input_start":
+    case "tool_start": {
+      renderTool(state, event);
+      break;
+    }
+    case "subagent_end":
+    case "subagent_start":
+    case "subagent_text_delta":
+    case "subagent_tool_end":
+    case "subagent_tool_start": {
+      renderWorker(state, event);
+      break;
+    }
+    case "agent_end":
+    case "error":
+    case "info": {
+      renderRunEvent(state, event);
+      break;
+    }
+    default: {
+      break;
+    }
+  }
+}
+
 export interface RunReport {
-  /** First reported run error, when the stream failed instead of finishing. */
+  /** Terminal reason the controller reported, when the run ended. */
+  endReason?: string;
+  /** First reported run error, when the run failed instead of finishing. */
   error?: string;
   /** The assistant's own text, accumulated across every step. */
   text: string;
   toolCalls: number;
+  workers: number;
 }
 
 /**
- * Renders a live agent run to the terminal.
+ * Renders a driven controller session to the terminal.
  *
- * A non-streaming `generate()` call returns only the final text, so every tool
- * call, tool result, and reasoning step the CTO performs stays invisible until
- * the run ends. Consuming the run stream instead makes the hidden work visible
- * while it happens: step boundaries, what the model is thinking, which tool it
- * called with which arguments, and what that tool returned.
+ * The session is the unit that holds the delegation tool, the mode, the thread,
+ * and the approval gates, so subscribing to it is what makes a run's real work
+ * visible: tool arguments while they stream, live shell output and exit codes,
+ * and each worker's own text and tool calls as the worker performs them.
  */
-export async function reportRun(
-  chunks: AsyncIterable<ChunkType>,
+export async function reportControllerRun(
+  session: Session,
+  input: {
+    content: string;
+    requestContext: Parameters<Session["sendMessage"]>[0]["requestContext"];
+  },
   write: (text: string) => void
 ): Promise<RunReport> {
   const started = Date.now();
-  let steps = 0;
-  let toolCalls = 0;
-  let thinking = false;
-  let text = "";
-  let error: string | undefined;
-
-  const endThinking = () => {
-    if (thinking) {
-      write("\n");
-      thinking = false;
-    }
+  const state: RenderState = {
+    streamedLength: 0,
+    text: "",
+    toolCalls: 0,
+    workers: 0,
+    write,
   };
 
-  for await (const chunk of chunks) {
-    switch (chunk.type) {
-      case "step-start": {
-        endThinking();
-        steps += 1;
-        write(`\n── step ${steps} ──\n`);
-        break;
-      }
-      case "reasoning-delta": {
-        if (!thinking) {
-          write("[thinking] ");
-          thinking = true;
-        }
-        write(chunk.payload.text);
-        break;
-      }
-      case "reasoning-end": {
-        endThinking();
-        break;
-      }
-      case "text-delta": {
-        endThinking();
-        text += chunk.payload.text;
-        write(chunk.payload.text);
-        break;
-      }
-      case "tool-call": {
-        endThinking();
-        toolCalls += 1;
-        write(
-          `\n[tool] ${chunk.payload.toolName} ${shorten(
-            stringify(chunk.payload.args),
-            ARG_LIMIT
-          )}\n`
-        );
-        break;
-      }
-      case "tool-result": {
-        write(
-          `[tool] ${chunk.payload.toolName} returned ${shorten(
-            stringify(chunk.payload.result),
-            RESULT_LIMIT
-          )}\n`
-        );
-        break;
-      }
-      case "tool-error": {
-        write(
-          `[tool] ${chunk.payload.toolName} failed ${shorten(
-            stringify(chunk.payload.error),
-            RESULT_LIMIT
-          )}\n`
-        );
-        break;
-      }
-      case "error": {
-        endThinking();
-        const failure = describeFailure(chunk.payload.error);
-        error ??= failure.message;
-        write(`[error] ${failure.message}\n`);
-        if (failure.shape) {
-          write(`Rejected request shape:\n${failure.shape}\n`);
-        }
-        break;
-      }
-      default: {
-        break;
-      }
-    }
+  const unsubscribe = session.subscribe((event) => renderEvent(state, event));
+  try {
+    await session.sendMessage({
+      content: input.content,
+      requestContext: input.requestContext,
+      untilIdle: true,
+    });
+  } catch (error) {
+    state.error ??= describeFailure(error).message;
+    write(`\n[error] ${state.error}\n`);
+  } finally {
+    unsubscribe();
   }
 
-  endThinking();
+  const ended =
+    state.endReason === undefined ? "" : `, ended ${state.endReason}`;
   write(
-    `\n[done: ${steps} step(s), ${toolCalls} tool call(s), ${(
-      (Date.now() - started) / 1000
-    ).toFixed(1)}s]\n`
+    `\n[done: ${state.toolCalls} tool call(s), ${
+      state.workers
+    } worker(s), ${((Date.now() - started) / 1000).toFixed(1)}s${ended}]\n`
   );
 
-  return error === undefined ? { text, toolCalls } : { error, text, toolCalls };
+  return {
+    endReason: state.endReason,
+    error: state.error,
+    text: state.text,
+    toolCalls: state.toolCalls,
+    workers: state.workers,
+  };
 }

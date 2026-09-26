@@ -237,7 +237,7 @@ PostgreSQL is the authoritative production source of truth. Redis Streams distri
 | Public client protocol | HTTPS JSON commands and SSE progress streams; WebSocket/WebRTC only for bidirectional real-time features |
 | Worker topology | Private API/worker split; workers consume Redis Streams, use shared PostgreSQL/object storage, and never receive browser traffic |
 
-The web framework, ORM/database library, browser-test framework, authentication implementation/provider, production sandbox provider, object-store provider, deployment provider, and queue operations provider remain intentionally undecided. Their selected adapters must preserve the PostgreSQL/Redis/object-storage/Git contracts above and be chosen through current official documentation, compatibility evidence, security review, and an explicit decision recorded here.
+The browser framework is Next.js 16 App Router with React 19 and Tailwind CSS 4. It is hosted as a Node.js application, uses `packages/ui` for shared shadcn-compatible components and design tokens, and uses selected AI Elements components for conversation presentation. Streamdown with its Shiki code, Mermaid, and KaTeX math plugins renders agent Markdown. This stack matches the component libraries' documented prerequisites and supports server-rendered shell content with client-side event views. Its tradeoffs are a larger dependency and build surface than a static React app and the need to keep browser-to-agent access behind company-owned authenticated product routes. The ORM/database library, browser-test framework, authentication implementation/provider, production sandbox provider, object-store provider, deployment provider, and queue operations provider remain intentionally undecided. Their selected adapters must preserve the PostgreSQL/Redis/object-storage/Git contracts above and be chosen through current official documentation, compatibility evidence, security review, and an explicit decision recorded here.
 
 TypeScript is pinned to 6.0.3 because Mastra 1.67.0 uses `typescript-paths` 1.5.2 during production builds, whose declared peer range ends at TypeScript 6 and whose legacy compiler-API access fails under TypeScript 7. Re-evaluate TypeScript 7 after that dependency path declares and demonstrates compatibility.
 
@@ -285,6 +285,7 @@ Directories are created only when their phase has complete behavior to place in 
 
 ## Model strategy
 
+- **Paid frontier-model APIs are prohibited.** OpenAI GPT-class, Anthropic Claude, and Google hosted models may not be called from any environment — production, development, preproduction, or demonstration. The product carries no third-party recurring inference cost. Every model call runs on open-weight inference behind spending limits, or on local inference through an OpenAI-compatible endpoint.
 - Model integrations use Mastra's provider/model routing behind spending and authorization policy.
 - The primary implementation candidates are current open-weight models selected by repeatable multimodal, coding-agent, ASR, TTS, latency, license, and cost evaluations; no stale family or version is the default.
 - Hosted open-weight inference may be used behind spending limits; local inference remains supported through an OpenAI-compatible endpoint.

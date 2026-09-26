@@ -72,6 +72,7 @@
     "@mastra/core": "^1.67.0",
     "@mastra/memory": "^1.30.0",
     "@reasonateai/contracts": "workspace:*",
+    "diff": "^8.0.4",
     "fast-xml-parser": "^5.11.1",
     "fflate": "^0.8.3",
     "turndown": "^7.2.4",
@@ -79,6 +80,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.3",
+    "@types/turndown": "^5.0.6",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

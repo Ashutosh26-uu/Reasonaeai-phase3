@@ -4,14 +4,14 @@ import { createInterface } from "node:readline/promises";
 
 import { RequestContext } from "@mastra/core/request-context";
 import { createReasonateCtoRuntime } from "@reasonateai/cto-runtime";
-import { runScopeKeys } from "@reasonateai/cto-runtime/run-scope";
+import { readRunScope, runScopeKeys } from "@reasonateai/cto-runtime/run-scope";
 import { frontierModel } from "../mastra/model.js";
 import {
   buildSandboxEnvironment,
   reasonateBuildWorkspace,
   SANDBOX_WORKING_DIRECTORY,
 } from "../mastra/workspace.js";
-import { describeFailure, reportRun } from "./run-report.js";
+import { describeFailure, reportControllerRun } from "./run-report.js";
 
 const model = process.env.MASTRA_MODEL ?? frontierModel;
 
@@ -32,12 +32,9 @@ function printHelp(): void {
 
 function reportFailure(error: unknown): void {
   const failure = describeFailure(error);
-  stdout.write(`Run failed: ${failure.message}
-`);
+  stdout.write(`Run failed: ${failure.message}\n`);
   if (failure.shape) {
-    stdout.write(`Rejected request shape:
-${failure.shape}
-`);
+    stdout.write(`Rejected request shape:\n${failure.shape}\n`);
   }
   stdout.write("\n");
 }
@@ -56,6 +53,21 @@ async function main(): Promise<void> {
     terminal: true,
   });
   const transcript: string[] = [];
+
+  /**
+   * The run is driven through a controller session, not the agent directly: the
+   * session is what holds the delegation tool, the mode, the thread, and the
+   * approval gates. The project is the memory resource, so sessions of one
+   * project share durable state, and the build session is the isolation scope,
+   * so two sessions over one project never share a run loop or a thread.
+   */
+  await runtime.controller.init();
+  const scope = readRunScope(requestContext);
+  const session = await runtime.controller.createSession({
+    requestContext,
+    resourceId: scope.projectId,
+    scope: scope.buildSessionId,
+  });
 
   stdout.write(`ReasonateAI CTO sandbox chat\nModel: ${model}\n`);
   stdout.write(
@@ -91,11 +103,10 @@ async function main(): Promise<void> {
 
       const request = [...transcript, `User: ${prompt}`, "CTO:"].join("\n\n");
       try {
-        const stream = await runtime.mainAgent.stream(request, {
-          requestContext,
-        });
-        const report = await reportRun(stream.fullStream, (text) =>
-          stdout.write(text)
+        const report = await reportControllerRun(
+          session,
+          { content: request, requestContext },
+          (text) => stdout.write(text)
         );
         if (report.error === undefined) {
           const response = report.text.trim() || "The model returned no text.";
