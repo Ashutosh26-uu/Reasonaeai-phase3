@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { ArtifactIdSchema } from "@reasonateai/contracts/execution-protocol";
 import {
   OrganizationIdSchema,
   ProjectIdSchema,
@@ -239,5 +240,234 @@ describeWithDatabase("project state store", () => {
     expect(reacquired?.holder).toBe("worker-b");
 
     await store.setRunStatus({ runId, scope, status: "running" });
+  });
+
+  it("persists git checkpoints and respects tenant scoping", async () => {
+    const allocation = await store.allocateBuildSession({
+      idempotencyKey: "checkpoint-key-0001",
+      scope,
+      userSessionId,
+    });
+
+    const checkpoint = await store.recordCheckpoint({
+      author: "CTO Agent",
+      buildSessionId: allocation.buildSession.buildSessionId,
+      commitHash: "1".repeat(40),
+      message: "feat: initial commit",
+      parentHash: null,
+      runId: allocation.buildSession.runId,
+      scope,
+    });
+
+    expect(checkpoint.commitHash).toBe("1".repeat(40));
+    expect(checkpoint.author).toBe("CTO Agent");
+
+    const fetched = await store.getCheckpoint(scope, checkpoint.checkpointId);
+    expect(fetched?.checkpointId).toBe(checkpoint.checkpointId);
+
+    const list = await store.listCheckpoints(
+      scope,
+      allocation.buildSession.buildSessionId
+    );
+    expect(list.length).toBeGreaterThanOrEqual(1);
+    expect(list[0]?.checkpointId).toBe(checkpoint.checkpointId);
+
+    // Cross-tenant scope isolation test
+    const foreignFetched = await store.getCheckpoint(
+      foreignScope,
+      checkpoint.checkpointId
+    );
+    expect(foreignFetched).toBeUndefined();
+
+    const foreignList = await store.listCheckpoints(foreignScope);
+    expect(
+      foreignList.find((c) => c.checkpointId === checkpoint.checkpointId)
+    ).toBeUndefined();
+  });
+
+  it("manages preview session lifecycle and emits preview events", async () => {
+    const allocation = await store.allocateBuildSession({
+      idempotencyKey: "preview-key-0001",
+      scope,
+      userSessionId,
+    });
+
+    const preview = await store.createPreview({
+      buildSessionId: allocation.buildSession.buildSessionId,
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      healthUrl: "http://localhost:3000/health",
+      port: 3000,
+      sandboxEnvironmentId: allocation.sandbox.sandboxEnvironmentId,
+      sandboxId: "sandbox-preview-test-1",
+      scope,
+      status: "allocating",
+    });
+
+    expect(preview.status).toBe("allocating");
+    expect(preview.port).toBe(3000);
+
+    const updated = await store.updatePreviewStatus({
+      healthUrl: "http://localhost:3000/health",
+      previewId: preview.previewId,
+      proxyUrl: "https://preview.reasonate.example",
+      scope,
+      status: "ready",
+    });
+
+    expect(updated.status).toBe("ready");
+    expect(updated.proxyUrl).toBe("https://preview.reasonate.example");
+
+    const fetched = await store.getPreview(scope, preview.previewId);
+    expect(fetched?.status).toBe("ready");
+
+    const activeList = await store.listActivePreviews(
+      scope,
+      allocation.buildSession.buildSessionId
+    );
+    expect(activeList.some((p) => p.previewId === preview.previewId)).toBe(
+      true
+    );
+
+    // Cross-tenant scope isolation test
+    expect(
+      await store.getPreview(foreignScope, preview.previewId)
+    ).toBeUndefined();
+
+    // Updating non-existent or foreign preview throws error
+    await expect(
+      store.updatePreviewStatus({
+        previewId: preview.previewId,
+        scope: foreignScope,
+        status: "stopped",
+      })
+    ).rejects.toThrow(TENANT_SCOPE_ERROR);
+  });
+
+  it("records runtime evidence linked to artifacts and verifies scope", async () => {
+    const allocation = await store.allocateBuildSession({
+      idempotencyKey: "evidence-key-0001",
+      scope,
+      userSessionId,
+    });
+
+    const artifactId = ArtifactIdSchema.parse(randomUUID());
+    const artifact = await store.recordArtifact(
+      {
+        artifactId,
+        buildSessionId: allocation.buildSession.buildSessionId,
+        files: [
+          {
+            mediaType: "image/png",
+            objectKey: "artifacts/screenshot.png",
+            path: "screenshot.png",
+            sha256: "e".repeat(64),
+            size: 1024,
+          },
+        ],
+        kind: "screenshot",
+        occurredAt: new Date().toISOString(),
+        organizationId,
+        projectId,
+        runId: allocation.buildSession.runId,
+        schemaVersion: 1,
+        totalSize: 1024,
+      },
+      "completed"
+    );
+
+    const evidence = await store.recordEvidence({
+      artifactId: artifact.artifactId,
+      buildSessionId: allocation.buildSession.buildSessionId,
+      kind: "screenshot",
+      metadata: { viewport: "1920x1080" },
+      runId: allocation.buildSession.runId,
+      scope,
+      status: "passed",
+      summary: "Full page visual verification",
+    });
+
+    expect(evidence.kind).toBe("screenshot");
+    expect(evidence.summary).toBe("Full page visual verification");
+
+    const fetched = await store.getEvidence(scope, evidence.evidenceId);
+    expect(fetched?.evidenceId).toBe(evidence.evidenceId);
+
+    const list = await store.listEvidence(scope, { kind: "screenshot" });
+    expect(list.some((e) => e.evidenceId === evidence.evidenceId)).toBe(true);
+
+    // Cross-tenant scope isolation
+    expect(
+      await store.getEvidence(foreignScope, evidence.evidenceId)
+    ).toBeUndefined();
+  });
+
+  it("handles deployment creation and rollback with scope isolation", async () => {
+    const allocation = await store.allocateBuildSession({
+      idempotencyKey: "deployment-key-0001",
+      scope,
+      userSessionId,
+    });
+
+    const firstDeploymentId = randomUUID();
+    const secondDeploymentId = randomUUID();
+
+    const firstDeployment = await store.recordDeployment({
+      deploymentId: firstDeploymentId,
+      exposure: "public",
+      providerReference: "cloud-run-v1",
+      runId: allocation.buildSession.runId,
+      scope,
+      sourceCheckpoint: "c".repeat(40),
+      status: "ready",
+      url: "https://v1.example.com",
+    });
+
+    const secondDeployment = await store.recordDeployment({
+      deploymentId: secondDeploymentId,
+      exposure: "public",
+      providerReference: "cloud-run-v2",
+      runId: allocation.buildSession.runId,
+      scope,
+      sourceCheckpoint: "d".repeat(40),
+      status: "ready",
+      url: "https://v2.example.com",
+    });
+
+    expect(firstDeployment.status).toBe("ready");
+    expect(secondDeployment.status).toBe("ready");
+
+    const rollbackResult = await store.rollbackDeployment({
+      deploymentId: secondDeployment.deploymentId,
+      reason: "Regression in v2 release",
+      scope,
+      targetDeploymentId: firstDeployment.deploymentId,
+    });
+
+    expect(rollbackResult.activeDeployment.status).toBe("rolled_back");
+    expect(rollbackResult.activeDeployment.rollbackDeploymentId).toBe(
+      firstDeployment.deploymentId
+    );
+    expect(rollbackResult.rolledBackDeployment.deploymentId).toBe(
+      firstDeployment.deploymentId
+    );
+
+    const fetchedActive = await store.getDeployment(
+      scope,
+      secondDeployment.deploymentId
+    );
+    expect(fetchedActive?.status).toBe("rolled_back");
+    expect(fetchedActive?.rollbackDeploymentId).toBe(
+      firstDeployment.deploymentId
+    );
+
+    // Attempting rollback with foreign scope fails
+    await expect(
+      store.rollbackDeployment({
+        deploymentId: secondDeployment.deploymentId,
+        reason: "Invalid tenant attempt",
+        scope: foreignScope,
+        targetDeploymentId: firstDeployment.deploymentId,
+      })
+    ).rejects.toThrow(TENANT_SCOPE_ERROR);
   });
 });

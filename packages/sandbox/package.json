@@ -15,6 +15,10 @@
     "./mastra": {
       "types": "./src/mastra-adapter.ts",
       "import": "./dist/mastra-adapter.js"
+    },
+    "./factory": {
+      "types": "./src/factory.ts",
+      "import": "./dist/factory.js"
     }
   },
   "scripts": {

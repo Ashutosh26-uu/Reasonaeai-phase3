@@ -82,12 +82,18 @@ export class DockerSandbox implements ISandbox {
       await execFileAsync("docker", dockerArgs);
       this.status = "running";
     } catch (error) {
-      this.status = "error";
-      await this.cleanup();
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Failed to initialize Docker sandbox: ${message}`, {
-        cause: error,
-      });
+      try {
+        await execFileAsync("docker", ["rm", "-f", "-v", this.containerName]);
+        await execFileAsync("docker", dockerArgs);
+        this.status = "running";
+      } catch (retryErr) {
+        this.status = "error";
+        await this.cleanup();
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to initialize Docker sandbox: ${message}`, {
+          cause: retryErr,
+        });
+      }
     }
   };
 

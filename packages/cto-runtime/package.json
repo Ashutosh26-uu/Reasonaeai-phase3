@@ -57,6 +57,7 @@
     "./resources/types": "./src/resources/types.ts",
     "./resources/json-path": "./src/resources/json-path.ts",
     "./tools/selectors": "./src/tools/selectors.ts",
+    "./tools/preview": "./src/tools/preview.ts",
     "./context/compose": "./src/context/compose.ts",
     "./context/environment": "./src/context/environment.ts",
     "./context/instructions": "./src/context/instructions.ts"
@@ -72,6 +73,7 @@
     "@mastra/core": "^1.67.0",
     "@mastra/memory": "^1.30.0",
     "@reasonateai/contracts": "workspace:*",
+    "@reasonateai/project-state": "workspace:*",
     "diff": "^8.0.4",
     "fast-xml-parser": "^5.11.1",
     "fflate": "^0.8.3",

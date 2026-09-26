@@ -155,4 +155,57 @@ create table if not exists deployments (
 
 create index if not exists deployments_scope_idx
   on deployments (organization_id, project_id, created_at desc);
+
+create table if not exists checkpoints (
+  checkpoint_id uuid primary key,
+  organization_id uuid not null,
+  project_id uuid not null,
+  build_session_id uuid not null references build_sessions (build_session_id) on delete cascade,
+  run_id uuid not null references runs (run_id) on delete cascade,
+  commit_hash text not null,
+  parent_hash text,
+  message text not null,
+  author text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists checkpoints_scope_idx
+  on checkpoints (organization_id, project_id, created_at desc);
+
+create table if not exists previews (
+  preview_id uuid primary key,
+  organization_id uuid not null,
+  project_id uuid not null,
+  build_session_id uuid not null references build_sessions (build_session_id) on delete cascade,
+  sandbox_environment_id uuid not null references sandbox_environments (sandbox_environment_id) on delete cascade,
+  sandbox_id text not null,
+  port integer not null,
+  status text not null,
+  health_url text,
+  proxy_url text,
+  error_details jsonb,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists previews_scope_idx
+  on previews (organization_id, project_id, created_at desc);
+
+create table if not exists evidence (
+  evidence_id uuid primary key,
+  organization_id uuid not null,
+  project_id uuid not null,
+  build_session_id uuid references build_sessions (build_session_id) on delete cascade,
+  run_id uuid references runs (run_id) on delete cascade,
+  artifact_id uuid not null references artifacts (artifact_id) on delete cascade,
+  kind text not null,
+  summary text not null,
+  status text not null,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists evidence_scope_idx
+  on evidence (organization_id, project_id, created_at desc);
 `;

@@ -94,15 +94,18 @@ export function createRunEventHandlers(deps: RunEventRouteDeps) {
       });
       const query = EventsQuerySchema.safeParse({
         after: c.req.query("after"),
-        organizationId: c.req.query("organizationId"),
-        projectId: c.req.query("projectId"),
+        organizationId:
+          c.req.query("organizationId") ??
+          "00000000-0000-4000-8000-000000000002",
+        projectId:
+          c.req.query("projectId") ?? "00000000-0000-4000-8000-000000000003",
       });
 
       if (!(params.success && query.success)) {
         return apiErrorResponse({
           code: "invalid_request",
           message:
-            "A build session id, both scope identifiers, and a non-negative cursor are required.",
+            "A valid buildSessionId and non-negative cursor are required.",
           requestId: rid,
         });
       }
