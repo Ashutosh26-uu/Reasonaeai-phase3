@@ -7,6 +7,22 @@
     "./authorize": {
       "types": "./src/authorize.ts",
       "import": "./dist/authorize.js"
+    },
+    "./csrf": {
+      "types": "./src/csrf.ts",
+      "import": "./dist/csrf.js"
+    },
+    "./entitlements": {
+      "types": "./src/entitlements.ts",
+      "import": "./dist/entitlements.js"
+    },
+    "./redirect": {
+      "types": "./src/redirect.ts",
+      "import": "./dist/redirect.js"
+    },
+    "./session-policy": {
+      "types": "./src/session-policy.ts",
+      "import": "./dist/session-policy.js"
     }
   },
   "scripts": {
@@ -19,6 +35,7 @@
     "@reasonateai/contracts": "workspace:*"
   },
   "devDependencies": {
+    "@types/node": "^22.20.3",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

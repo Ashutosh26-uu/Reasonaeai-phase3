@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { SESSION_COOKIE } from "@reasonateai/contracts/auth";
 import {
   OrganizationIdSchema,
   ProjectIdSchema,
@@ -88,7 +89,7 @@ describeWithDatabase("build session routes", () => {
       idleTtlMs: HOUR,
       userId,
     });
-    return `reasonate_session=${issued.token}`;
+    return `${SESSION_COOKIE}=${issued.token}`;
   }
 
   function body(overrides: Record<string, unknown> = {}) {
@@ -199,7 +200,7 @@ describeWithDatabase("build session routes", () => {
     const response = await handlers.allocate(
       context({
         body: body(),
-        cookie: `reasonate_session=${issued.token}`,
+        cookie: `${SESSION_COOKIE}=${issued.token}`,
         idempotencyKey: "revoked-key",
         requestId: "req-revoked",
       })

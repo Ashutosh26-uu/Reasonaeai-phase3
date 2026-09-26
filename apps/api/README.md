@@ -66,6 +66,19 @@ pnpm --filter @reasonateai/api run cto:chat
 
 The harness streams the run instead of awaiting a final answer, so the work the CTO performs is visible while it happens: each step boundary, the model's reasoning, every tool call with its arguments, every tool result, and a closing count of steps, tool calls, and elapsed time. A rejected provider call prints the failure plus the shape of the request that produced it — message roles in order, and per assistant message the tool-call count and whether `reasoning_content` was present — without echoing message content.
 
+## Configuration
+
+| Variable | Needed for | Meaning |
+| --- | --- | --- |
+| `DATABASE_URL` | every request | PostgreSQL holding tenants, sessions, sign-in links, the event ledger, and the audit trail. Read on first use, so the artifact still builds without it. |
+| `REDIS_URL` | sign-in and run admission | Fixed-window counters for the identity rate limits and the per-organization plan limit. |
+| `SESSION_SECRET` | sign-in and every command | Keys the CSRF token that binds a browser command to its session. Read on first use and required: without it a state-changing request fails loudly instead of accepting a forgeable token. |
+| `REASONATE_PUBLIC_ORIGIN` | production | Absolute origin a sign-in link points back at. Development falls back to `http://localhost:4111`. |
+| `REASONATE_ALLOWED_ORIGINS` | production | Comma-separated origins allowed to issue browser commands. A state-changing request whose `Origin` names anything else is refused. |
+| `NODE_ENV` | — | `production` marks cookies `Secure` and disables the development magic-link sender. Anything else is treated as development. |
+
+Sign-in is email magic link. No email provider is configured in this environment, so the sender in `src/mastra/adapters/magic-link-sender.ts` prints the link to stdout, announces itself as the development sender, and refuses to run outside development. A real provider replaces it behind the same `MagicLinkSender` contract.
+
 ## Current boundary
 
 This change establishes the branded agent harness and typed lifecycle contracts. Authenticated build-session allocation, durable project state, browser verification, controlled network brokerage, preview routing, and the production deployment provider are still tracked as in progress or future work in `.context/PHASE.md`; they are not represented here as completed behavior.

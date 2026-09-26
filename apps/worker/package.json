@@ -1,0 +1,37 @@
+{
+  "name": "@reasonateai/worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Private execution plane: leases a runnable run, restores its workspace, drives the CTO, and persists the ledger.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "ultracite check .",
+    "dev": "tsx src/main.ts",
+    "start": "node dist/main.js",
+    "pretest": "pnpm --filter \"@reasonateai/worker^...\" build",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@mastra/core": "^1.67.0",
+    "@mastra/docker": "^0.8.0",
+    "@reasonateai/contracts": "workspace:*",
+    "@reasonateai/cto-runtime": "workspace:*",
+    "@reasonateai/project-state": "workspace:*",
+    "@reasonateai/sandbox": "workspace:*",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "@types/pg": "8.23.1",
+    "pg": "8.23.0",
+    "tsx": "^4.23.15",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=22.22.0"
+  }
+}

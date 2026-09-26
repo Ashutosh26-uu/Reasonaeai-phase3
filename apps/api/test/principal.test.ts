@@ -1,12 +1,12 @@
 import { ApiErrorSchema } from "@reasonateai/contracts/api-error";
+import { SESSION_COOKIE } from "@reasonateai/contracts/auth";
 import type { SessionRepository } from "@reasonateai/project-state/sessions";
 import { describe, expect, it } from "vitest";
 import {
   apiErrorResponse,
   PRINCIPAL_CONTEXT_KEY,
-  readSessionCookie,
+  readCookie,
   resolveSessionPrincipal,
-  SESSION_COOKIE_NAME,
   unauthenticatedResponse,
 } from "../src/mastra/principal";
 
@@ -43,36 +43,31 @@ function sessionsResolving(result: unknown): SessionRepository {
 describe("session cookie reading", () => {
   it("returns the exact value of the named cookie", () => {
     expect(
-      readSessionCookie(
-        `${SESSION_COOKIE_NAME}=abc123; other=xyz`,
-        SESSION_COOKIE_NAME
-      )
+      readCookie(`${SESSION_COOKIE}=abc123; other=xyz`, SESSION_COOKIE)
     ).toBe("abc123");
   });
 
   it("does not confuse a similarly named cookie for the session cookie", () => {
-    expect(
-      readSessionCookie("reasonate_session_backup=evil", SESSION_COOKIE_NAME)
-    ).toBe(undefined);
-    expect(
-      readSessionCookie("xreasonate_session=evil", SESSION_COOKIE_NAME)
-    ).toBe(undefined);
+    expect(readCookie("reasonate_session_backup=evil", SESSION_COOKIE)).toBe(
+      undefined
+    );
+    expect(readCookie("xreasonate_session=evil", SESSION_COOKIE)).toBe(
+      undefined
+    );
   });
 
   it("fails closed on an absent, empty, or malformed header", () => {
-    expect(readSessionCookie(undefined, SESSION_COOKIE_NAME)).toBe(undefined);
-    expect(readSessionCookie("", SESSION_COOKIE_NAME)).toBe(undefined);
-    expect(
-      readSessionCookie(`${SESSION_COOKIE_NAME}=`, SESSION_COOKIE_NAME)
-    ).toBe(undefined);
-    expect(readSessionCookie("novalue", SESSION_COOKIE_NAME)).toBe(undefined);
+    expect(readCookie(undefined, SESSION_COOKIE)).toBe(undefined);
+    expect(readCookie("", SESSION_COOKIE)).toBe(undefined);
+    expect(readCookie(`${SESSION_COOKIE}=`, SESSION_COOKIE)).toBe(undefined);
+    expect(readCookie("novalue", SESSION_COOKIE)).toBe(undefined);
   });
 });
 
 describe("principal resolution", () => {
   it("resolves a live session into a user principal bounded by the earlier expiry", async () => {
     const principal = await resolveSessionPrincipal({
-      cookieHeader: `${SESSION_COOKIE_NAME}=token-value`,
+      cookieHeader: `${SESSION_COOKIE}=token-value`,
       sessions: sessionsResolving(liveSession()),
     });
 
@@ -93,14 +88,14 @@ describe("principal resolution", () => {
 
     expect(
       await resolveSessionPrincipal({
-        cookieHeader: `${SESSION_COOKIE_NAME}=token-value`,
+        cookieHeader: `${SESSION_COOKIE}=token-value`,
         sessions: sessionsResolving(undefined),
       })
     ).toBe(undefined);
 
     expect(
       await resolveSessionPrincipal({
-        cookieHeader: `${SESSION_COOKIE_NAME}=token-value`,
+        cookieHeader: `${SESSION_COOKIE}=token-value`,
         sessions: sessionsResolving(
           liveSession({ revokedAt: new Date().toISOString() })
         ),
@@ -116,7 +111,7 @@ describe("principal resolution", () => {
 
     expect(
       await resolveSessionPrincipal({
-        cookieHeader: `${SESSION_COOKIE_NAME}=token-value`,
+        cookieHeader: `${SESSION_COOKIE}=token-value`,
         now: new Date(NOW),
         sessions: sessionsResolving(expired),
       })
@@ -126,7 +121,7 @@ describe("principal resolution", () => {
   it("rejects a session whose identifiers are not usable principal identifiers", async () => {
     await expect(
       resolveSessionPrincipal({
-        cookieHeader: `${SESSION_COOKIE_NAME}=token-value`,
+        cookieHeader: `${SESSION_COOKIE}=token-value`,
         sessions: sessionsResolving(liveSession({ userId: "not-a-uuid" })),
       })
     ).rejects.toThrow();

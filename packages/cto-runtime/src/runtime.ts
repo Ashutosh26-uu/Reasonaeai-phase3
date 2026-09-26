@@ -9,6 +9,12 @@ import type { MastraCompositeStore } from "@mastra/core/storage";
 import type { Workspace, WorkspaceFilesystem } from "@mastra/core/workspace";
 import { Memory } from "@mastra/memory";
 import { materializeDelegatableSubagents } from "./agents/materialize.js";
+import {
+  type BudgetStopCondition,
+  createRunBudget,
+  type RunBudget,
+  type RunBudgetConfig,
+} from "./budget.js";
 import { composeSystemPrompt } from "./context/compose.js";
 import type { PlatformFacts, SandboxCapacity } from "./context/environment.js";
 import { deepseekReasoningCompat } from "./model/deepseek-reasoning.js";
@@ -67,6 +73,12 @@ export interface CtoSubagentModels {
 export interface ReasonateCtoRuntimeConfig {
   browser?: MastraBrowser;
   /**
+   * Consumption ceilings every agent loop this runtime drives stops on. Omitted
+   * means no budget and no stop condition, exactly as an unbudgeted runtime has
+   * always behaved: a run is then bounded only by its step caps and wall-clock.
+   */
+  budget?: RunBudgetConfig | undefined;
+  /**
    * Enforced resources of the environment the agent's tools execute in. Omitted
    * means the sandbox cannot report them, and the prompt says nothing rather
    * than guessing: a plan sized to invented capacity fails later.
@@ -96,6 +108,25 @@ export interface ReasonateCtoRuntimeConfig {
   workspaceRoot?: string;
 }
 
+/**
+ * The stop conditions a loop runs under.
+ *
+ * A budgeted loop is bounded by the budget and by its configured step cap, so
+ * whichever bites first ends it. Without a budget there is no stop condition at
+ * all: a cap stays on `maxSteps` alone, exactly as it always has.
+ */
+function stopConditions(
+  budget: RunBudget,
+  maxSteps: number | undefined
+): BudgetStopCondition[] {
+  const conditions: BudgetStopCondition[] = [budget.stopWhen];
+  if (maxSteps !== undefined) {
+    const cap = maxSteps;
+    conditions.push(({ steps }) => steps.length >= cap);
+  }
+  return conditions;
+}
+
 function resolveLimits(
   overrides: Partial<CtoRuntimeLimits> | undefined
 ): CtoRuntimeLimits {
@@ -117,6 +148,8 @@ function resolveLimits(
 
 export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
   const limits = resolveLimits(config.limits);
+  const budget =
+    config.budget === undefined ? undefined : createRunBudget(config.budget);
   const memory = config.memory ?? new Memory();
   const snapshotsByRequest = new WeakMap<RequestContext, ReadSnapshotStore>();
   const resolveWorkspace = async (requestContext: RequestContext) => {
@@ -242,6 +275,9 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
       ...(limits.mainMaxSteps === undefined
         ? {}
         : { maxSteps: limits.mainMaxSteps }),
+      ...(budget === undefined
+        ? {}
+        : { stopWhen: stopConditions(budget, limits.mainMaxSteps) }),
     },
     description:
       "ReasonateAI's autonomous CTO that owns the complete product lifecycle from intent through verified deployment.",
@@ -253,6 +289,36 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     ...(config.skills ? { skills: config.skills } : {}),
     tools,
     workspace: config.workspace,
+  });
+
+  const subagents = materializeDelegatableSubagents({
+    defaultModelId: config.model,
+    overrides: {
+      coder: {
+        ...(config.subagentModels?.coder
+          ? { model: config.subagentModels.coder }
+          : {}),
+        ...(limits.workerMaxSteps === undefined
+          ? {}
+          : { maxTurns: limits.workerMaxSteps }),
+      },
+      debugger: {
+        ...(config.subagentModels?.debugger
+          ? { model: config.subagentModels.debugger }
+          : {}),
+        ...(limits.debuggerMaxSteps === undefined
+          ? {}
+          : { maxTurns: limits.debuggerMaxSteps }),
+      },
+      scout: {
+        ...(config.subagentModels?.scout
+          ? { model: config.subagentModels.scout }
+          : {}),
+        ...(limits.scoutMaxSteps === undefined
+          ? {}
+          : { maxTurns: limits.scoutMaxSteps }),
+      },
+    },
   });
 
   const controller = new AgentController<CtoControllerState>({
@@ -285,39 +351,18 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
       },
     ],
     ...(config.storage ? { storage: config.storage } : {}),
-    subagents: materializeDelegatableSubagents({
-      defaultModelId: config.model,
-      overrides: {
-        coder: {
-          ...(config.subagentModels?.coder
-            ? { model: config.subagentModels.coder }
-            : {}),
-          ...(limits.workerMaxSteps === undefined
-            ? {}
-            : { maxTurns: limits.workerMaxSteps }),
-        },
-        debugger: {
-          ...(config.subagentModels?.debugger
-            ? { model: config.subagentModels.debugger }
-            : {}),
-          ...(limits.debuggerMaxSteps === undefined
-            ? {}
-            : { maxTurns: limits.debuggerMaxSteps }),
-        },
-        scout: {
-          ...(config.subagentModels?.scout
-            ? { model: config.subagentModels.scout }
-            : {}),
-          ...(limits.scoutMaxSteps === undefined
-            ? {}
-            : { maxTurns: limits.scoutMaxSteps }),
-        },
-      },
-    }),
+    subagents:
+      budget === undefined
+        ? subagents
+        : subagents.map((subagent) => ({
+            ...subagent,
+            stopWhen: stopConditions(budget, subagent.maxSteps),
+          })),
     workspace: config.workspace,
   });
 
   return {
+    budget,
     controller,
     limits,
     mainAgent,

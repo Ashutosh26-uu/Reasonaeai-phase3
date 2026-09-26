@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./checkpoint": {
+      "types": "./src/checkpoint.ts",
+      "import": "./dist/checkpoint.js"
+    },
     "./docker": {
       "types": "./src/docker-sandbox.ts",
       "import": "./dist/docker-sandbox.js"

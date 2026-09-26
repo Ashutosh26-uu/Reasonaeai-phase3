@@ -48,6 +48,10 @@
       "types": "./src/run-scope.ts",
       "import": "./dist/run-scope.js"
     },
+    "./run-events": {
+      "types": "./src/run-events.ts",
+      "import": "./dist/run-events.js"
+    },
     "./runtime": {
       "types": "./src/runtime.ts",
       "import": "./dist/runtime.js"
