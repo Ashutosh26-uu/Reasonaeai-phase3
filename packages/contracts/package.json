@@ -24,6 +24,10 @@
       "types": "./src/identity.ts",
       "import": "./dist/identity.js"
     },
+    "./sensory": {
+      "types": "./src/sensory.ts",
+      "import": "./dist/sensory.js"
+    },
     "./sandbox": {
       "types": "./src/sandbox.ts",
       "import": "./dist/sandbox.js"
