@@ -14,14 +14,23 @@ export interface StreamPublisher {
   publish: (topic: string, payload: RunEventEnvelope) => Promise<void>;
 }
 
+/**
+ * Namespace for every Redis key this package owns. A deployment that shares a
+ * Redis instance with something else changes it once, here.
+ */
+export const DEFAULT_REDIS_KEY_PREFIX = "reasonateai";
+
 export function createRedisStreamPublisher(config: {
   maxStreamLength?: number;
   keyPrefix?: string;
   url: string;
 }): StreamPublisher {
-  const keyPrefix = config.keyPrefix ?? "reasonateai";
+  const keyPrefix = config.keyPrefix ?? DEFAULT_REDIS_KEY_PREFIX;
   const maxStreamLength = config.maxStreamLength ?? 10_000;
   const client = createClient({ url: config.url });
+  // A transport error rejects the publish in flight; the listener only stops an
+  // unhandled 'error' event from taking the process down.
+  client.on("error", () => undefined);
   let connecting: Promise<unknown> | undefined;
 
   async function connected(): Promise<unknown> {

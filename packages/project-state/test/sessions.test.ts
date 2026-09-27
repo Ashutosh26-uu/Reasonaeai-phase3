@@ -3,6 +3,7 @@ import { UserIdSchema } from "@reasonateai/contracts/identity";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createProjectStateStore } from "../src/postgres.js";
+import { deleteFixtures } from "./support/database.js";
 
 const connectionString = process.env.DATABASE_URL;
 const HOUR = 1000 * 60 * 60;
@@ -31,9 +32,11 @@ describeWithDatabase("browser session store", () => {
   });
 
   afterAll(async () => {
-    await pool.query("delete from users where user_id = any($1::uuid[])", [
-      [userId, otherUserId],
-    ]);
+    await deleteFixtures(
+      pool,
+      "delete from users where user_id = any($1::uuid[])",
+      [[userId, otherUserId]]
+    );
     await pool.end();
     await store.close();
   });

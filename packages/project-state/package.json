@@ -16,6 +16,10 @@
       "types": "./src/relay.ts",
       "import": "./dist/relay.js"
     },
+    "./run-event-stream": {
+      "types": "./src/run-event-stream.ts",
+      "import": "./dist/run-event-stream.js"
+    },
     "./schema": {
       "types": "./src/schema.ts",
       "import": "./dist/schema.js"

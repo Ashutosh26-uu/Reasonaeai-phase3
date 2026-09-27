@@ -13,12 +13,16 @@ import {
 import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
 import { z } from "zod";
 import { apiErrorResponse } from "../principal";
+import {
+  type RunEventFanout,
+  type RunEventSubscription,
+  runEventFanout,
+} from "../run-event-fanout";
 import type { HandlerContext } from "./build-sessions";
 
 export const RUN_EVENTS_PATH = "/v1/build-sessions/:buildSessionId/events";
 
 const EVENTS_PAGE_SIZE = 200;
-const HEARTBEAT = ": keep-alive\n\n";
 
 const EventsParamsSchema = z.strictObject({ buildSessionId: z.uuid() });
 const EventsQuerySchema = z.strictObject({
@@ -54,8 +58,8 @@ export function formatServerSentEvent(event: RunEventEnvelope): string {
 }
 
 export interface RunEventRouteDeps {
-  /** How long to wait between ledger reads while following a run. */
-  pollIntervalMs?: number;
+  /** Overridden by tests to drive live delivery without a live transport. */
+  fanout?: RunEventFanout;
   resolvePrincipal: (input: {
     cookieHeader: string | undefined;
   }) => Promise<UserPrincipal | undefined>;
@@ -63,17 +67,18 @@ export interface RunEventRouteDeps {
 }
 
 export function createRunEventHandlers(deps: RunEventRouteDeps) {
-  const pollIntervalMs = deps.pollIntervalMs ?? 1000;
+  const fanout = deps.fanout ?? runEventFanout();
 
   return {
     /**
      * Streams a run's durable events, replaying from the caller's cursor before
      * following live.
      *
-     * The ledger is the source for both phases. Following by reading the ledger
-     * rather than subscribing to Redis means replay and live delivery share one
-     * code path and one ordering guarantee, and a reconnect can never lose or
-     * duplicate a user-visible transition.
+     * The ledger is the source for both phases: replay pages it up to the
+     * caller's cursor, and a hole the live transport cannot bridge is
+     * backfilled from the same ledger. Live delivery rides the process-wide
+     * fan-out, so concurrent followers of one run share one subscription
+     * instead of each polling the ledger on its own timer.
      */
     stream: async (c: HandlerContext): Promise<Response> => {
       const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
@@ -173,8 +178,10 @@ export function createRunEventHandlers(deps: RunEventRouteDeps) {
 
       const { runId } = buildSession;
       const encoder = new TextEncoder();
+      const abortSignal = c.req.raw?.signal;
 
       let stop: (() => void) | undefined;
+      const onAbort = () => stop?.();
 
       const body = new ReadableStream<Uint8Array>({
         cancel() {
@@ -182,9 +189,12 @@ export function createRunEventHandlers(deps: RunEventRouteDeps) {
         },
         start(controller) {
           let closed = false;
-          let following = false;
           let lastSent = cursor;
-          let timer: NodeJS.Timeout | undefined;
+          let subscription: RunEventSubscription | undefined;
+          // Live delivery and gap backfill both write, and a gap is discovered
+          // in the middle of a delivery burst, so every write is chained: the
+          // stream must never emit a later sequence ahead of an earlier one.
+          let pending: Promise<void> = Promise.resolve();
 
           const write = (chunk: string) => {
             if (!closed) {
@@ -192,76 +202,80 @@ export function createRunEventHandlers(deps: RunEventRouteDeps) {
             }
           };
 
-          stop = () => {
-            closed = true;
-            if (timer) {
-              clearInterval(timer);
-              timer = undefined;
-            }
-          };
-
-          const readBatch = async () =>
-            await deps.store().listRunEvents({
-              afterSequence: lastSent,
-              limit: EVENTS_PAGE_SIZE,
-              runId,
-              scope,
-            });
-
           const emit = (event: RunEventEnvelope) => {
+            // The transport is at-least-once and backfill overlaps live
+            // delivery, so the same sequence can arrive twice; the cursor is
+            // what keeps the stream exact.
+            if (event.sequence <= lastSent) {
+              return;
+            }
             write(formatServerSentEvent(event));
             lastSent = event.sequence;
           };
 
-          const follow = async () => {
-            if (following || closed) {
-              return;
-            }
-            following = true;
-            try {
-              const batch = await readBatch();
-              if (batch.length === 0) {
-                // An idle stream needs traffic so intermediaries do not close it.
-                write(HEARTBEAT);
-                return;
-              }
-              for (const event of batch) {
-                emit(event);
-              }
-            } catch {
-              // A transient read failure must not end the stream; the next tick
-              // retries from the same cursor.
-              write(HEARTBEAT);
-            } finally {
-              following = false;
-            }
-          };
-
-          (async () => {
-            // Replay everything the client missed before going live. Paging is
-            // inherently sequential: each page's cursor is the previous page's
-            // last sequence, so the reads cannot overlap.
+          const readLedger = async () => {
+            // Paging is cursor-dependent: each page resumes after the previous
+            // page's last sequence, so the reads cannot overlap.
             for (;;) {
               // biome-ignore lint/performance/noAwaitInLoops: cursor-dependent pagination
-              const batch = await readBatch();
+              const batch = await deps.store().listRunEvents({
+                afterSequence: lastSent,
+                limit: EVENTS_PAGE_SIZE,
+                runId,
+                scope,
+              });
               for (const event of batch) {
                 emit(event);
               }
               if (batch.length < EVENTS_PAGE_SIZE) {
-                break;
+                return;
               }
             }
+          };
 
+          const enqueue = (task: () => Promise<void> | void) => {
+            pending = pending.then(task).catch(() => undefined);
+          };
+
+          stop = () => {
+            closed = true;
+            abortSignal?.removeEventListener("abort", onAbort);
+            subscription?.close();
+          };
+
+          const begin = async () => {
+            // Replay everything the client missed before going live: the ledger
+            // covers the run up to now, so the transport only has to carry what
+            // happens next.
+            await readLedger();
             if (closed) {
               return;
             }
+            subscription = fanout.subscribe({
+              buildSessionId: buildSession.buildSessionId,
+              lastDelivered: lastSent,
+              listener: (event) => {
+                enqueue(() => emit(event));
+              },
+              onGap: () => {
+                // The listener attached after these events flowed, so the
+                // transport cannot hand them over; the ledger can.
+                enqueue(readLedger);
+              },
+              organizationId,
+              projectId,
+              runId,
+            });
+          };
 
-            // `follow` swallows its own read failures and never rejects, so the
-            // tick does not need a rejection handler.
-            timer = setInterval(() => {
-              follow();
-            }, pollIntervalMs);
-          })().catch(() => {
+          abortSignal?.addEventListener("abort", onAbort, { once: true });
+          if (abortSignal?.aborted) {
+            stop();
+            controller.close();
+            return;
+          }
+
+          begin().catch(() => {
             closed = true;
             controller.close();
           });

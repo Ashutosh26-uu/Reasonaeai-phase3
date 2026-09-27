@@ -1,17 +1,33 @@
 import { authorize } from "@reasonateai/auth/authorize";
+import {
+  decideEntitlement,
+  decideRateLimit,
+  defaultPlan,
+} from "@reasonateai/auth/entitlements";
 import type { ApiErrorCode } from "@reasonateai/contracts/api-error";
+import {
+  type EntitlementDecision,
+  type Entitlements,
+  PLAN_ENTITLEMENTS,
+  type UsageMetric,
+} from "@reasonateai/contracts/entitlements";
 import {
   AllocateBuildSessionRequestSchema,
   BuildSessionIdSchema,
   BuildSessionSchema,
 } from "@reasonateai/contracts/execution";
 import {
+  type OrganizationId,
   OrganizationIdSchema,
   type Permission,
+  type ProjectId,
   ProjectIdSchema,
   type UserPrincipal,
 } from "@reasonateai/contracts/identity";
-import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
+import type {
+  BuildSessionAllocation,
+  ProjectStateStore,
+} from "@reasonateai/project-state/postgres";
 import { z } from "zod";
 import { apiErrorResponse } from "../principal";
 
@@ -48,6 +64,40 @@ const AllocationBodySchema = AllocateBuildSessionRequestSchema.omit({
 const BuildSessionParamsSchema = z.strictObject({
   buildSessionId: z.uuid(),
 });
+
+/** The metric an allocation is metered against. */
+const RUN_METRIC: UsageMetric = "runs";
+
+/**
+ * One allocation consumes one run slot. The run's sandbox minutes and tokens
+ * are metered as the run reports them, not at admission.
+ */
+const RUN_SLOT = 1;
+
+/**
+ * A refused admission is typed like every other route error. The decision's
+ * reason is written for the caller, and a retry hint becomes a `Retry-After`
+ * header so a client can back off without parsing prose. A hint from the store
+ * wins over the decision's, since only the store sees the live window.
+ */
+function entitlementRefusal(
+  decision: EntitlementDecision,
+  requestId: string,
+  retryAfterSeconds: number | null
+): Response {
+  const response = apiErrorResponse({
+    code: "rate_limited",
+    message: decision.reason,
+    requestId,
+  });
+  const retryAfter = retryAfterSeconds ?? decision.retryAfterSeconds;
+
+  if (retryAfter !== undefined) {
+    response.headers.set("Retry-After", String(retryAfter));
+  }
+
+  return response;
+}
 
 /**
  * Maps a contract denial reason to a client-facing code. Insufficient authority
@@ -115,6 +165,126 @@ async function authorizeProjectAction(input: {
       resourceId: null,
     },
   });
+}
+
+/**
+ * The metering admission, in the order the route applies it: the limiter is the
+ * only check that sees the request window as it is consumed, the snapshot is the
+ * cheap run-quota refusal, and the reservation is the authoritative one. Returns
+ * the typed refusal, or undefined once the slot is reserved.
+ */
+async function admitRun(input: {
+  entitlements: Entitlements;
+  organizationId: OrganizationId;
+  requestId: string;
+  store: ProjectStateStore;
+}): Promise<Response | undefined> {
+  // The limiter is the only admission check that sees the request window as
+  // it is consumed, so it decides; the policy turns its observation into the
+  // reason and the retry hint.
+  const rate = await input.store.rateLimiter.consume({
+    burstPerMinute: input.entitlements.rateLimit.burstPerMinute,
+    organizationId: input.organizationId,
+    requestsPerDay: input.entitlements.rateLimit.requestsPerDay,
+  });
+  if (!rate.allowed) {
+    return entitlementRefusal(
+      decideRateLimit(input.entitlements, rate.observed),
+      input.requestId,
+      rate.retryAfterSeconds ?? null
+    );
+  }
+
+  const usage = await input.store.usage.snapshot(input.organizationId);
+  // A run quota only refills when the billing period rolls over, so that
+  // instant is the only honest retry hint for a refused run slot.
+  const retryAtPeriodEnd = Math.max(
+    1,
+    Math.ceil((Date.parse(usage.periodEnd) - Date.now()) / 1000)
+  );
+
+  const admission = decideEntitlement({
+    entitlements: input.entitlements,
+    request: { amount: RUN_SLOT, metric: RUN_METRIC },
+    usage,
+  });
+  if (!admission.allowed) {
+    return entitlementRefusal(admission, input.requestId, retryAtPeriodEnd);
+  }
+
+  // The snapshot is the cheap refusal; the reservation is the authoritative
+  // one, so two concurrent allocations cannot both take the last run slot.
+  const reservation = await input.store.usage.reserve({
+    amount: RUN_SLOT,
+    limit: input.entitlements.runsPerPeriod,
+    metric: RUN_METRIC,
+    organizationId: input.organizationId,
+    periodEnd: new Date(usage.periodEnd),
+    periodStart: new Date(usage.periodStart),
+    runId: null,
+  });
+  if (!reservation.allowed) {
+    return entitlementRefusal(
+      decideEntitlement({
+        entitlements: input.entitlements,
+        request: { amount: RUN_SLOT, metric: RUN_METRIC },
+        usage: { ...usage, runs: reservation.observed },
+      }),
+      input.requestId,
+      retryAtPeriodEnd
+    );
+  }
+
+  return undefined;
+}
+
+/**
+ * The reservation is the atomic metering write for the run slot, so the route
+ * never records that unit on the way in. A negative write on the same metric is
+ * the refund, and the snapshot sums it away in the period the reservation landed
+ * in.
+ */
+async function allocateOrRefund(input: {
+  idempotencyKey: string;
+  organizationId: OrganizationId;
+  principal: UserPrincipal;
+  projectId: ProjectId;
+  store: ProjectStateStore;
+}): Promise<BuildSessionAllocation> {
+  const refund = {
+    amount: -RUN_SLOT,
+    metric: RUN_METRIC,
+    organizationId: input.organizationId,
+    runId: null,
+  };
+
+  let allocation: BuildSessionAllocation;
+  try {
+    allocation = await input.store.allocateBuildSession({
+      idempotencyKey: input.idempotencyKey,
+      scope: {
+        organizationId: input.organizationId,
+        projectId: input.projectId,
+      },
+      userSessionId: input.principal.sessionId,
+    });
+  } catch (error) {
+    // The slot was taken but there is no run to spend it on.
+    await input.store.usage.record(refund);
+    throw error;
+  }
+
+  if (!allocation.created) {
+    // A replay adopts the session whose run the first request already metered,
+    // so this request's reservation goes back to the plan. The refund is not
+    // retroactive: until it lands, a concurrent run in an organization at its
+    // plan limit can see a spurious refusal for the width of that window. A
+    // session lookup by idempotency key in the store is the follow-up that
+    // removes the window.
+    await input.store.usage.record(refund);
+  }
+
+  return allocation;
 }
 
 export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
@@ -185,13 +355,27 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
         });
       }
 
-      const allocation = await deps.store().allocateBuildSession({
+      const store = deps.store();
+      // Billing owns the plan column this will read once it ships; until then
+      // the default plan is the only truthful answer for an organization.
+      const entitlements = PLAN_ENTITLEMENTS[defaultPlan];
+
+      const refusal = await admitRun({
+        entitlements,
+        organizationId: organizationId.data,
+        requestId: rid,
+        store,
+      });
+      if (refusal !== undefined) {
+        return refusal;
+      }
+
+      const allocation = await allocateOrRefund({
         idempotencyKey,
-        scope: {
-          organizationId: organizationId.data,
-          projectId: projectId.data,
-        },
-        userSessionId: principal.sessionId,
+        organizationId: organizationId.data,
+        principal,
+        projectId: projectId.data,
+        store,
       });
 
       return c.json(

@@ -43,10 +43,15 @@ Rejecting an item requires recording the decision and reason before removing it.
 ## Deployment and operations
 
 - Additional autonomous deployment providers after the first approval-gated preview/release adapter proves tenancy, audit, rollback, cost, and provider isolation.
+- Preview exposure and the preview gateway. A preview cannot be reached today because a build sandbox runs with no network and no published port, and every way of changing that changes the security boundary: a namespace-sharing proxy that publishes nothing, a loopback-bound published port, or a provider with a port contract. Deferred until that exposure decision is made deliberately, after which the gateway authorizes the requester, enforces expiry, resolves an opaque preview identifier, proxies only to that preview's application port, and serves a per-preview origin that never receives the application's cookies.
 - Additional sandbox providers behind the stable `SandboxProvider` contract.
 - Multi-region execution, data residency, disaster recovery, and enterprise retention controls.
 - Customer-controlled cloud accounts and private network connectivity.
 - Policy-controlled scheduled and event-triggered agent runs.
+
+## Billing and plans
+
+- Plan selection, subscription billing, and self-service limit changes. The product already enforces plan entitlements and rate limits, but an organization carries no plan column, so every organization is evaluated against the single default plan until billing owns that column and its lifecycle.
 
 ## Collaboration and governance
 
