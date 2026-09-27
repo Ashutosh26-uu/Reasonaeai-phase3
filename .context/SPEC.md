@@ -141,7 +141,7 @@ The execution plane is private. A worker fleet consumes authorized commands, obt
 
 PostgreSQL is authoritative for commands, idempotency keys, build sessions, runs, leases, approval state, checkpoints, artifact metadata, deployments, audit records, and a monotonically sequenced event ledger. Each transaction writes an outbox record before a relay publishes it. Redis Streams is the distributed command and live-event transport, never the only record of a command or user-visible transition. Browser reconnect uses the durable event ledger and `Last-Event-ID`, then joins the live SSE stream.
 
-Mastra `AgentController` session state is process-local and therefore non-authoritative. ReasonateAI reconstructs a controller session from the durable build-session, run, approval, and thread binding after restart; no correctness, authorization, or recovery decision depends on an in-memory controller session.
+Mastra `AgentController` session state is process-local and therefore non-authoritative, but its threads and messages are not: storage is PostgreSQL, shared by the API role and the worker role, so a conversation outlives every process that took part in it. ReasonateAI reconstructs a controller session from the durable build-session, run, approval, and thread binding after restart; no correctness, authorization, or recovery decision depends on an in-memory controller session.
 
 ### Source, workspace, and artifact storage
 
@@ -209,10 +209,12 @@ The product lifecycle is:
 Canonical state includes:
 
 - Users, organizations, memberships, authenticated sessions, authorization grants, and build sessions.
+- Conversations: each build session is the project's conversation with its CTO, and its thread and messages are durable rows in PostgreSQL, keyed by the project as their memory resource. A conversation has one writer, enforced by the database rather than by a call sequence.
 - Product specification, architecture, acceptance criteria, plans, tasks, decisions, idempotency keys, and run leases.
 - Sandbox allocation and lifecycle, external integration requirements, secret metadata, and deployment records.
 - Agent runs, tool events, approvals, human responses, budgets, cancellation state, transactional outbox records, and sequenced browser events.
-- Git checkpoints as canonical source history; verification evidence, immutable artifact manifests, previews, deployment URLs, exposure decisions, and release digests.
+- Git checkpoints as canonical source history, keyed by organization and project so a new session continues the project's history rather than starting a file listing; verification evidence, immutable artifact manifests, previews, deployment URLs, exposure decisions, and release digests.
+- Conversation threads and messages, in the same PostgreSQL database as the control plane, so a browser that reconnects reads the conversation the agent actually had.
 - Audit events for authentication and security-sensitive state changes.
 
 PostgreSQL is the authoritative production source of truth. Redis Streams distributes commands and live events across replicas with consumer groups and bounded redelivery. Private S3-compatible object storage holds immutable artifacts, while sandbox filesystems hold mutable workspaces. SQLite remains allowed only for isolated local development; it is not a replica-coordinated production state store.
@@ -235,6 +237,7 @@ PostgreSQL is the authoritative production source of truth. Redis Streams distri
 | Immutable artifacts | Private S3-compatible object storage with tenant-scoped manifests and signed access |
 
 | Mutable project workspace | Provider-neutral isolated sandbox filesystem restored from private Git checkpoints |
+| Durable agent state | PostgreSQL through `@mastra/pg`, in its own schema, shared by the API and the private worker |
 | Public client protocol | HTTPS JSON commands and SSE progress streams; WebSocket/WebRTC only for bidirectional real-time features |
 | Worker topology | Private API/worker split; workers consume Redis Streams, use shared PostgreSQL/object storage, and never receive browser traffic |
 

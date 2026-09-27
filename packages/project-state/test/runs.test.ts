@@ -117,6 +117,7 @@ describeWithDatabase("run dispatch", () => {
 
     expect(listed).toContainEqual({
       buildSessionId: allocation.buildSession.buildSessionId,
+      message: null,
       organizationId: scope.organizationId,
       projectId: scope.projectId,
       runId: allocation.buildSession.runId,

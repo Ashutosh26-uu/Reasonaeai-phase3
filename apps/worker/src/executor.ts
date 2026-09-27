@@ -1,5 +1,6 @@
 import type { RequestContext } from "@mastra/core/request-context";
 import type { WorkspaceSandbox } from "@mastra/core/workspace";
+import { conversationThreadId } from "@reasonateai/contracts/execution";
 import type { RunEventType } from "@reasonateai/contracts/execution-protocol";
 import type { RunScope } from "@reasonateai/cto-runtime/run-scope";
 import type {
@@ -148,6 +149,15 @@ export class RunExecutor {
     });
 
     const requestContext = createRunRequestContext(scope);
+    // The user's own words when this run was queued by a message, and the
+    // default dispatch directive for a run that was queued without one. Either
+    // way exactly one user turn is sent, and the durable thread records it.
+    const content =
+      candidate.message ??
+      runDirective({
+        buildSessionId: scope.buildSessionId,
+        runId: scope.runId,
+      });
     let sandbox: WorkspaceSandbox | undefined;
     let driven: DriveResult;
 
@@ -158,6 +168,10 @@ export class RunExecutor {
         requestContext,
         resourceId: scope.projectId,
         scope: scope.buildSessionId,
+        // The conversation's thread is derived from the build session, so a
+        // browser, this worker, and any later run all resolve the same history
+        // rather than each opening a thread of their own.
+        threadId: conversationThreadId(scope.buildSessionId),
       });
 
       sandbox = await this.#deps.resolveSandbox({ requestContext, scope });
@@ -173,6 +187,7 @@ export class RunExecutor {
       });
 
       driven = await this.#drive({
+        content,
         fields,
         lease,
         requestContext,
@@ -198,6 +213,8 @@ export class RunExecutor {
    * the moment the lease is lost or the process is told to shut down.
    */
   async #drive(input: {
+    /** The user turn this run carries, or its default dispatch directive. */
+    content: string;
     fields: LogFields;
     lease: { expiresAt: Date; leaseId: string };
     requestContext: RequestContext;
@@ -256,10 +273,7 @@ export class RunExecutor {
     // not awaited here: a stop request has to be able to win the race.
     const sending = input.session
       .sendMessage({
-        content: runDirective({
-          buildSessionId: scope.buildSessionId,
-          runId: scope.runId,
-        }),
+        content: input.content,
         requestContext: input.requestContext,
         untilIdle: true,
       })

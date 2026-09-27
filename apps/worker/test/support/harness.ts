@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { AgentControllerEvent } from "@mastra/core/agent-controller";
+import type { RequestContext } from "@mastra/core/request-context";
 import type { BuildSessionId } from "@reasonateai/contracts/execution";
 import {
   type OrganizationId,
@@ -120,7 +121,8 @@ export async function createHarness(input: {
  * claims is the same kind of row a real dispatch produces.
  */
 export async function allocateRunFixture(
-  harness: Harness
+  harness: Harness,
+  options: { message?: string } = {}
 ): Promise<RunFixture> {
   const organizationId = OrganizationIdSchema.parse(randomUUID());
   const projectId = ProjectIdSchema.parse(randomUUID());
@@ -138,6 +140,7 @@ export async function allocateRunFixture(
 
   const allocation = await harness.store.allocateBuildSession({
     idempotencyKey: `worker-test-${randomUUID()}`,
+    ...(options.message === undefined ? {} : { message: options.message }),
     scope,
     userSessionId: SessionIdSchema.parse(randomUUID()),
   });
@@ -236,6 +239,8 @@ export interface SessionScript {
 export class ScriptedSession implements RunSession {
   aborted = false;
   readonly events: AgentControllerEvent[];
+  /** Every turn this session was sent, in order, verbatim. */
+  readonly sent: string[] = [];
   readonly started: Promise<void>;
   sendCalls = 0;
 
@@ -266,6 +271,7 @@ export class ScriptedSession implements RunSession {
 
   sendMessage = (input: SessionSendInput): Promise<void> => {
     this.sendCalls += 1;
+    this.sent.push(input.content);
     const { requestContext } = input;
     if (requestContext === undefined) {
       return Promise.reject(
@@ -320,9 +326,18 @@ export class ScriptedSession implements RunSession {
   }
 }
 
+/** What the worker asked for when it created a session. */
+export interface SessionRequest {
+  readonly requestContext: RequestContext;
+  readonly resourceId: string;
+  readonly scope: string;
+  readonly threadId: string;
+}
+
 export interface ScriptedRuntime {
   readonly initCalls: () => number;
   readonly runtime: RunRuntime;
+  readonly sessionRequests: SessionRequest[];
   readonly sessions: ScriptedSession[];
   /** Resolves with the next session this runtime hands out, or the first already made. */
   readonly waitForSession: () => Promise<ScriptedSession>;
@@ -331,6 +346,7 @@ export interface ScriptedRuntime {
 /** A runtime that hands out one scripted session per run and counts its use. */
 export function scriptedRuntime(script: SessionScript = {}): ScriptedRuntime {
   const sessions: ScriptedSession[] = [];
+  const sessionRequests: SessionRequest[] = [];
   const waiting: Array<(session: ScriptedSession) => void> = [];
   let initCalls = 0;
 
@@ -338,7 +354,8 @@ export function scriptedRuntime(script: SessionScript = {}): ScriptedRuntime {
     initCalls: () => initCalls,
     runtime: {
       controller: {
-        createSession: () => {
+        createSession: (request) => {
+          sessionRequests.push(request);
           const session = new ScriptedSession(script);
           sessions.push(session);
           for (const resolve of waiting.splice(0)) {
@@ -352,6 +369,7 @@ export function scriptedRuntime(script: SessionScript = {}): ScriptedRuntime {
         },
       },
     },
+    sessionRequests,
     sessions,
     waitForSession: async () => {
       const [existing] = sessions;

@@ -57,10 +57,18 @@ create table if not exists runs (
   project_id uuid not null,
   build_session_id uuid not null references build_sessions (build_session_id) on delete cascade,
   status text not null,
+  message text,
   next_sequence bigint not null default 1,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- One run of a conversation executes at a time: the ledger has a single
+-- sequence per run, and a conversation's thread has one writer, so a second
+-- turn is refused while an earlier run has not ended.
+create unique index if not exists runs_active_build_session_key
+  on runs (build_session_id)
+  where status not in ('completed', 'failed', 'cancelled');
 
 create table if not exists run_leases (
   run_id uuid primary key references runs (run_id) on delete cascade,
@@ -155,4 +163,36 @@ create table if not exists deployments (
 
 create index if not exists deployments_scope_idx
   on deployments (organization_id, project_id, created_at desc);
+`;
+
+/**
+ * Changes made after the first deployment of the schema above.
+ *
+ * A database that already ran the create statements above never sees an edit to
+ * them — the table exists, so `create table if not exists` is a no-op and a new
+ * column would never arrive. These statements are what reach an existing
+ * database instead.
+ *
+ * They are applied only when the catalog says they are missing, because a
+ * statement that changes a table's shape takes an access-exclusive lock on it
+ * whether or not it has anything to change: running `alter table` and
+ * `create index` on every start queues that lock behind every live writer, and
+ * a writer that holds its own lock while the migration waits past it is a
+ * deadlock Postgres resolves by killing one of the two. A migration that has
+ * nothing to do must therefore do nothing.
+ */
+export const RUNS_MESSAGE_COLUMN_SQL =
+  "alter table runs add column if not exists message text";
+
+/**
+ * One run of a conversation executes at a time: the ledger has a single
+ * sequence per run, and a conversation's thread has one writer, so a second
+ * turn is refused while an earlier run has not ended. A partial unique index is
+ * what makes that a fact of the database rather than a check a racing writer
+ * can lose.
+ */
+export const RUNS_ACTIVE_BUILD_SESSION_INDEX_SQL = `
+create unique index if not exists runs_active_build_session_key
+  on runs (build_session_id)
+  where status not in ('completed', 'failed', 'cancelled');
 `;

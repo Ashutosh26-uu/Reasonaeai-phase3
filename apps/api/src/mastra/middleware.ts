@@ -32,6 +32,71 @@ import { apiErrorResponse, readCookie } from "./principal";
 /** The product routes: everything outside the blocked built-in `/api` groups. */
 export const PRODUCT_ROUTES_PATH = "/v1/*";
 
+export interface SchemaReadyConfig {
+  /**
+   * Applies every authoritative migration. It is idempotent, so one call is
+   * enough for the life of the process and the call is memoized here.
+   */
+  migrate: () => Promise<void>;
+}
+
+/**
+ * Makes the authoritative schema exist before the first product command runs.
+ *
+ * Nothing applies migrations at import: the API artifact has to build and be
+ * inspected without a database present, and a deployment that has lost its
+ * database should fail its requests rather than refuse to start. So the first
+ * `/v1` request applies them, once, behind a single memoized promise. A failed
+ * attempt is not memoized — the next request retries, which is what lets a
+ * database that is briefly unavailable recover without a restart.
+ *
+ * The migration itself is the repository's own: idempotent DDL taken under a
+ * transaction-scoped advisory lock and retried on a lock conflict, so several
+ * replicas starting together converge instead of colliding.
+ */
+export function createSchemaReadyMiddleware(config: SchemaReadyConfig): {
+  handler: (
+    c: MiddlewareContext,
+    next: NextFunction
+  ) => Promise<Response | undefined>;
+  path: string;
+} {
+  let ready: Promise<void> | undefined;
+
+  return {
+    handler: async (c, next) => {
+      if (ready === undefined) {
+        ready = config.migrate().catch((error: unknown) => {
+          ready = undefined;
+          throw error;
+        });
+      }
+
+      try {
+        await ready;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(
+          JSON.stringify({
+            event: "schema.migration.failed",
+            message,
+            requestId: c.req.header("x-request-id") ?? null,
+          })
+        );
+        return apiErrorResponse({
+          code: "internal",
+          message:
+            "The authoritative schema could not be prepared, so this request was not served.",
+          requestId: c.req.header("x-request-id") ?? crypto.randomUUID(),
+        });
+      }
+
+      await next();
+    },
+    path: PRODUCT_ROUTES_PATH,
+  };
+}
+
 /**
  * The subset of a Hono context this middleware reads, declared structurally so
  * it can be driven directly in a test without a server.

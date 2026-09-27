@@ -173,7 +173,7 @@ async function authorizeProjectAction(input: {
  * cheap run-quota refusal, and the reservation is the authoritative one. Returns
  * the typed refusal, or undefined once the slot is reserved.
  */
-async function admitRun(input: {
+export async function admitRun(input: {
   entitlements: Entitlements;
   organizationId: OrganizationId;
   requestId: string;
@@ -242,26 +242,34 @@ async function admitRun(input: {
  * The reservation is the atomic metering write for the run slot, so the route
  * never records that unit on the way in. A negative write on the same metric is
  * the refund, and the snapshot sums it away in the period the reservation landed
- * in.
+ * in. Every path that reserves a run slot and then fails to spend it calls this,
+ * so one run costs exactly one slot.
  */
+export async function refundRunSlot(
+  store: ProjectStateStore,
+  organizationId: OrganizationId
+): Promise<void> {
+  await store.usage.record({
+    amount: -RUN_SLOT,
+    metric: RUN_METRIC,
+    organizationId,
+    runId: null,
+  });
+}
+
 async function allocateOrRefund(input: {
   idempotencyKey: string;
+  message: string | undefined;
   organizationId: OrganizationId;
   principal: UserPrincipal;
   projectId: ProjectId;
   store: ProjectStateStore;
 }): Promise<BuildSessionAllocation> {
-  const refund = {
-    amount: -RUN_SLOT,
-    metric: RUN_METRIC,
-    organizationId: input.organizationId,
-    runId: null,
-  };
-
   let allocation: BuildSessionAllocation;
   try {
     allocation = await input.store.allocateBuildSession({
       idempotencyKey: input.idempotencyKey,
+      message: input.message,
       scope: {
         organizationId: input.organizationId,
         projectId: input.projectId,
@@ -270,7 +278,7 @@ async function allocateOrRefund(input: {
     });
   } catch (error) {
     // The slot was taken but there is no run to spend it on.
-    await input.store.usage.record(refund);
+    await refundRunSlot(input.store, input.organizationId);
     throw error;
   }
 
@@ -281,7 +289,7 @@ async function allocateOrRefund(input: {
     // plan limit can see a spurious refusal for the width of that window. A
     // session lookup by idempotency key in the store is the follow-up that
     // removes the window.
-    await input.store.usage.record(refund);
+    await refundRunSlot(input.store, input.organizationId);
   }
 
   return allocation;
@@ -322,7 +330,7 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
         return apiErrorResponse({
           code: "invalid_request",
           message:
-            "The request body must contain only organizationId and projectId.",
+            "The request body may contain only organizationId, projectId, and an optional opening message.",
           requestId: rid,
         });
       }
@@ -372,6 +380,7 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
 
       const allocation = await allocateOrRefund({
         idempotencyKey,
+        message: body.data.message,
         organizationId: organizationId.data,
         principal,
         projectId: projectId.data,

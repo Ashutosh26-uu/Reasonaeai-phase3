@@ -92,11 +92,14 @@ pnpm --filter @reasonateai/api smoke:checkpoint
 | --- | --- | --- |
 | `DATABASE_URL` | `@reasonateai/project-state` tests | Tests skip |
 | `REDIS_URL` | `@reasonateai/project-state` tests | Tests skip |
-| `TURSO_DATABASE_URL` | `apps/api` storage | Falls back to a local SQLite file |
-| `TURSO_AUTH_TOKEN` | `apps/api` storage | No auth token |
+| `SESSION_SECRET` | CSRF tokens | Sign-in fails loudly rather than issuing forgeable tokens |
+| `REASONATE_ARTIFACT_URL_SECRET` | Artifact download URLs | The first signed URL fails loudly |
 | `DEEPSEEK_API_KEY` | Model router | Required before a real run can execute |
+| `REASONATE_ALLOWED_ORIGINS` | Browser command origins | Only the same origin is accepted |
 
 Never commit a `.env` file. `.env` and `.env.*` are ignored, with `.env.example` as the documented template.
+
+`apps/api` and `apps/worker` both require `DATABASE_URL`: it is the authoritative store and the durable agent store (conversations) in one database. Neither starts without it.
 
 ---
 
@@ -120,6 +123,14 @@ If a cached result looks wrong, clear it:
 ```bash
 rm -rf .turbo apps/api/.turbo packages/*/.turbo
 ```
+
+---
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request and every push to the default branch. The `Gates` job installs from the frozen lockfile and runs `pnpm check`, `pnpm typecheck`, `pnpm test`, `pnpm build` against real PostgreSQL 16 and Redis 7 service containers on the same non-default ports used locally, then smokes the sandbox checkpoint path and starts the built artifact to exercise `/health` plus the raw-route denial. The `Dependency and secret scan` job runs `pnpm audit --audit-level high` and gitleaks.
+
+Node is pinned by `.nvmrc`, which `actions/setup-node` reads.
 
 ---
 

@@ -13,6 +13,7 @@ import {
   type BuildSessionId,
   BuildSessionIdSchema,
   BuildSessionSchema,
+  type BuildSessionStatus,
   type SandboxEnvironment,
   type SandboxEnvironmentId,
   SandboxEnvironmentIdSchema,
@@ -55,13 +56,21 @@ import {
   createMagicLinkRepository,
   type MagicLinkRepository,
 } from "./magic-links.js";
+import {
+  MASTRA_STORAGE_MIGRATION_SQL,
+  MASTRA_STORAGE_SCHEMA,
+} from "./mastra-storage.js";
 import { MEMBERSHIP_MIGRATION_SQL } from "./membership-schema.js";
 import {
   createMembershipRepository,
   type MembershipRepository,
 } from "./memberships.js";
 import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
-import { PROJECT_STATE_MIGRATION_SQL } from "./schema.js";
+import {
+  PROJECT_STATE_MIGRATION_SQL,
+  RUNS_ACTIVE_BUILD_SESSION_INDEX_SQL,
+  RUNS_MESSAGE_COLUMN_SQL,
+} from "./schema.js";
 import { AUTH_SESSION_MIGRATION_SQL } from "./session-schema.js";
 import { createSessionRepository, type SessionRepository } from "./sessions.js";
 import { createUsageRepository, type UsageRepository } from "./usage.js";
@@ -130,12 +139,45 @@ export interface DeploymentRecord {
  */
 export interface RunnableRun {
   buildSessionId: BuildSessionId;
+  /**
+   * The turn the user submitted for this run, or null when the run was queued
+   * without one. A worker sends it as the conversation's own message so the
+   * durable thread records what the user asked for; null leaves the run on the
+   * default dispatch directive.
+   */
+  message: string | null;
   organizationId: OrganizationId;
   projectId: ProjectId;
   runId: RunId;
   sandboxEnvironmentId: SandboxEnvironmentId;
   workspaceUri: string;
 }
+
+/**
+ * One conversation of a project: its build session, the newest run that belongs
+ * to it, and the run a client should follow while one is in flight.
+ */
+export interface ConversationRecord {
+  buildSessionId: BuildSessionId;
+  createdAt: string;
+  latestRunId: RunId;
+  pendingRunId: RunId | null;
+  status: BuildSessionStatus;
+  updatedAt: string;
+}
+
+/**
+ * What appending a turn did. `busy` carries the run already in flight, so a
+ * caller can report the conflict and let the client follow that run instead of
+ * submitting a second turn into the same conversation.
+ */
+export type ConversationTurnResult =
+  | { kind: "queued"; runId: RunId; sequence: number }
+  | { kind: "busy"; runId: RunId }
+  | { kind: "missing" };
+
+/** What closing a conversation did. Closing an already-closed one is `ended`. */
+export type EndConversationResult = "busy" | "ended" | "missing";
 
 /** The durable run row, as the execution plane reads it. */
 export interface RunRecord {
@@ -232,6 +274,99 @@ function asIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
 }
 
+/**
+ * Applies the changes made after this schema's first deployment — and nothing
+ * when they are already in place.
+ *
+ * The guard is the point. `alter table` and `create index` take an
+ * access-exclusive lock on `runs` whether or not they have work to do, because
+ * the statement has to be able to change the table's shape. On a database that
+ * is already current, that lock is queued behind every writer on `runs` on
+ * every start, and a writer holding its own lock while it waits past the
+ * migration is a deadlock Postgres resolves by killing one of the two. Reading
+ * the catalog takes no such lock, so a migration with nothing to do waits for
+ * nothing.
+ */
+async function applyPostDeploymentMigration(client: PoolClient): Promise<void> {
+  const column = await client.query(
+    `select 1 from information_schema.columns
+      where table_schema = current_schema()
+        and table_name = 'runs'
+        and column_name = 'message'`
+  );
+  if (column.rows.length === 0) {
+    await client.query(RUNS_MESSAGE_COLUMN_SQL);
+  }
+
+  const index = await client.query(
+    `select 1 from pg_indexes
+      where schemaname = current_schema()
+        and indexname = 'runs_active_build_session_key'`
+  );
+  if (index.rows.length === 0) {
+    await client.query(RUNS_ACTIVE_BUILD_SESSION_INDEX_SQL);
+  }
+}
+
+/**
+ * Every table this store's migrations create, read out of the migration
+ * statements themselves rather than listed a second time. A copied list is one
+ * that silently stops matching the SQL it describes.
+ */
+const MANAGED_TABLES: readonly string[] = [
+  ...new Set(
+    [
+      PROJECT_STATE_MIGRATION_SQL,
+      AUTH_SESSION_MIGRATION_SQL,
+      MEMBERSHIP_MIGRATION_SQL,
+      USAGE_MIGRATION_SQL,
+      AUTH_TOKEN_MIGRATION_SQL,
+      AUDIT_MIGRATION_SQL,
+    ].flatMap((sql) =>
+      [...sql.matchAll(/create table if not exists\s+(\w+)/gi)]
+        .map((match) => match[1])
+        .filter((name): name is string => name !== undefined)
+    )
+  ),
+];
+
+/**
+ * Whether every table this schema owns already exists.
+ *
+ * A schema that is current does not need its DDL re-applied, and re-applying it
+ * is not free: `create table if not exists` still takes the locks a table
+ * creation needs to decide it has nothing to do, so on every start those locks
+ * queue behind the migrations that follow and the writers running beside them.
+ * Checking the catalog first is what makes a start against a current database
+ * wait for nothing at all.
+ */
+async function schemaIsCurrent(client: PoolClient): Promise<boolean> {
+  const result = await client.query<{ count: number }>(
+    `select count(*)::int as count
+       from information_schema.tables
+      where table_schema = current_schema()
+        and table_name = any($1::text[])`,
+    [[...MANAGED_TABLES]]
+  );
+
+  return (result.rows[0]?.count ?? 0) === MANAGED_TABLES.length;
+}
+
+/**
+ * Whether the agent platform's own schema exists. Its tables are created by the
+ * same locked migration step as the control plane's, so a first start applies
+ * one schema and not two racing ones.
+ */
+async function mastraSchemaIsCurrent(client: PoolClient): Promise<boolean> {
+  const result = await client.query(
+    `select 1 from information_schema.tables
+      where table_schema = $1 and table_name = 'mastra_threads'`,
+    [MASTRA_STORAGE_SCHEMA]
+  );
+
+  return result.rows.length > 0;
+}
+
 function toBuildSession(row: Record<string, unknown>): BuildSession {
   return BuildSessionSchema.parse({
     buildSessionId: row.build_session_id,
@@ -265,9 +400,25 @@ function toSandboxEnvironment(
 export interface ProjectStateStore {
   allocateBuildSession: (input: {
     idempotencyKey: string;
+    message?: string | undefined;
     scope: TenantScope;
     userSessionId: SessionId;
   }) => Promise<BuildSessionAllocation>;
+  /**
+   * Queues the next turn of a conversation as a new run of its build session,
+   * and returns the ledger position the run's first event was written at.
+   *
+   * A conversation has one writer, so the call is refused while an earlier run
+   * of the same build session has not ended: two runs of one thread would race
+   * the same Mastra thread and the same project workspace. The rule is the
+   * database's — a partial unique index over non-terminal runs — rather than a
+   * read this call could lose.
+   */
+  appendConversationTurn: (input: {
+    buildSessionId: BuildSessionId;
+    message: string;
+    scope: TenantScope;
+  }) => Promise<ConversationTurnResult>;
   appendRunEvent: (input: {
     payload: Record<string, unknown>;
     runId: RunId;
@@ -325,6 +476,16 @@ export interface ProjectStateStore {
     userId: UserId;
   }) => Promise<ProjectView>;
   /**
+   * Marks a conversation closed so the project's next allocation starts a new
+   * one. A conversation with an in-flight run is refused: closing it would
+   * leave that run's workspace and checkpoint unowned by any session a caller
+   * can see.
+   */
+  endBuildSession: (input: {
+    buildSessionId: BuildSessionId;
+    scope: TenantScope;
+  }) => Promise<EndConversationResult>;
+  /**
    * Ends the run: the terminal status and the release of the lease commit
    * together. Repeating the call converges rather than erroring, and a holder
    * whose lease was taken over cannot end the run at all.
@@ -359,6 +520,14 @@ export interface ProjectStateStore {
     userId: UserId;
   }) => Promise<OrganizationSummary[]>;
   listPendingOutbox: (limit: number) => Promise<OutboxRecord[]>;
+  /**
+   * Every conversation of a project, newest first. The scope is the predicate,
+   * so a listing can never include another tenant's — or another project's —
+   * build session.
+   */
+  listProjectConversations: (
+    scope: TenantScope
+  ) => Promise<ConversationRecord[]>;
   listRunEvents: (input: {
     afterSequence: number;
     limit: number;
@@ -602,6 +771,7 @@ export function createProjectStateStore(config: {
 
   async function allocateBuildSession(input: {
     idempotencyKey: string;
+    message?: string | undefined;
     scope: TenantScope;
     userSessionId: SessionId;
   }): Promise<BuildSessionAllocation> {
@@ -698,13 +868,14 @@ export function createProjectStateStore(config: {
 
       await client.query(
         `insert into runs
-           (run_id, organization_id, project_id, build_session_id, status)
-         values ($1, $2, $3, $4, 'queued')`,
+           (run_id, organization_id, project_id, build_session_id, status, message)
+         values ($1, $2, $3, $4, 'queued', $5)`,
         [
           runId,
           input.scope.organizationId,
           input.scope.projectId,
           buildSessionId,
+          input.message ?? null,
         ]
       );
 
@@ -729,6 +900,219 @@ export function createProjectStateStore(config: {
 
       return await requireAllocation(client, input.scope, buildSessionId, true);
     });
+  }
+
+  /**
+   * Queues the next turn of a conversation.
+   *
+   * The insert carries the conflict rule rather than checking it first: a
+   * partial unique index over the build session's non-terminal runs is inferred
+   * by `on conflict`, so a turn that races another one inserts nothing instead
+   * of producing a second writer for one thread. A refused insert then reads
+   * back the run it lost to, which is what lets the caller follow that run.
+   */
+  async function appendConversationTurn(input: {
+    buildSessionId: BuildSessionId;
+    message: string;
+    scope: TenantScope;
+  }): Promise<ConversationTurnResult> {
+    return await withTransaction(async (client) => {
+      const session = await client.query<{ status: string }>(
+        `select status from build_sessions
+          where organization_id = $1 and project_id = $2 and build_session_id = $3
+          for update`,
+        [
+          input.scope.organizationId,
+          input.scope.projectId,
+          input.buildSessionId,
+        ]
+      );
+
+      const [sessionRow] = session.rows;
+      if (!sessionRow) {
+        return { kind: "missing" };
+      }
+      if (
+        !(ACTIVE_BUILD_SESSION_STATUSES as readonly string[]).includes(
+          sessionRow.status
+        )
+      ) {
+        return { kind: "missing" };
+      }
+
+      const runId = randomUUID();
+      const inserted = await client.query<{ run_id: string }>(
+        `insert into runs
+           (run_id, organization_id, project_id, build_session_id, status, message)
+         values ($1, $2, $3, $4, 'queued', $5)
+         on conflict (build_session_id)
+           where status not in ('completed', 'failed', 'cancelled')
+           do nothing
+         returning run_id`,
+        [
+          runId,
+          input.scope.organizationId,
+          input.scope.projectId,
+          input.buildSessionId,
+          input.message,
+        ]
+      );
+
+      const [queued] = inserted.rows;
+      if (!queued) {
+        const pending = await client.query<{ run_id: string }>(
+          `select run_id from runs
+            where build_session_id = $1 and status not in ('completed', 'failed', 'cancelled')
+            order by created_at asc
+            limit 1`,
+          [input.buildSessionId]
+        );
+        const [pendingRow] = pending.rows;
+        return pendingRow
+          ? {
+              kind: "busy",
+              runId: RunIdSchema.parse(pendingRow.run_id),
+            }
+          : { kind: "missing" };
+      }
+
+      await client.query(
+        `update build_sessions
+            set status = 'running', updated_at = now()
+          where organization_id = $1 and project_id = $2 and build_session_id = $3`,
+        [
+          input.scope.organizationId,
+          input.scope.projectId,
+          input.buildSessionId,
+        ]
+      );
+
+      const envelope = await insertRunEvent(client, {
+        payload: { buildSessionId: input.buildSessionId },
+        runId: RunIdSchema.parse(queued.run_id),
+        scope: input.scope,
+        type: "run.queued",
+      });
+
+      return {
+        kind: "queued",
+        runId: RunIdSchema.parse(queued.run_id),
+        sequence: envelope.sequence,
+      };
+    });
+  }
+
+  /**
+   * Closes a conversation so the project's next allocation starts a new one.
+   * The status change is one conditional statement, and a conversation that has
+   * already ended is reported as ended rather than as an error: the caller
+   * asked for a state the conversation is already in.
+   */
+  async function endBuildSession(input: {
+    buildSessionId: BuildSessionId;
+    scope: TenantScope;
+  }): Promise<EndConversationResult> {
+    return await withTransaction(async (client) => {
+      const session = await client.query<{ status: string }>(
+        `select status from build_sessions
+          where organization_id = $1 and project_id = $2 and build_session_id = $3
+          for update`,
+        [
+          input.scope.organizationId,
+          input.scope.projectId,
+          input.buildSessionId,
+        ]
+      );
+
+      const [sessionRow] = session.rows;
+      if (!sessionRow) {
+        return "missing";
+      }
+      if (
+        !(ACTIVE_BUILD_SESSION_STATUSES as readonly string[]).includes(
+          sessionRow.status
+        )
+      ) {
+        return "ended";
+      }
+
+      const pending = await client.query<{ run_id: string }>(
+        `select run_id from runs
+          where build_session_id = $1 and status not in ('completed', 'failed', 'cancelled')
+          limit 1`,
+        [input.buildSessionId]
+      );
+      if (pending.rows.length > 0) {
+        return "busy";
+      }
+
+      await client.query(
+        `update build_sessions
+            set status = 'completed', updated_at = now()
+          where organization_id = $1 and project_id = $2 and build_session_id = $3`,
+        [
+          input.scope.organizationId,
+          input.scope.projectId,
+          input.buildSessionId,
+        ]
+      );
+
+      return "ended";
+    });
+  }
+
+  /**
+   * Every conversation of a project, newest touch first. Each row carries the
+   * run a client should follow while one is in flight, so listing conversations
+   * is also how a reconnecting browser learns what to stream.
+   */
+  async function listProjectConversations(
+    scope: TenantScope
+  ): Promise<ConversationRecord[]> {
+    const result = await pool.query(
+      `select bs.build_session_id,
+              bs.status,
+              bs.created_at,
+              bs.updated_at,
+              latest.run_id as latest_run_id,
+              pending.run_id as pending_run_id
+         from build_sessions bs
+         join lateral (
+           select r.run_id
+             from runs r
+            where r.build_session_id = bs.build_session_id
+              and r.organization_id = bs.organization_id
+              and r.project_id = bs.project_id
+            order by r.created_at desc, r.run_id desc
+            limit 1
+         ) latest on true
+         left join lateral (
+           select r.run_id
+             from runs r
+            where r.build_session_id = bs.build_session_id
+              and r.organization_id = bs.organization_id
+              and r.project_id = bs.project_id
+              and r.status <> all($3::text[])
+            order by r.created_at asc
+            limit 1
+         ) pending on true
+        where bs.organization_id = $1
+          and bs.project_id = $2
+        order by bs.updated_at desc, bs.build_session_id desc`,
+      [scope.organizationId, scope.projectId, [...TERMINAL_RUN_STATUSES]]
+    );
+
+    return result.rows.map((row) => ({
+      buildSessionId: BuildSessionIdSchema.parse(row.build_session_id),
+      createdAt: asIso(row.created_at as Date),
+      latestRunId: RunIdSchema.parse(row.latest_run_id),
+      pendingRunId:
+        row.pending_run_id === null
+          ? null
+          : RunIdSchema.parse(row.pending_run_id),
+      status: row.status as BuildSessionStatus,
+      updatedAt: asIso(row.updated_at as Date),
+    }));
   }
 
   async function appendRunEvent(input: {
@@ -765,6 +1149,7 @@ export function createProjectStateStore(config: {
   }): Promise<RunnableRun[]> {
     const result = await pool.query(
       `select r.run_id,
+              r.message,
               r.organization_id,
               r.project_id,
               r.build_session_id,
@@ -793,6 +1178,7 @@ export function createProjectStateStore(config: {
 
     return result.rows.map((row) => ({
       buildSessionId: BuildSessionIdSchema.parse(row.build_session_id),
+      message: typeof row.message === "string" ? row.message : null,
       organizationId: OrganizationIdSchema.parse(row.organization_id),
       projectId: ProjectIdSchema.parse(row.project_id),
       runId: RunIdSchema.parse(row.run_id),
@@ -861,43 +1247,62 @@ export function createProjectStateStore(config: {
     runId: RunId;
     ttlMs: number;
   }): Promise<RunLeaseGrant | undefined> {
-    const result = await pool.query<{ expires_at: Date; lease_id: string }>(
-      `with claimed as (
-         insert into run_leases (run_id, lease_id, holder, expires_at)
-         select r.run_id, $2::uuid, $3::text,
-                now() + make_interval(secs => $4::double precision)
-           from runs r
-          where r.run_id = $1::uuid
-            and r.status <> all($5::text[])
+    return await withTransaction(async (client) => {
+      /**
+       * The run row is locked first, before any lease row is touched. Two
+       * claimants that first took a shared lock on this row — which the lease
+       * table's foreign key does by itself — would each then have to upgrade to
+       * an exclusive lock to move the run to `running`, and a lock upgrade on a
+       * row another transaction holds is a deadlock Postgres resolves by
+       * killing one of them. Taking the exclusive lock first means the second
+       * claimant waits here instead, then reads the committed lease and loses
+       * cleanly.
+       */
+      const claimable = await client.query<{ run_id: string }>(
+        `select run_id from runs
+          where run_id = $1::uuid
+            and status <> all($2::text[])
+          for update`,
+        [input.runId, [...TERMINAL_RUN_STATUSES]]
+      );
+      if (claimable.rows.length === 0) {
+        return;
+      }
+
+      const lease = await client.query<{ expires_at: Date; lease_id: string }>(
+        `insert into run_leases (run_id, lease_id, holder, expires_at)
+         values ($1::uuid, $2::uuid, $3::text,
+                 now() + make_interval(secs => $4::double precision))
          on conflict (run_id) do update
             set lease_id = excluded.lease_id,
                 holder = excluded.holder,
                 expires_at = excluded.expires_at,
                 updated_at = now()
           where run_leases.expires_at <= now()
-         returning lease_id, expires_at
-       )
-       update runs
-          set status = 'running', updated_at = now()
-         from claimed
-        where runs.run_id = $1::uuid
-          and runs.status <> all($5::text[])
-       returning claimed.lease_id, claimed.expires_at`,
-      [
-        input.runId,
-        randomUUID(),
-        input.holder,
-        input.ttlMs / 1000,
-        [...TERMINAL_RUN_STATUSES],
-      ]
-    );
+         returning lease_id, expires_at`,
+        [input.runId, randomUUID(), input.holder, input.ttlMs / 1000]
+      );
 
-    const [row] = result.rows;
-    if (!row) {
-      return undefined;
-    }
+      const [granted] = lease.rows;
+      if (!granted) {
+        // A live lease already covers this run, whoever holds it: more time
+        // comes from a renewal, never from a second claim.
+        return;
+      }
 
-    return { expiresAt: row.expires_at, leaseId: row.lease_id };
+      await client.query(
+        `update runs
+            set status = 'running', updated_at = now()
+          where run_id = $1::uuid
+            and status <> all($2::text[])`,
+        [input.runId, [...TERMINAL_RUN_STATUSES]]
+      );
+
+      return {
+        expiresAt: granted.expires_at,
+        leaseId: granted.lease_id,
+      };
+    });
   }
 
   /**
@@ -949,6 +1354,17 @@ export function createProjectStateStore(config: {
     const status = FINISHED_RUN_STATUS[input.status];
 
     return await withTransaction(async (client) => {
+      /**
+       * The same lock order as a claim: the run row first, then its lease. A
+       * release that deleted the lease first and then wrote the run's status
+       * could hold a lease row a claimant is waiting on while that claimant
+       * held the run row, which is a deadlock rather than a wait.
+       */
+      await client.query(
+        "select run_id from runs where run_id = $1 for update",
+        [input.runId]
+      );
+
       await client.query(
         `delete from run_leases
           where run_id = $1
@@ -1431,6 +1847,7 @@ export function createProjectStateStore(config: {
 
   return {
     allocateBuildSession,
+    appendConversationTurn,
     appendRunEvent,
     audit,
     beginRun,
@@ -1441,12 +1858,14 @@ export function createProjectStateStore(config: {
     },
     createOrganizationWithOwner,
     createProject,
+    endBuildSession,
     finishRun,
     getBuildSession,
     getRun,
     listArtifacts,
     listOrganizationMemberships,
     listPendingOutbox,
+    listProjectConversations,
     listRunEvents,
     listRunnableRuns,
     magicLinks,
@@ -1469,14 +1888,20 @@ export function createProjectStateStore(config: {
             await client.query("select pg_advisory_xact_lock($1)", [
               MIGRATION_LOCK_KEY,
             ]);
-            await client.query(PROJECT_STATE_MIGRATION_SQL);
-            await client.query(AUTH_SESSION_MIGRATION_SQL);
-            await client.query(MEMBERSHIP_MIGRATION_SQL);
-            await client.query(USAGE_MIGRATION_SQL);
-            // Both reference the organization, project, and user tables above,
-            // so they are applied after them in this same transaction.
-            await client.query(AUTH_TOKEN_MIGRATION_SQL);
-            await client.query(AUDIT_MIGRATION_SQL);
+            if (!(await schemaIsCurrent(client))) {
+              await client.query(PROJECT_STATE_MIGRATION_SQL);
+              await client.query(AUTH_SESSION_MIGRATION_SQL);
+              await client.query(MEMBERSHIP_MIGRATION_SQL);
+              await client.query(USAGE_MIGRATION_SQL);
+              // Both reference the organization, project, and user tables
+              // above, so they are applied after them in this same transaction.
+              await client.query(AUTH_TOKEN_MIGRATION_SQL);
+              await client.query(AUDIT_MIGRATION_SQL);
+            }
+            await applyPostDeploymentMigration(client);
+            if (!(await mastraSchemaIsCurrent(client))) {
+              await client.query(MASTRA_STORAGE_MIGRATION_SQL);
+            }
           });
         } catch (error) {
           if (

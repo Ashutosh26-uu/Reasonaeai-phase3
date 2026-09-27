@@ -103,14 +103,16 @@ Recorded here because the commits are local and not yet pushed, so no commit URL
 | Command | Result |
 | --- | --- |
 | `pnpm install --frozen-lockfile` | OK |
-| `pnpm check` | 50 files, no fixes needed |
-| `pnpm typecheck` | 5 of 5 packages |
-| `pnpm test` | 8 of 8 tasks, 61 tests passing |
-| `pnpm build` | 5 of 5 tasks; Mastra build successful |
+| `pnpm check` | clean |
+| `pnpm typecheck` | 10 of 10 tasks |
+| `pnpm test` | all suites; `@reasonateai/project-state` 54, `@reasonateai/worker` 21, `@reasonateai/api` 78 |
+| `pnpm build` | all packages plus the Mastra artifact |
 
-**Runtime verification:** the built server was started with `node .mastra/output/index.mjs`. `/health` returned `{"success": true}`. `/api/agents`, `/api/agents/reasonate-cto`, `/api/memory/threads`, `/api/tools`, `/api/workflows`, `/api/logs`, `/api/observability`, `/api/openapi.json`, and `/swagger-ui` all returned `404` with body `Not Found`, and the response contained zero occurrences of the CTO system prompt.
+**Migration verification:** against a freshly created database, `store.migrate()` created all 18 control-plane tables, the `mastra` schema with its threads and messages tables, the `runs.message` column, and the one-active-run index. A second `migrate()` while another session held an `access exclusive` lock on `runs` completed in 19ms, which is what proves an already-current migration takes no lock.
 
-**Integration verification:** PostgreSQL 16 and Redis 7 containers were started locally; `@reasonateai/project-state` ran its 15 tests against them rather than skipping.
+**Conversation verification, through the running API with real PostgreSQL and Redis:** 27 checks passed over HTTP with real session and CSRF cookies — sign-in, organization and project creation, conversation allocation carrying the opening message, the conversation listing naming the run to follow, an empty transcript before any turn finished, a second turn refused with `409` while one was in flight, the accepted turn queued at sequence 1 with its message offered to the worker, history read back in order with both roles and the stored title, a working conversation refusing to close, closing it and allocating a second conversation rather than adopting the closed one, an authenticated principal with no membership refused on both read and write, and `/api/agents`, `/api/agent-controllers`, `/api/memory/threads` still answering `404`.
+
+**Durability verification:** after the API process was replaced by a fresh process running the built artifact, the same session cookie read the same transcript and both conversations, so the history is the database's, not one process's memory.
 
 ---
 
@@ -118,8 +120,6 @@ Recorded here because the commits are local and not yet pushed, so no commit URL
 
 Recorded here so it is not mistaken for done:
 
-- No agent run has executed end to end; no live model provider is wired.
-- No sandbox container has ever been provisioned; the workspace resolver is configured but never invoked.
-- No product route exists, so principal resolution has not been exercised on a live request path.
-- No SSE stream, preview, artifact, or deployment path has been exercised.
-- No end-to-end browser test exists.
+- No live agent turn has executed: this environment holds no model credential, so the worker has never driven a real CTO run. The conversation write path was therefore exercised through the same storage adapter the API reads, not through a model.
+- No preview, deployment, or artifact-spill path has been exercised.
+- No end-to-end browser test exists; the web shell is not built.

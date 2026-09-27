@@ -16,6 +16,10 @@
       "types": "./src/relay.ts",
       "import": "./dist/relay.js"
     },
+    "./mastra": {
+      "types": "./src/mastra-storage.ts",
+      "import": "./dist/mastra-storage.js"
+    },
     "./run-event-stream": {
       "types": "./src/run-event-stream.ts",
       "import": "./dist/run-event-stream.js"
@@ -36,6 +40,8 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@mastra/core": "^1.67.0",
+    "@mastra/pg": "1.25.0",
     "@reasonateai/contracts": "workspace:*",
     "pg": "8.23.0",
     "redis": "6.2.1",

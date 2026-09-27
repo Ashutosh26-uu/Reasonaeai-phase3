@@ -1,3 +1,4 @@
+import { createMastraStorage } from "@reasonateai/project-state/mastra";
 import {
   createProjectStateStore,
   type ProjectStateStore,
@@ -32,9 +33,15 @@ import { resolveBuildSandbox } from "./workspace.js";
  * pool, exit. The grace window is what makes the process exitable — a step that
  * refuses to settle is abandoned rather than waited on forever.
  */
+/** Anything the process holds open and must release on shutdown. */
+interface Closable {
+  close: () => Promise<void>;
+}
+
 function installShutdown(input: {
   config: WorkerConfig;
   logger: Logger;
+  mastraStorage: Closable;
   stopSignal: StopSignal;
   store: ProjectStateStore;
   worker: RunWorker;
@@ -65,6 +72,14 @@ function installShutdown(input: {
       await input.store.close();
     } catch (error) {
       input.logger.error("worker.shutdown.close.failed", {
+        failure: describeFailure(error).message,
+      });
+    }
+
+    try {
+      await input.mastraStorage.close();
+    } catch (error) {
+      input.logger.error("worker.shutdown.agent.store.close.failed", {
         failure: describeFailure(error).message,
       });
     }
@@ -100,6 +115,19 @@ function main(): void {
     connectionString: config.databaseUrl,
     ...(config.redisUrl === undefined ? {} : { redisUrl: config.redisUrl }),
   });
+  /**
+   * The durable agent store. It is the same PostgreSQL database the control
+   * plane uses, because a conversation the API lists from durable storage has
+   * to be the conversation this worker appended to — a worker writing a session
+   * into its own process memory would produce history nobody can read again.
+   *
+   * The worker still does not migrate: schema changes are a separately
+   * observable deployment step, and the API applies them behind its own request
+   * path. A run cannot exist without an allocation that already did.
+   */
+  const mastraStorage = createMastraStorage({
+    connectionString: config.databaseUrl,
+  });
   const stopSignal = createStopSignal();
   const executor = new RunExecutor({
     checkpoints: createGitCheckpointStore({ root: config.checkpointRoot }),
@@ -113,12 +141,22 @@ function main(): void {
     logger,
     resolveSandbox: async ({ requestContext }) =>
       await resolveBuildSandbox({ requestContext }),
-    runtime: createCtoRuntimeFactory({ model: config.model }),
+    runtime: createCtoRuntimeFactory({
+      model: config.model,
+      storage: mastraStorage,
+    }),
     store,
   });
   const worker = new RunWorker({ config, executor, logger, stopSignal, store });
 
-  installShutdown({ config, logger, stopSignal, store, worker });
+  installShutdown({
+    config,
+    logger,
+    mastraStorage,
+    stopSignal,
+    store,
+    worker,
+  });
 
   logger.info("worker.started", {
     checkpointRoot: config.checkpointRoot,

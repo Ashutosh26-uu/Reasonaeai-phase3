@@ -4,7 +4,6 @@ import { Mastra } from "@mastra/core/mastra";
 import { registerApiRoute } from "@mastra/core/server";
 import { MastraCompositeStore } from "@mastra/core/storage";
 import { DuckDBStore } from "@mastra/duckdb";
-import { LibSQLStore } from "@mastra/libsql";
 import {
   MastraStorageExporter,
   Observability,
@@ -12,13 +11,19 @@ import {
 } from "@mastra/observability";
 import type { ArtifactStore } from "@reasonateai/artifact-store";
 import { createLocalArtifactStore } from "@reasonateai/artifact-store/local";
+import { defaultPlan } from "@reasonateai/auth/entitlements";
+import { PLAN_ENTITLEMENTS } from "@reasonateai/contracts/entitlements";
 import { createReasonateCtoRuntime } from "@reasonateai/cto-runtime";
+import { createMastraStorage } from "@reasonateai/project-state/mastra";
 import {
   createProjectStateStore,
   type ProjectStateStore,
 } from "@reasonateai/project-state/postgres";
 import { createMagicLinkSender } from "./adapters/magic-link-sender";
-import { createCsrfMiddleware } from "./middleware";
+import {
+  createCsrfMiddleware,
+  createSchemaReadyMiddleware,
+} from "./middleware";
 import { frontierModel } from "./model";
 import { startOutboxRelay } from "./outbox-relay";
 import { resolveSessionPrincipal } from "./principal";
@@ -41,6 +46,12 @@ import {
   createBuildSessionHandlers,
 } from "./routes/build-sessions";
 import {
+  BUILD_SESSION_CLOSE_PATH,
+  BUILD_SESSION_MESSAGES_PATH,
+  createConversationHandlers,
+  PROJECT_CONVERSATIONS_PATH,
+} from "./routes/conversations";
+import {
   createOrganizationHandlers,
   ORGANIZATION_COLLECTION_PATH,
 } from "./routes/organizations";
@@ -57,9 +68,24 @@ import {
 } from "./workspace";
 
 /**
- * The authoritative store. Created lazily so the artifact can be built without a
- * database present, and so a missing configuration is reported as a clear
- * request failure rather than a silent fallback to different storage.
+ * The authoritative database. Every store in this process — the control plane's
+ * and the agent platform's — is pointed at it, so a deployment has one
+ * PostgreSQL to configure and one place that fails loudly when it is missing.
+ */
+function databaseUrl(): string {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error(
+      "DATABASE_URL is required: the authoritative project store is not configured."
+    );
+  }
+  return connectionString;
+}
+
+/**
+ * The authoritative store. Created lazily so a request that needs no database
+ * never opens a connection, and so a missing configuration is reported as a
+ * clear request failure rather than a silent fallback to different storage.
  */
 let projectStateStore: ProjectStateStore | undefined;
 
@@ -67,14 +93,8 @@ function stateStore(): ProjectStateStore {
   if (projectStateStore) {
     return projectStateStore;
   }
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    throw new Error(
-      "DATABASE_URL is required: the authoritative project store is not configured."
-    );
-  }
   projectStateStore = createProjectStateStore({
-    connectionString,
+    connectionString: databaseUrl(),
     // A session that is used is extended to the idle window this deployment
     // issues it with; the store's own default would silently replace it.
     sessionIdleTtlMs: SESSION_IDLE_TTL_MS,
@@ -197,6 +217,14 @@ const runEventHandlers = createRunEventHandlers({
   store: stateStore,
 });
 
+const storage = new MastraCompositeStore({
+  default: createMastraStorage({ connectionString: databaseUrl() }),
+  domains: {
+    observability: await new DuckDBStore().getStore("observability"),
+  },
+  id: "composite-storage",
+});
+
 const artifactHandlers = createArtifactHandlers({
   artifacts: localArtifacts,
   publicOrigin,
@@ -205,16 +233,34 @@ const artifactHandlers = createArtifactHandlers({
   store: stateStore,
 });
 
-const storage = new MastraCompositeStore({
-  default: new LibSQLStore({
-    authToken: process.env.TURSO_AUTH_TOKEN || undefined,
-    id: "mastra-storage",
-    url: process.env.TURSO_DATABASE_URL || "file:./mastra.db",
-  }),
-  domains: {
-    observability: await new DuckDBStore().getStore("observability"),
+/**
+ * The durable Mastra store, resolved from the composite so the API reads the
+ * same conversation history the worker writes. Resolved per request rather than
+ * at import so a request that never reads a conversation opens no connection.
+ */
+const conversationMemory = async () => {
+  const memory = await storage.getStore("memory");
+  if (!memory) {
+    throw new Error(
+      "The durable conversation store is unavailable, so history cannot be read."
+    );
+  }
+  return memory;
+};
+
+const conversationHandlers = createConversationHandlers({
+  // Billing owns the plan column this will read once it ships; until then the
+  // default plan is the only truthful answer for an organization.
+  entitlements: PLAN_ENTITLEMENTS[defaultPlan],
+  memory: conversationMemory,
+  resolvePrincipal: resolvePrincipalFrom,
+  store: stateStore,
+});
+
+const schemaReadyMiddleware = createSchemaReadyMiddleware({
+  migrate: async () => {
+    await stateStore().migrate();
   },
-  id: "composite-storage",
 });
 
 export const reasonateCtoRuntime = createReasonateCtoRuntime({
@@ -280,6 +326,46 @@ export const mastra = new Mastra({
             "Streams a run's durable events as server-sent events, replaying from Last-Event-ID before following live.",
           summary: "Follow build session events",
           tags: ["Build sessions"],
+        },
+      }),
+      registerApiRoute(PROJECT_CONVERSATIONS_PATH, {
+        handler: (c) => conversationHandlers.list(c),
+        method: "GET",
+        openapi: {
+          description:
+            "Lists a project's conversations, newest first, each with the run a client should follow while one is in flight.",
+          summary: "List a project's conversations",
+          tags: ["Conversations"],
+        },
+      }),
+      registerApiRoute(BUILD_SESSION_MESSAGES_PATH, {
+        handler: (c) => conversationHandlers.readMessages(c),
+        method: "GET",
+        openapi: {
+          description:
+            "Reads a conversation's durable transcript from the authoritative agent store.",
+          summary: "Read a conversation",
+          tags: ["Conversations"],
+        },
+      }),
+      registerApiRoute(BUILD_SESSION_MESSAGES_PATH, {
+        handler: (c) => conversationHandlers.appendTurn(c),
+        method: "POST",
+        openapi: {
+          description:
+            "Queues the next turn of a conversation as a new run of its build session.",
+          summary: "Send a message",
+          tags: ["Conversations"],
+        },
+      }),
+      registerApiRoute(BUILD_SESSION_CLOSE_PATH, {
+        handler: (c) => conversationHandlers.close(c),
+        method: "POST",
+        openapi: {
+          description:
+            "Closes a conversation so the project's next allocation starts a new one.",
+          summary: "Close a conversation",
+          tags: ["Conversations"],
         },
       }),
       registerApiRoute(ARTIFACT_COLLECTION_PATH, {
@@ -383,9 +469,10 @@ export const mastra = new Mastra({
         },
       }),
     ],
-    // The built-in route denials come first; every product command then passes
-    // the CSRF and origin check before its handler runs.
-    middleware: [...serverMiddleware, csrfMiddleware],
+    // The built-in route denials come first, then the authoritative schema is
+    // made to exist, and only then does a product command pass the CSRF and
+    // origin check on its way to its handler.
+    middleware: [...serverMiddleware, schemaReadyMiddleware, csrfMiddleware],
   },
   storage,
 });

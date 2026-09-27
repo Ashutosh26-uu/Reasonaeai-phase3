@@ -377,6 +377,55 @@ describeWithDatabase("run execution", () => {
     );
   });
 
+  it("sends the conversation's own turn into the thread the build session owns", async () => {
+    const message = "Add a cancellation policy to the booking page.";
+    const scripted = scriptedRuntime({ events: [{ type: "agent_start" }] });
+    const executor = createExecutor({
+      harness,
+      holder: "worker-conversation",
+      runtime: scripted.runtime,
+    });
+    const allocated = await allocateRunFixture(harness, { message });
+    volumes.push(allocated.volume);
+
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+
+    // The thread is the build session, derived rather than stored, so the API
+    // that listed this conversation reads the same one this run writes.
+    const [request] = scripted.sessionRequests;
+    expect(request?.threadId).toBe(allocated.buildSessionId);
+    expect(request?.resourceId).toBe(allocated.projectId);
+    expect(request?.scope).toBe(allocated.buildSessionId);
+
+    // The user's words reach the agent, and exactly one turn is sent.
+    expect(session.sent).toEqual([message]);
+
+    session.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await attempt).toBe("succeeded");
+  });
+
+  it("falls back to the dispatch directive for a run queued without a turn", async () => {
+    const scripted = scriptedRuntime({ events: [{ type: "agent_start" }] });
+    const executor = createExecutor({
+      harness,
+      holder: "worker-no-turn",
+      runtime: scripted.runtime,
+    });
+    const allocated = await fixture();
+
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+
+    expect(session.sent).toHaveLength(1);
+    expect(session.sent[0]).toContain(allocated.candidate.runId);
+
+    session.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await attempt).toBe("succeeded");
+  });
+
   it("cancels the run in flight on shutdown and leaves no running run without a lease", async () => {
     const scripted = scriptedRuntime();
     const executor = createExecutor({

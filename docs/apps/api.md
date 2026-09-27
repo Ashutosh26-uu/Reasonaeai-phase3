@@ -1,6 +1,6 @@
 # `apps/api`
 
-**Status:** ✅ ingress denial and principal resolution implemented and verified · 🟡 product routes not yet built
+**Status:** ✅ ingress denial, principal resolution, and the authenticated product routes implemented and verified · 🟡 no live agent turn has executed (no model credential in this environment)
 **Owns:** `apps/api`
 **Owner role:** API Control Plane
 
@@ -106,14 +106,42 @@ The build is intentionally **not** cached by Turborepo. `mastra build` runs a pa
 
 ---
 
+## Storage
+
+| Concern | Store |
+| --- | --- |
+| Commands, state, leases, the event ledger, artifact metadata | PostgreSQL, through `@reasonateai/project-state` |
+| Conversations: threads and messages | The same PostgreSQL database, in the `mastra` schema, through `@mastra/pg` (`@reasonateai/project-state/mastra`) |
+| Observability spans | DuckDB, through the composite store's `observability` domain |
+
+The API and the private worker point at the same durable agent store, so a conversation the API lists is the conversation the worker appended to. Both construct their `PostgresStore` with `disableInit: true` and rely on the repository's migration step: the API applies migrations behind its first `/v1` request, the worker never migrates. Lazy schema creation by two processes at once would be a lock conflict over DDL that is not application work.
+
+Schema changes after a schema's first deployment are applied from `store.migrate()`, which checks the catalog first and issues no DDL at all when the change is already present — a migration with nothing to do must take no lock, or every start queues an `access exclusive` lock on `runs` behind the live writers it is not changing.
+
+## Conversations
+
+A conversation is a build session. It belongs to one project, it has one CTO thread, and the thread identifier is derived from the build session identifier rather than stored beside it, so the API that lists a conversation and the worker that drives it resolve the same thread without a coordination write.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /v1/projects/:projectId/conversations` | The project's conversations, newest first, each with the run a client should follow |
+| `GET /v1/build-sessions/:buildSessionId/messages` | The durable transcript |
+| `POST /v1/build-sessions/:buildSessionId/messages` | Queues the next turn as a new run of the same build session |
+| `POST /v1/build-sessions/:buildSessionId/close` | Ends the conversation so the next allocation starts a new one |
+
+A conversation has exactly one writer. The rule is the database's — a partial unique index over a build session's non-terminal runs — so a second turn submitted while an earlier run is in flight is refused with `409` and the run already working, rather than racing the same thread. A turn is admitted against the plan exactly as an allocation is, and its run slot is refunded when no run was queued.
+
+Starting a conversation is an allocation: `POST /v1/build-sessions` accepts the opening message, which is recorded on the session's first run and sent to the agent as the user's own words.
+
+---
+
 ## What is not built yet
 
-- **No product routes.** Nothing under `/v1` exists, so the principal middleware is not yet called by any route.
-- **No SSE endpoint.** Browser progress streaming is not implemented.
-- **No body validation on requests.** Route-level schemas arrive with the first product route.
+- **No agent run has executed end to end.** The surface exists and is exercised, but this environment holds no model credential, so the worker has never driven a live CTO turn.
+- **No preview or deployment path.** The preview gateway and the deployment provider are deferred; a sandbox still runs with no network and no published port.
 - **No CORS policy.** Mastra's default applies; it must be narrowed before the browser client ships.
-- **Storage is LibSQL and DuckDB**, not the PostgreSQL project-state store, and PubSub is in-process rather than Redis Streams. The worker split is therefore not yet configured.
-- **No CSRF protection** on state-changing requests.
+- **No distributed command consumer.** Runs are discovered from PostgreSQL by lease; the Redis command stream is not consumed.
+- **No PubSub.** Mastra runs with in-process PubSub rather than `RedisStreamsPubSub`, which is what the documented worker split needs before more than one API replica serves conversations.
 
 ---
 
