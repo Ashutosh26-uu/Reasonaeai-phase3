@@ -3,12 +3,11 @@ import "@reasonateai/ui/globals.css";
 import "katex/dist/katex.min.css";
 
 export const metadata: Metadata = {
-  description:
-    "The visual foundation for the ReasonateAI AI CTO browser product.",
+  description: "A visual study for the ReasonateAI AI CTO browser product.",
   icons: {
     icon: "/brand/reasonateai-icon.png",
   },
-  title: "ReasonateAI — Interface foundation",
+  title: "ReasonateAI — Interface study",
 };
 
 export default function RootLayout({
