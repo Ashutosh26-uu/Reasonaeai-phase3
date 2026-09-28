@@ -138,6 +138,11 @@ export async function resolveBuildSandbox(input: {
   return sandbox;
 }
 
+/** A destroyed sandbox cannot serve a later turn in the same build session. */
+export function releaseBuildSandbox(scope: RunScope): void {
+  reasonateBuildWorkspace.clearSandboxCache(sandboxIdFor(scope));
+}
+
 /** The build workspace names its volume after the run's scope; nothing else is touched. */
 export function workspaceVolumeName(scope: RunScope): string {
   return `${sandboxIdFor(scope)}${WORKSPACE_VOLUME_SUFFIX}`;

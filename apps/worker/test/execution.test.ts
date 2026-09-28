@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { RunEventEnvelope } from "@reasonateai/contracts/execution-protocol";
 import type { RunId } from "@reasonateai/contracts/identity";
 import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
@@ -92,11 +93,27 @@ describeWithDatabase("run execution", () => {
     await harness.dispose();
   });
 
-  async function fixture(): Promise<RunFixture> {
-    const allocated = await allocateRunFixture(harness);
+  async function fixture(message?: string): Promise<RunFixture> {
+    const allocated = await allocateRunFixture(harness, message);
     volumes.push(allocated.volume);
     return allocated;
   }
+
+  it("sends the user's saved prompt to the CTO", async () => {
+    const scripted = scriptedRuntime();
+    const executor = createExecutor({
+      harness,
+      holder: "worker-prompt",
+      runtime: scripted.runtime,
+    });
+    const allocated = await fixture("Build a calendar with reminders");
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+    expect(session.lastMessage).toBe("Build a calendar with reminders");
+    session.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await attempt).toBe("succeeded");
+  });
 
   it("drives a claimed run, appends the ledger, and leaves no container or volume", async () => {
     const scripted = scriptedRuntime({
@@ -159,6 +176,48 @@ describeWithDatabase("run execution", () => {
     });
     expect(latest?.checkpointId).toBe(checkpointId);
 
+    expect(await containerCount(allocated.volume)).toBe(0);
+    expect(await volumeCount(allocated.volume)).toBe(0);
+  });
+
+  it("starts a fresh sandbox and restores the checkpoint for a follow-up turn", async () => {
+    const allocated = await fixture("Create the first version");
+    const first = scriptedRuntime();
+    const firstAttempt = createExecutor({
+      harness,
+      holder: "worker-follow-up-first",
+      runtime: first.runtime,
+    }).execute(allocated.candidate, createStopSignal());
+    const firstSession = await first.waitForSession();
+    await firstSession.started;
+    firstSession.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await firstAttempt).toBe("succeeded");
+
+    const turn = await harness.store.appendConversationTurn({
+      buildSessionId: allocated.buildSessionId,
+      idempotencyKey: randomUUID(),
+      message: "Continue the same project",
+      scope: allocated.scope,
+    });
+    const candidate = (
+      await harness.store.listRunnableRuns({ limit: 32 })
+    ).find((run) => run.runId === turn.runId);
+    expect(candidate).toBeDefined();
+    if (candidate === undefined) {
+      return;
+    }
+
+    const second = scriptedRuntime();
+    const secondAttempt = createExecutor({
+      harness,
+      holder: "worker-follow-up-second",
+      runtime: second.runtime,
+    }).execute(candidate, createStopSignal());
+    const secondSession = await second.waitForSession();
+    await secondSession.started;
+    expect(secondSession.lastMessage).toBe("Continue the same project");
+    secondSession.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await secondAttempt).toBe("succeeded");
     expect(await containerCount(allocated.volume)).toBe(0);
     expect(await volumeCount(allocated.volume)).toBe(0);
   });

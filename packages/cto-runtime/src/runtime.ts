@@ -146,11 +146,17 @@ function resolveLimits(
   return limits;
 }
 
+function createRuntimeMemory(
+  storage: MastraCompositeStore | undefined
+): Memory {
+  return new Memory(storage ? { storage } : {});
+}
+
 export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
   const limits = resolveLimits(config.limits);
   const budget =
     config.budget === undefined ? undefined : createRunBudget(config.budget);
-  const memory = config.memory ?? new Memory();
+  const memory = config.memory ?? createRuntimeMemory(config.storage);
   const snapshotsByRequest = new WeakMap<RequestContext, ReadSnapshotStore>();
   const resolveWorkspace = async (requestContext: RequestContext) => {
     const workspace =

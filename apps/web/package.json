@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@reasonateai/contracts": "workspace:*",
     "@reasonateai/ui": "workspace:*",
     "@streamdown/code": "1.1.1",
     "@streamdown/math": "1.0.2",

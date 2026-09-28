@@ -113,7 +113,10 @@ function main(): void {
     logger,
     resolveSandbox: async ({ requestContext }) =>
       await resolveBuildSandbox({ requestContext }),
-    runtime: createCtoRuntimeFactory({ model: config.model }),
+    runtime: createCtoRuntimeFactory({
+      databaseUrl: config.databaseUrl,
+      model: config.model,
+    }),
     store,
   });
   const worker = new RunWorker({ config, executor, logger, stopSignal, store });

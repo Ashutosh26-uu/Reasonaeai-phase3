@@ -30,7 +30,7 @@ import { runDirective } from "./run-directive.js";
 import type { RunSession, RuntimeFactory } from "./runtime.js";
 import type { StopSignal } from "./stop-signal.js";
 import { settleWithin } from "./wait.js";
-import { workspaceVolumeName } from "./workspace.js";
+import { releaseBuildSandbox, workspaceVolumeName } from "./workspace.js";
 
 /**
  * One run, from lease to ledger.
@@ -158,6 +158,7 @@ export class RunExecutor {
         requestContext,
         resourceId: scope.projectId,
         scope: scope.buildSessionId,
+        threadId: scope.buildSessionId,
       });
 
       sandbox = await this.#deps.resolveSandbox({ requestContext, scope });
@@ -175,6 +176,7 @@ export class RunExecutor {
       driven = await this.#drive({
         fields,
         lease,
+        message: candidate.userMessage,
         requestContext,
         scope,
         session,
@@ -200,6 +202,7 @@ export class RunExecutor {
   async #drive(input: {
     fields: LogFields;
     lease: { expiresAt: Date; leaseId: string };
+    message: string | null;
     requestContext: RequestContext;
     scope: RunScope;
     session: RunSession;
@@ -256,10 +259,12 @@ export class RunExecutor {
     // not awaited here: a stop request has to be able to win the race.
     const sending = input.session
       .sendMessage({
-        content: runDirective({
-          buildSessionId: scope.buildSessionId,
-          runId: scope.runId,
-        }),
+        content:
+          input.message ??
+          runDirective({
+            buildSessionId: scope.buildSessionId,
+            runId: scope.runId,
+          }),
         requestContext: input.requestContext,
         untilIdle: true,
       })
@@ -477,6 +482,10 @@ export class RunExecutor {
         ...fields,
         failure: describeFailure(error).message,
       });
+    } finally {
+      // The workspace caches by build session. A follow-up turn must resolve a
+      // fresh instance after this container is destroyed.
+      releaseBuildSandbox(scope);
     }
 
     if (written === undefined) {

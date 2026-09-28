@@ -38,7 +38,10 @@ import {
 import {
   BUILD_SESSION_COLLECTION_PATH,
   BUILD_SESSION_ITEM_PATH,
+  CONVERSATION_MESSAGES_PATH,
+  CONVERSATION_TURNS_PATH,
   createBuildSessionHandlers,
+  PROJECT_CONVERSATIONS_PATH,
 } from "./routes/build-sessions";
 import {
   createOrganizationHandlers,
@@ -252,6 +255,18 @@ export const mastra = new Mastra({
   }),
   server: {
     apiRoutes: [
+      registerApiRoute(PROJECT_CONVERSATIONS_PATH, {
+        handler: (c) => buildSessionHandlers.listConversations(c),
+        method: "GET",
+      }),
+      registerApiRoute(CONVERSATION_MESSAGES_PATH, {
+        handler: (c) => buildSessionHandlers.history(c),
+        method: "GET",
+      }),
+      registerApiRoute(CONVERSATION_TURNS_PATH, {
+        handler: (c) => buildSessionHandlers.appendTurn(c),
+        method: "POST",
+      }),
       registerApiRoute(BUILD_SESSION_COLLECTION_PATH, {
         handler: (c) => buildSessionHandlers.allocate(c),
         method: "POST",
@@ -371,6 +386,10 @@ export const mastra = new Mastra({
           summary: "Create an organization",
           tags: ["Tenancy"],
         },
+      }),
+      registerApiRoute(PROJECT_COLLECTION_PATH, {
+        handler: (c) => projectHandlers.list(c),
+        method: "GET",
       }),
       registerApiRoute(PROJECT_COLLECTION_PATH, {
         handler: (c) => projectHandlers.create(c),

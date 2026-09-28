@@ -120,7 +120,8 @@ export async function createHarness(input: {
  * claims is the same kind of row a real dispatch produces.
  */
 export async function allocateRunFixture(
-  harness: Harness
+  harness: Harness,
+  message?: string
 ): Promise<RunFixture> {
   const organizationId = OrganizationIdSchema.parse(randomUUID());
   const projectId = ProjectIdSchema.parse(randomUUID());
@@ -138,6 +139,7 @@ export async function allocateRunFixture(
 
   const allocation = await harness.store.allocateBuildSession({
     idempotencyKey: `worker-test-${randomUUID()}`,
+    ...(message === undefined ? {} : { message }),
     scope,
     userSessionId: SessionIdSchema.parse(randomUUID()),
   });
@@ -235,6 +237,7 @@ export interface SessionScript {
  */
 export class ScriptedSession implements RunSession {
   aborted = false;
+  lastMessage: string | undefined;
   readonly events: AgentControllerEvent[];
   readonly started: Promise<void>;
   sendCalls = 0;
@@ -266,6 +269,7 @@ export class ScriptedSession implements RunSession {
 
   sendMessage = (input: SessionSendInput): Promise<void> => {
     this.sendCalls += 1;
+    this.lastMessage = input.content;
     const { requestContext } = input;
     if (requestContext === undefined) {
       return Promise.reject(

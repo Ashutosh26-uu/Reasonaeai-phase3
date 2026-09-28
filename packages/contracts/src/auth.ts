@@ -84,6 +84,16 @@ export const ProjectViewSchema = z.strictObject({
 });
 export type ProjectView = z.infer<typeof ProjectViewSchema>;
 
+export const ProjectSummarySchema = z.strictObject({
+  name: z.string().min(1),
+  organizationId: OrganizationIdSchema,
+  projectId: ProjectIdSchema,
+});
+export type ProjectSummary = z.infer<typeof ProjectSummarySchema>;
+export const ProjectListSchema = z.strictObject({
+  projects: z.array(ProjectSummarySchema),
+});
+
 export const SignedOutSchema = z.strictObject({
   revoked: z.boolean(),
 });

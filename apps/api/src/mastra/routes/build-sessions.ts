@@ -13,8 +13,12 @@ import {
 } from "@reasonateai/contracts/entitlements";
 import {
   AllocateBuildSessionRequestSchema,
+  AppendConversationTurnRequestSchema,
   BuildSessionIdSchema,
   BuildSessionSchema,
+  ConversationHistorySchema,
+  ConversationListSchema,
+  ConversationTurnAcceptedSchema,
 } from "@reasonateai/contracts/execution";
 import {
   type OrganizationId,
@@ -24,9 +28,10 @@ import {
   ProjectIdSchema,
   type UserPrincipal,
 } from "@reasonateai/contracts/identity";
-import type {
-  BuildSessionAllocation,
-  ProjectStateStore,
+import {
+  type BuildSessionAllocation,
+  ConversationBusyError,
+  type ProjectStateStore,
 } from "@reasonateai/project-state/postgres";
 import { z } from "zod";
 import { apiErrorResponse } from "../principal";
@@ -38,6 +43,12 @@ import { apiErrorResponse } from "../principal";
  */
 export const BUILD_SESSION_COLLECTION_PATH = "/v1/build-sessions";
 export const BUILD_SESSION_ITEM_PATH = "/v1/build-sessions/:buildSessionId";
+export const PROJECT_CONVERSATIONS_PATH =
+  "/v1/projects/:projectId/conversations";
+export const CONVERSATION_MESSAGES_PATH =
+  "/v1/build-sessions/:buildSessionId/messages";
+export const CONVERSATION_TURNS_PATH =
+  "/v1/build-sessions/:buildSessionId/turns";
 
 /**
  * The subset of a Hono `Context` these handlers use. Declaring it structurally
@@ -246,6 +257,7 @@ async function admitRun(input: {
  */
 async function allocateOrRefund(input: {
   idempotencyKey: string;
+  message?: string;
   organizationId: OrganizationId;
   principal: UserPrincipal;
   projectId: ProjectId;
@@ -262,6 +274,7 @@ async function allocateOrRefund(input: {
   try {
     allocation = await input.store.allocateBuildSession({
       idempotencyKey: input.idempotencyKey,
+      ...(input.message === undefined ? {} : { message: input.message }),
       scope: {
         organizationId: input.organizationId,
         projectId: input.projectId,
@@ -322,7 +335,7 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
         return apiErrorResponse({
           code: "invalid_request",
           message:
-            "The request body must contain only organizationId and projectId.",
+            "The request body must contain organizationId, projectId, and optionally message.",
           requestId: rid,
         });
       }
@@ -372,6 +385,9 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
 
       const allocation = await allocateOrRefund({
         idempotencyKey,
+        ...(body.data.message === undefined
+          ? {}
+          : { message: body.data.message }),
         organizationId: organizationId.data,
         principal,
         projectId: projectId.data,
@@ -386,6 +402,230 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
         },
         202
       );
+    },
+
+    /** One durable turn becomes one queued, tenant-scoped run. */
+    appendTurn: async (c: HandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+      const principal = await deps.resolvePrincipal({
+        cookieHeader: c.req.header("cookie"),
+      });
+      if (!principal) {
+        return apiErrorResponse({
+          code: "unauthenticated",
+          message: "A valid browser session is required.",
+          requestId: rid,
+        });
+      }
+      const idempotencyKey = c.req.header("idempotency-key");
+      const organizationId = OrganizationIdSchema.safeParse(
+        c.req.query("organizationId")
+      );
+      const projectId = ProjectIdSchema.safeParse(c.req.query("projectId"));
+      const buildSessionId = BuildSessionIdSchema.safeParse(
+        c.req.param("buildSessionId")
+      );
+      const body = AppendConversationTurnRequestSchema.safeParse(
+        await c.req.json()
+      );
+      if (
+        !(
+          idempotencyKey &&
+          idempotencyKey.length <= 128 &&
+          organizationId.success &&
+          projectId.success &&
+          buildSessionId.success &&
+          body.success
+        )
+      ) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message:
+            "A message, idempotency key, conversation, and project scope are required.",
+          requestId: rid,
+        });
+      }
+      const scope = {
+        organizationId: organizationId.data,
+        projectId: projectId.data,
+      };
+      const decision = await authorizeProjectAction({
+        action: "agent:run",
+        deps,
+        ...scope,
+        principal,
+      });
+      if (!decision.allowed) {
+        return apiErrorResponse({
+          code: "forbidden",
+          message: "You are not authorized to run this CTO.",
+          requestId: rid,
+        });
+      }
+      const store = deps.store();
+      if (!(await store.getBuildSession(scope, buildSessionId.data))) {
+        return apiErrorResponse({
+          code: "not_found",
+          message: "No such conversation.",
+          requestId: rid,
+        });
+      }
+      const refusal = await admitRun({
+        entitlements: PLAN_ENTITLEMENTS[defaultPlan],
+        organizationId: scope.organizationId,
+        requestId: rid,
+        store,
+      });
+      if (refusal) {
+        return refusal;
+      }
+      let accepted: {
+        runId: import("@reasonateai/contracts/identity").RunId;
+        created: boolean;
+      };
+      try {
+        accepted = await store.appendConversationTurn({
+          buildSessionId: buildSessionId.data,
+          idempotencyKey,
+          message: body.data.message,
+          scope,
+        });
+      } catch (error) {
+        await store.usage.record({
+          amount: -RUN_SLOT,
+          metric: RUN_METRIC,
+          organizationId: scope.organizationId,
+          runId: null,
+        });
+        if (error instanceof ConversationBusyError) {
+          return apiErrorResponse({
+            code: "conflict",
+            message: error.message,
+            requestId: rid,
+          });
+        }
+        throw error;
+      }
+      if (!accepted.created) {
+        await store.usage.record({
+          amount: -RUN_SLOT,
+          metric: RUN_METRIC,
+          organizationId: scope.organizationId,
+          runId: null,
+        });
+      }
+      return c.json(
+        ConversationTurnAcceptedSchema.parse({
+          buildSessionId: buildSessionId.data,
+          runId: accepted.runId,
+          sequence: 1,
+        }),
+        202
+      );
+    },
+
+    /** User-visible messages, including turns from earlier runs. */
+    history: async (c: HandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+      const principal = await deps.resolvePrincipal({
+        cookieHeader: c.req.header("cookie"),
+      });
+      if (!principal) {
+        return apiErrorResponse({
+          code: "unauthenticated",
+          message: "A valid browser session is required.",
+          requestId: rid,
+        });
+      }
+      const organizationId = OrganizationIdSchema.safeParse(
+        c.req.query("organizationId")
+      );
+      const projectId = ProjectIdSchema.safeParse(c.req.query("projectId"));
+      const buildSessionId = BuildSessionIdSchema.safeParse(
+        c.req.param("buildSessionId")
+      );
+      if (
+        !(organizationId.success && projectId.success && buildSessionId.success)
+      ) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message: "A conversation and both scope identifiers are required.",
+          requestId: rid,
+        });
+      }
+      const scope = {
+        organizationId: organizationId.data,
+        projectId: projectId.data,
+      };
+      const decision = await authorizeProjectAction({
+        action: "project:read",
+        deps,
+        ...scope,
+        principal,
+      });
+      if (!decision.allowed) {
+        return apiErrorResponse({
+          code: "forbidden",
+          message: "You are not authorized to read this project.",
+          requestId: rid,
+        });
+      }
+      if (!(await deps.store().getBuildSession(scope, buildSessionId.data))) {
+        return apiErrorResponse({
+          code: "not_found",
+          message: "No such conversation.",
+          requestId: rid,
+        });
+      }
+      const messages = await deps.store().listConversationMessages({
+        buildSessionId: buildSessionId.data,
+        scope,
+      });
+      return c.json(ConversationHistorySchema.parse({ messages }), 200);
+    },
+    /** All conversations visible to a member of this project. */
+    listConversations: async (c: HandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+      const principal = await deps.resolvePrincipal({
+        cookieHeader: c.req.header("cookie"),
+      });
+      if (!principal) {
+        return apiErrorResponse({
+          code: "unauthenticated",
+          message: "A valid browser session is required.",
+          requestId: rid,
+        });
+      }
+      const organizationId = OrganizationIdSchema.safeParse(
+        c.req.query("organizationId")
+      );
+      const projectId = ProjectIdSchema.safeParse(c.req.param("projectId"));
+      if (!(organizationId.success && projectId.success)) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message: "Organization and project identifiers are required.",
+          requestId: rid,
+        });
+      }
+      const decision = await authorizeProjectAction({
+        action: "project:read",
+        deps,
+        organizationId: organizationId.data,
+        principal,
+        projectId: projectId.data,
+      });
+      if (!decision.allowed) {
+        return apiErrorResponse({
+          code: "forbidden",
+          message: "You are not authorized to read this project.",
+          requestId: rid,
+        });
+      }
+      const conversations = await deps.store().listConversations({
+        organizationId: organizationId.data,
+        projectId: projectId.data,
+      });
+      return c.json(ConversationListSchema.parse({ conversations }), 200);
     },
 
     /** Scoped read. Another tenant's session is indistinguishable from absent. */

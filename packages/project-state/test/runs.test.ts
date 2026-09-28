@@ -121,6 +121,7 @@ describeWithDatabase("run dispatch", () => {
       projectId: scope.projectId,
       runId: allocation.buildSession.runId,
       sandboxEnvironmentId: allocation.sandbox.sandboxEnvironmentId,
+      userMessage: null,
       workspaceUri: allocation.sandbox.workspaceUri,
     });
   });
