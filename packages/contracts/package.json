@@ -35,6 +35,10 @@
     "./sandbox": {
       "types": "./src/sandbox.ts",
       "import": "./dist/sandbox.js"
+    },
+    "./intent": {
+      "types": "./src/intent.ts",
+      "import": "./dist/intent.js"
     }
   },
   "scripts": {
