@@ -6,6 +6,7 @@ import {
 } from "@reasonateai/contracts/identity";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { MIGRATION_STEPS, migrationChecksum } from "../src/migrations.js";
 import { createProjectStateStore } from "../src/postgres.js";
 import { deleteOrganizations } from "./support/database.js";
 
@@ -76,6 +77,26 @@ describeWithDatabase("project state store", () => {
     } finally {
       await replica.close();
     }
+  });
+
+  it("records every applied migration with its checksum", async () => {
+    const result = await pool.query<{
+      checksum: string;
+      name: string;
+      version: number;
+    }>(
+      `select version, name, checksum
+         from schema_migrations
+        order by version asc`
+    );
+
+    expect(result.rows).toEqual(
+      MIGRATION_STEPS.map((step) => ({
+        checksum: migrationChecksum(step.sql),
+        name: step.name,
+        version: step.version,
+      }))
+    );
   });
 
   it("allocates once per idempotency key and reuses the active session on reconnect", async () => {

@@ -48,24 +48,17 @@ import {
   recordWith,
 } from "./audit.js";
 import {
-  AUDIT_MIGRATION_SQL,
-  AUTH_TOKEN_MIGRATION_SQL,
-} from "./auth-schema.js";
-import {
   createMagicLinkRepository,
   type MagicLinkRepository,
 } from "./magic-links.js";
-import { MEMBERSHIP_MIGRATION_SQL } from "./membership-schema.js";
 import {
   createMembershipRepository,
   type MembershipRepository,
 } from "./memberships.js";
+import { applyMigrations } from "./migrations.js";
 import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
-import { PROJECT_STATE_MIGRATION_SQL } from "./schema.js";
-import { AUTH_SESSION_MIGRATION_SQL } from "./session-schema.js";
 import { createSessionRepository, type SessionRepository } from "./sessions.js";
 import { createUsageRepository, type UsageRepository } from "./usage.js";
-import { USAGE_MIGRATION_SQL } from "./usage-schema.js";
 import { createUserRepository, type UserRepository } from "./users.js";
 
 export interface TenantScope {
@@ -1469,14 +1462,7 @@ export function createProjectStateStore(config: {
             await client.query("select pg_advisory_xact_lock($1)", [
               MIGRATION_LOCK_KEY,
             ]);
-            await client.query(PROJECT_STATE_MIGRATION_SQL);
-            await client.query(AUTH_SESSION_MIGRATION_SQL);
-            await client.query(MEMBERSHIP_MIGRATION_SQL);
-            await client.query(USAGE_MIGRATION_SQL);
-            // Both reference the organization, project, and user tables above,
-            // so they are applied after them in this same transaction.
-            await client.query(AUTH_TOKEN_MIGRATION_SQL);
-            await client.query(AUDIT_MIGRATION_SQL);
+            await applyMigrations(client);
           });
         } catch (error) {
           if (
