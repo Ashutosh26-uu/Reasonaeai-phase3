@@ -21,7 +21,17 @@ import {
 } from "@reasonateai/contracts/execution-protocol";
 import { FolderClosed, PanelRight, RefreshCw } from "lucide-react";
 import Image from "next/image";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type Dispatch,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Composer } from "@/components/chat/composer";
 import { EmptyState } from "@/components/chat/empty-state";
 import { Transcript } from "@/components/chat/transcript";
@@ -34,6 +44,262 @@ import { describeError, request, scopeQuery } from "@/lib/product-api";
 const DRAFT_LIMIT = 20_000;
 const MODEL = "deepseek-flash";
 const EMPTY_EVENTS: RunEventEnvelope[] = [];
+const PANEL_WIDTH_STORAGE_KEY = "reasonateai-workspace-panel-width";
+const DEFAULT_PANEL_WIDTH = 40;
+
+function useWorkspacePanelResize() {
+  const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
+  const workAreaRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const savedWidth = Number(
+      window.localStorage.getItem(PANEL_WIDTH_STORAGE_KEY)
+    );
+    if (Number.isFinite(savedWidth) && savedWidth >= 25 && savedWidth <= 75) {
+      setPanelWidth(savedWidth);
+    }
+  }, []);
+
+  const setPanelWidthFromPointer = useCallback((clientX: number) => {
+    const bounds = workAreaRef.current?.getBoundingClientRect();
+    if (!bounds || bounds.width <= 0) {
+      return null;
+    }
+    const panelPixels = bounds.right - clientX;
+    const minPanelPercent = (320 / bounds.width) * 100;
+    const maxPanelPercent =
+      (Math.max(320, bounds.width - 370) / bounds.width) * 100;
+    const nextWidth = Math.min(
+      maxPanelPercent,
+      Math.max(minPanelPercent, (panelPixels / bounds.width) * 100)
+    );
+    setPanelWidth(nextWidth);
+    return nextWidth;
+  }, []);
+
+  const resizePanelByKeyboard = useCallback(
+    (delta: number) => {
+      const bounds = workAreaRef.current?.getBoundingClientRect();
+      if (!bounds || bounds.width <= 0) {
+        return;
+      }
+      const minWidth = (320 / bounds.width) * 100;
+      const maxWidth = (Math.max(320, bounds.width - 370) / bounds.width) * 100;
+      const nextWidth = Math.min(
+        maxWidth,
+        Math.max(minWidth, panelWidth + delta)
+      );
+      setPanelWidth(nextWidth);
+      window.localStorage.setItem(PANEL_WIDTH_STORAGE_KEY, String(nextWidth));
+    },
+    [panelWidth]
+  );
+  const onResizeKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLHRElement>) => {
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        resizePanelByKeyboard(2);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        resizePanelByKeyboard(-2);
+      }
+    },
+    [resizePanelByKeyboard]
+  );
+  const onResizePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLHRElement>) => {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setPanelWidthFromPointer(event.clientX);
+    },
+    [setPanelWidthFromPointer]
+  );
+  const onResizePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLHRElement>) => {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        setPanelWidthFromPointer(event.clientX);
+      }
+    },
+    [setPanelWidthFromPointer]
+  );
+  const onResizePointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLHRElement>) => {
+      const nextWidth = setPanelWidthFromPointer(event.clientX);
+      if (nextWidth !== null) {
+        window.localStorage.setItem(PANEL_WIDTH_STORAGE_KEY, String(nextWidth));
+      }
+    },
+    [setPanelWidthFromPointer]
+  );
+
+  return {
+    onResizeKeyDown,
+    onResizePointerDown,
+    onResizePointerMove,
+    onResizePointerUp,
+    panelWidth,
+    workAreaRef,
+  };
+}
+
+function collectProjectConversationResults(
+  projectIds: string[],
+  results: PromiseSettledResult<{
+    conversations: ConversationSummary[];
+    projectId: string;
+  }>[]
+) {
+  const conversationsByProject: Record<
+    string,
+    ConversationSummary[] | undefined
+  > = {};
+  const failedProjectIds: string[] = [];
+  for (const [index, result] of results.entries()) {
+    if (result.status === "fulfilled") {
+      conversationsByProject[result.value.projectId] =
+        result.value.conversations;
+    } else {
+      const failedProjectId = projectIds[index];
+      if (failedProjectId) {
+        failedProjectIds.push(failedProjectId);
+      }
+    }
+  }
+  return { conversationsByProject, failedProjectIds };
+}
+
+function useProjectConversationIndex({
+  loadProjectConversations,
+  projects,
+  setConversationsByProject,
+  setError,
+  setFailedConversationProjects,
+}: {
+  loadProjectConversations: (
+    projectId: string
+  ) => Promise<ConversationSummary[]>;
+  projects: ProjectSummary[];
+  setConversationsByProject: Dispatch<
+    SetStateAction<Record<string, ConversationSummary[] | undefined>>
+  >;
+  setError: Dispatch<SetStateAction<string>>;
+  setFailedConversationProjects: Dispatch<SetStateAction<string[]>>;
+}) {
+  useEffect(() => {
+    let current = true;
+    if (projects.length === 0) {
+      setConversationsByProject({});
+      setFailedConversationProjects([]);
+      return () => {
+        current = false;
+      };
+    }
+
+    const requestedProjectIds = projects.map(
+      (itemProject) => itemProject.projectId
+    );
+    Promise.allSettled(
+      requestedProjectIds.map(async (requestedProjectId) => ({
+        conversations: await loadProjectConversations(requestedProjectId),
+        projectId: requestedProjectId,
+      }))
+    ).then((results) => {
+      if (!current) {
+        return;
+      }
+      const { conversationsByProject: next, failedProjectIds: failedProjects } =
+        collectProjectConversationResults(requestedProjectIds, results);
+      setConversationsByProject((existing) => {
+        const merged = { ...existing, ...next };
+        for (const failedProjectId of failedProjects) {
+          delete merged[failedProjectId];
+        }
+        return merged;
+      });
+      setFailedConversationProjects(failedProjects);
+      if (failedProjects.length > 0) {
+        setError(
+          "Some project conversations could not be loaded. Reload the workspace to retry."
+        );
+      }
+    });
+
+    return () => {
+      current = false;
+    };
+  }, [
+    loadProjectConversations,
+    projects,
+    setConversationsByProject,
+    setError,
+    setFailedConversationProjects,
+  ]);
+}
+
+function ResizableWorkspacePanel({
+  buildSessionId,
+  isOpen,
+  onClose,
+  onKeyDown,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  organizationId,
+  panelWidth,
+  projectId,
+  workAreaRef,
+}: {
+  buildSessionId: string;
+  isOpen: boolean;
+  onClose: () => void;
+  onKeyDown: (event: ReactKeyboardEvent<HTMLHRElement>) => void;
+  onPointerDown: (event: ReactPointerEvent<HTMLHRElement>) => void;
+  onPointerMove: (event: ReactPointerEvent<HTMLHRElement>) => void;
+  onPointerUp: (event: ReactPointerEvent<HTMLHRElement>) => void;
+  organizationId: string;
+  panelWidth: number;
+  projectId: string;
+  workAreaRef: { current: HTMLDivElement | null };
+}) {
+  if (!isOpen) {
+    return null;
+  }
+  const workAreaWidth = workAreaRef.current?.clientWidth ?? 0;
+  const minPanelPercent =
+    workAreaWidth > 0 ? Math.ceil((320 / workAreaWidth) * 100) : 30;
+  const maxPanelPercent =
+    workAreaWidth > 0
+      ? Math.floor((Math.max(320, workAreaWidth - 370) / workAreaWidth) * 100)
+      : 75;
+
+  return (
+    <>
+      <hr
+        aria-label="Resize chat and workspace"
+        aria-orientation="vertical"
+        aria-valuemax={maxPanelPercent}
+        aria-valuemin={minPanelPercent}
+        aria-valuenow={Math.round(panelWidth)}
+        aria-valuetext={`${Math.round(panelWidth)} percent workspace width`}
+        className="workspace-resize-handle"
+        onKeyDown={onKeyDown}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        tabIndex={0}
+      />
+      <Panel
+        buildSessionId={buildSessionId}
+        onClose={onClose}
+        organizationId={organizationId}
+        projectId={projectId}
+      />
+    </>
+  );
+}
+
+function hasVisibleWorkspacePanel(panelOpen: boolean, conversationId: string) {
+  return panelOpen && conversationId.length > 0;
+}
 
 function readRoute() {
   if (typeof window === "undefined") {
@@ -115,7 +381,17 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [stoppingRunId, setStoppingRunId] = useState<string | null>(null);
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(
+    () => route.conversationId.length > 0
+  );
+  const {
+    onResizeKeyDown,
+    onResizePointerDown,
+    onResizePointerMove,
+    onResizePointerUp,
+    panelWidth,
+    workAreaRef,
+  } = useWorkspacePanelResize();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const active = conversations.find(
@@ -208,59 +484,13 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     );
   }, [loadProjects]);
 
-  useEffect(() => {
-    let current = true;
-    if (projects.length === 0) {
-      setConversationsByProject({});
-      setFailedConversationProjects([]);
-      return () => {
-        current = false;
-      };
-    }
-
-    const requestedProjectIds = projects.map(
-      (itemProject) => itemProject.projectId
-    );
-    Promise.allSettled(
-      requestedProjectIds.map(async (requestedProjectId) => ({
-        conversations: await loadProjectConversations(requestedProjectId),
-        projectId: requestedProjectId,
-      }))
-    ).then((results) => {
-      if (!current) {
-        return;
-      }
-      const next: Record<string, ConversationSummary[] | undefined> = {};
-      const failedProjects: string[] = [];
-      for (const [index, result] of results.entries()) {
-        if (result.status === "fulfilled") {
-          next[result.value.projectId] = result.value.conversations;
-        } else {
-          const failedProjectId = requestedProjectIds[index];
-          if (failedProjectId) {
-            failedProjects.push(failedProjectId);
-          }
-        }
-      }
-      setConversationsByProject((existing) => {
-        const merged = { ...existing, ...next };
-        for (const failedProjectId of failedProjects) {
-          delete merged[failedProjectId];
-        }
-        return merged;
-      });
-      setFailedConversationProjects(failedProjects);
-      if (failedProjects.length > 0) {
-        setError(
-          "Some project conversations could not be loaded. Reload the workspace to retry."
-        );
-      }
-    });
-
-    return () => {
-      current = false;
-    };
-  }, [loadProjectConversations, projects]);
+  useProjectConversationIndex({
+    loadProjectConversations,
+    projects,
+    setConversationsByProject,
+    setError,
+    setFailedConversationProjects,
+  });
 
   useEffect(() => {
     setConversations([]);
@@ -284,6 +514,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       setProjectId(next.projectId);
       setConversationId(next.conversationId);
       setMessages([]);
+      setPanelOpen((current) => current && next.conversationId.length > 0);
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -517,7 +748,10 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
         );
         await loadProjects();
         setProjectId(created);
+        setConversationId("");
+        setMessages([]);
         setProjectName("");
+        setPanelOpen(false);
       } catch (cause) {
         setError(describeError(cause, "Could not create the project."));
       } finally {
@@ -550,12 +784,14 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     setConversationsByProject({});
     setFailedConversationProjects([]);
     setMessages([]);
+    setPanelOpen(false);
   }, []);
 
   const selectProject = useCallback((nextProjectId: string) => {
     setProjectId(nextProjectId);
     setConversationId("");
     setMessages([]);
+    setPanelOpen(false);
     writeRoute(nextProjectId, "");
   }, []);
 
@@ -574,6 +810,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     setMessages([]);
     setDraft("");
     setNotice("");
+    setPanelOpen(false);
     writeRoute(projectId, "");
     document.getElementById("prompt")?.focus();
   }, [projectId]);
@@ -584,6 +821,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     setMessages([]);
     setDraft("");
     setNotice("");
+    setPanelOpen(false);
     writeRoute(nextProjectId, "");
     document.getElementById("prompt")?.focus();
   }, []);
@@ -667,9 +905,13 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   const organizationName =
     session.organizations.find((item) => item.organizationId === organizationId)
       ?.name ?? "This workspace";
+  const showWorkspacePanel = hasVisibleWorkspacePanel(
+    panelOpen,
+    conversationId
+  );
 
   return (
-    <div className="app" data-panel={panelOpen || undefined}>
+    <div className="app">
       <Rail
         conversationId={conversationId}
         conversationsByProject={conversationsByProject}
@@ -692,93 +934,109 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
         submitting={submitting}
       />
 
-      <main className="pane">
-        <header className="pane-head">
-          <div className="pane-titles">
-            <div className="pane-title">{heading}</div>
-            <div className="pane-meta">
-              <span>{project?.name ?? "No project selected"}</span>
-              <span aria-hidden="true">·</span>
-              <span data-state={working ? "working" : "ready"}>
-                {working ? "Working" : "Ready"}
-              </span>
+      <div
+        className="work-area"
+        data-panel={showWorkspacePanel || undefined}
+        ref={workAreaRef}
+        style={{ "--workspace-panel-width": `${panelWidth}%` } as CSSProperties}
+      >
+        <main className="pane">
+          <header className="pane-head">
+            <div className="pane-titles">
+              <div className="pane-title">{heading}</div>
+              <div className="pane-meta">
+                <span>{project?.name ?? "No project selected"}</span>
+                <span aria-hidden="true">·</span>
+                <span data-state={working ? "working" : "ready"}>
+                  {working ? "Working" : "Ready"}
+                </span>
+              </div>
             </div>
-          </div>
-          <div className="pane-tools">
-            {selectedProject && (
-              <button
-                className="pane-button"
-                onClick={refreshConversation}
-                type="button"
-              >
-                <RefreshCw size={14} /> Refresh
-              </button>
-            )}
-            {selectedProject && conversationId.length > 0 && (
-              <button className="pane-button" onClick={openPanel} type="button">
-                <PanelRight size={14} /> Workspace
-              </button>
-            )}
-          </div>
-        </header>
+            <div className="pane-tools">
+              {selectedProject && (
+                <button
+                  className="pane-button"
+                  onClick={refreshConversation}
+                  type="button"
+                >
+                  <RefreshCw size={14} /> Refresh
+                </button>
+              )}
+              {selectedProject && conversationId.length > 0 && (
+                <button
+                  className="pane-button"
+                  onClick={openPanel}
+                  type="button"
+                >
+                  <PanelRight size={14} /> Workspace
+                </button>
+              )}
+            </div>
+          </header>
 
-        {error.length > 0 && (
-          <div className="banner is-error" role="alert">
-            <span>{error}</span>
-            <button onClick={dismissError} type="button">
-              Dismiss
-            </button>
-          </div>
-        )}
-        {notice.length > 0 && (
-          <div className="banner" role="status">
-            <span>{notice}</span>
-            <button onClick={dismissNotice} type="button">
-              Dismiss
-            </button>
-          </div>
-        )}
-
-        <div className="pane-body">
-          {selectedProject ? (
-            <ConversationPane
-              composer={composer}
-              empty={emptyConversation}
-              live={live}
-              messages={
-                visibleHistory(historyIdentity, history, messages).messages
-              }
-              onEdit={editMessage}
-              onRetry={retry}
-              onStarter={selectStarter}
-              pending={working}
-              starters={promptStarters}
-              timeline={timeline}
-            />
-          ) : (
-            <EmptyState
-              mark={<FolderClosed aria-hidden="true" size={26} />}
-              onStarter={selectStarter}
-              pending={false}
-              starters={[]}
-            >
-              <p className="empty-note">
-                Create or select a project in the rail to open its CTO
-                workspace.
-              </p>
-            </EmptyState>
+          {error.length > 0 && (
+            <div className="banner is-error" role="alert">
+              <span>{error}</span>
+              <button onClick={dismissError} type="button">
+                Dismiss
+              </button>
+            </div>
           )}
-        </div>
-      </main>
+          {notice.length > 0 && (
+            <div className="banner" role="status">
+              <span>{notice}</span>
+              <button onClick={dismissNotice} type="button">
+                Dismiss
+              </button>
+            </div>
+          )}
 
-      {panelOpen && conversationId.length > 0 && (
-        <Panel
+          <div className="pane-body">
+            {selectedProject ? (
+              <ConversationPane
+                composer={composer}
+                empty={emptyConversation}
+                live={live}
+                messages={
+                  visibleHistory(historyIdentity, history, messages).messages
+                }
+                onEdit={editMessage}
+                onRetry={retry}
+                onStarter={selectStarter}
+                pending={working}
+                starters={promptStarters}
+                timeline={timeline}
+              />
+            ) : (
+              <EmptyState
+                mark={<FolderClosed aria-hidden="true" size={26} />}
+                onStarter={selectStarter}
+                pending={false}
+                starters={[]}
+              >
+                <p className="empty-note">
+                  Create or select a project in the rail to open its CTO
+                  workspace.
+                </p>
+              </EmptyState>
+            )}
+          </div>
+        </main>
+
+        <ResizableWorkspacePanel
           buildSessionId={conversationId}
+          isOpen={showWorkspacePanel}
           onClose={closePanel}
+          onKeyDown={onResizeKeyDown}
+          onPointerDown={onResizePointerDown}
+          onPointerMove={onResizePointerMove}
+          onPointerUp={onResizePointerUp}
           organizationId={organizationId}
+          panelWidth={panelWidth}
           projectId={projectId}
+          workAreaRef={workAreaRef}
         />
-      )}
+      </div>
 
       {settingsOpen && (
         <Settings

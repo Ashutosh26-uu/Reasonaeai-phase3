@@ -11,6 +11,11 @@ import {
   DropdownMenuTrigger,
 } from "@reasonateai/ui/components/dropdown-menu";
 import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@reasonateai/ui/components/hover-card";
+import {
   Check,
   ChevronDown,
   ChevronRight,
@@ -18,7 +23,12 @@ import {
   ChevronsRight,
   CirclePlus,
   FolderClosed,
+  FolderOpen,
+  LoaderCircle,
   LogOut,
+  Menu,
+  MoreHorizontal,
+  Pin,
   Plus,
   Search,
   Settings as SettingsIcon,
@@ -52,6 +62,7 @@ export interface RailProps {
 }
 
 const COLLAPSED_KEY = "reasonate.rail.collapsed";
+const PINNED_CONVERSATIONS_KEY = "reasonate.rail.pinned-conversations";
 
 function readCollapsed(): boolean {
   if (typeof window === "undefined") {
@@ -72,7 +83,6 @@ interface ChatPickerProps {
   onNewConversation: () => void;
   onOpenChange: (open: boolean) => void;
   open: boolean;
-  selectedConversationId: string;
 }
 
 function ChatPicker({
@@ -81,10 +91,8 @@ function ChatPicker({
   onNewConversation,
   onOpenChange,
   open,
-  selectedConversationId,
 }: ChatPickerProps) {
   const [query, setQuery] = useState("");
-  const [previewId, setPreviewId] = useState("");
   const dialog = useRef<HTMLDialogElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const filteredConversations = conversations.filter(
@@ -98,10 +106,6 @@ function ChatPicker({
       setQuery(event.currentTarget.value),
     []
   );
-  const preview = conversations.find(
-    (item) => item.conversation.buildSessionId === previewId
-  );
-
   useEffect(() => {
     const element = dialog.current;
     if (!element) {
@@ -109,13 +113,12 @@ function ChatPicker({
     }
     if (open && !element.open) {
       setQuery("");
-      setPreviewId(selectedConversationId);
       element.showModal();
       searchInput.current?.focus();
     } else if (!open && element.open) {
       element.close();
     }
-  }, [open, selectedConversationId]);
+  }, [open]);
 
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
   const cancel = useCallback(
@@ -129,21 +132,18 @@ function ChatPicker({
     close();
     onNewConversation();
   }, [close, onNewConversation]);
-  const selectPreview = useCallback(
-    (event: React.MouseEvent<HTMLButtonElement>) =>
-      setPreviewId(event.currentTarget.value),
-    []
+  const openConversationFromButton = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      const targetProjectId = event.currentTarget.dataset.projectId;
+      const targetConversationId = event.currentTarget.value;
+      if (!(targetProjectId && targetConversationId)) {
+        return;
+      }
+      onConversationSelect(targetProjectId, targetConversationId);
+      close();
+    },
+    [close, onConversationSelect]
   );
-  const openPreview = useCallback(() => {
-    if (!preview) {
-      return;
-    }
-    onConversationSelect(
-      preview.projectId,
-      preview.conversation.buildSessionId
-    );
-    close();
-  }, [close, onConversationSelect, preview]);
 
   return (
     <dialog
@@ -173,34 +173,31 @@ function ChatPicker({
           <X aria-hidden="true" size={18} />
         </button>
       </header>
-      <div className="rail-chat-dialog-body">
-        <section
-          aria-label="Conversation results"
-          className="rail-chat-list-pane"
-        >
-          <div className="rail-chat-section-head">
-            <span>Conversations</span>
-          </div>
-          <button
-            className="rail-chat-create"
-            onClick={createChat}
-            type="button"
-          >
-            <SquarePen aria-hidden="true" size={18} />
-            New conversation
-          </button>
-          <div className="rail-chat-results">
-            {filteredConversations.length === 0 ? (
-              <p className="rail-chat-empty">
-                {query ? "No matching conversations." : "No conversations yet."}
-              </p>
-            ) : (
-              filteredConversations.map(({ conversation, projectName }) => (
+      <section
+        aria-label="Conversation results"
+        className="rail-chat-list-pane"
+      >
+        <div className="rail-chat-section-head">
+          <span>Conversations</span>
+        </div>
+        <button className="rail-chat-create" onClick={createChat} type="button">
+          <SquarePen aria-hidden="true" size={18} />
+          New conversation
+        </button>
+        <div className="rail-chat-results">
+          {filteredConversations.length === 0 ? (
+            <p className="rail-chat-empty">
+              {query ? "No matching conversations." : "No conversations yet."}
+            </p>
+          ) : (
+            filteredConversations.map(
+              ({ conversation, projectId, projectName }) => (
                 <button
-                  aria-pressed={conversation.buildSessionId === previewId}
                   className="rail-chat-result"
+                  data-project-id={projectId}
                   key={conversation.buildSessionId}
-                  onClick={selectPreview}
+                  onClick={openConversationFromButton}
+                  title={conversation.title ?? "Untitled conversation"}
                   type="button"
                   value={conversation.buildSessionId}
                 >
@@ -217,36 +214,11 @@ function ChatPicker({
                     }).format(new Date(conversation.updatedAt))}
                   </time>
                 </button>
-              ))
-            )}
-          </div>
-        </section>
-        <section
-          aria-label="Conversation preview"
-          className="rail-chat-preview-pane"
-        >
-          {preview ? (
-            <>
-              <div className="rail-chat-preview-content">
-                <FolderClosed aria-hidden="true" size={22} />
-                <span className="rail-chat-preview-project">
-                  {preview.projectName}
-                </span>
-                <h2>{preview.conversation.title ?? "Untitled conversation"}</h2>
-              </div>
-              <button
-                className="rail-chat-open"
-                onClick={openPreview}
-                type="button"
-              >
-                Open conversation
-              </button>
-            </>
-          ) : (
-            <p>Select a conversation to preview</p>
+              )
+            )
           )}
-        </section>
-      </div>
+        </div>
+      </section>
     </dialog>
   );
 }
@@ -419,6 +391,344 @@ function ProjectPicker({
   );
 }
 
+interface ProjectTreeItemProps {
+  conversationId: string;
+  conversations: ConversationSummary[] | undefined;
+  expanded: boolean;
+  failed: boolean;
+  onConversationMenuAction: (event: Event) => void;
+  onConversationPin: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  onConversationSelect: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  onCreateConversation: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  onProjectMenuAction: (event: Event) => void;
+  onProjectSelect: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  onToggleProject: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  pinnedConversationIds: string[];
+  project: ProjectSummary;
+  selectedProjectId: string;
+}
+
+function ConversationTreeItem({
+  conversation,
+  conversationId,
+  isPinned,
+  onMenuAction,
+  onPin,
+  onSelect,
+  projectId,
+  projectName,
+  selectedProjectId,
+}: {
+  conversation: ConversationSummary;
+  conversationId: string;
+  isPinned: boolean;
+  onMenuAction: (event: Event) => void;
+  onPin: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  onSelect: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  projectId: string;
+  projectName: string;
+  selectedProjectId: string;
+}) {
+  const active =
+    conversation.buildSessionId === conversationId &&
+    projectId === selectedProjectId;
+  const updatedAt = new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(conversation.updatedAt));
+
+  return (
+    <li className="rail-tree-conversation-item">
+      <div
+        className="rail-tree-conversation-wrap"
+        data-pinned={isPinned || undefined}
+      >
+        <HoverCard closeDelay={120} openDelay={450}>
+          <HoverCardTrigger asChild>
+            <button
+              aria-current={active ? "page" : undefined}
+              className="rail-tree-conversation"
+              data-active={active ? "true" : undefined}
+              data-project-id={projectId}
+              onClick={onSelect}
+              title={conversation.title ?? "Untitled conversation"}
+              type="button"
+              value={conversation.buildSessionId}
+            >
+              <span aria-hidden="true" className="rail-tree-leaf" />
+              <span className="rail-tree-conversation-title">
+                {conversation.title ?? "Untitled conversation"}
+              </span>
+              {conversation.pendingRunId !== null && (
+                <LoaderCircle
+                  aria-label="Conversation running"
+                  className="rail-tree-running"
+                  role="img"
+                  size={14}
+                />
+              )}
+            </button>
+          </HoverCardTrigger>
+          <HoverCardContent
+            align="start"
+            className="rail-conversation-preview"
+            side="right"
+            sideOffset={8}
+          >
+            <strong className="rail-conversation-preview-title">
+              {conversation.title ?? "Untitled conversation"}
+            </strong>
+            <span className="rail-conversation-preview-detail">
+              <FolderClosed aria-hidden="true" size={14} />
+              {projectName}
+            </span>
+            <span className="rail-conversation-preview-detail">
+              {conversation.pendingRunId === null ? (
+                <Check aria-hidden="true" size={14} />
+              ) : (
+                <LoaderCircle
+                  aria-hidden="true"
+                  className="rail-tree-running"
+                  size={14}
+                />
+              )}
+              {conversation.pendingRunId === null ? "Last active" : "Running"}
+              <time dateTime={conversation.updatedAt}>{updatedAt}</time>
+            </span>
+          </HoverCardContent>
+        </HoverCard>
+        <div className="rail-tree-conversation-actions">
+          <button
+            aria-label={`${isPinned ? "Unpin" : "Pin"} ${conversation.title ?? "conversation"}`}
+            aria-pressed={isPinned}
+            className="rail-tree-action"
+            data-conversation-id={conversation.buildSessionId}
+            onClick={onPin}
+            title={isPinned ? "Unpin conversation" : "Pin conversation"}
+            type="button"
+          >
+            <Pin aria-hidden="true" size={14} />
+          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                aria-label={`More options for ${conversation.title ?? "conversation"}`}
+                className="rail-tree-action"
+                title="Conversation options"
+                type="button"
+              >
+                <MoreHorizontal aria-hidden="true" size={16} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              className="rail-project-menu rail-conversation-menu"
+              side="right"
+              sideOffset={6}
+            >
+              <DropdownMenuItem
+                data-conversation-id={conversation.buildSessionId}
+                data-project-action="open-conversation"
+                data-project-id={projectId}
+                onSelect={onMenuAction}
+              >
+                <FolderOpen aria-hidden="true" />
+                Open conversation
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                data-project-action="new-conversation"
+                data-project-id={projectId}
+                onSelect={onMenuAction}
+              >
+                <SquarePen aria-hidden="true" />
+                New conversation in project
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                data-conversation-id={conversation.buildSessionId}
+                data-project-action="toggle-pin"
+                onSelect={onMenuAction}
+              >
+                <Pin aria-hidden="true" />
+                {isPinned ? "Unpin conversation" : "Pin conversation"}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function ProjectTreeItem({
+  conversationId,
+  conversations,
+  expanded,
+  failed,
+  onConversationSelect,
+  onConversationMenuAction,
+  onConversationPin,
+  onCreateConversation,
+  onProjectMenuAction,
+  onProjectSelect,
+  onToggleProject,
+  pinnedConversationIds,
+  project,
+  selectedProjectId,
+}: ProjectTreeItemProps) {
+  const unpinnedConversations = conversations?.filter(
+    (conversation) =>
+      !pinnedConversationIds.includes(conversation.buildSessionId)
+  );
+  const conversationItems: React.ReactNode[] = [];
+  if (expanded) {
+    if (failed) {
+      conversationItems.push(
+        <li className="rail-tree-message" key="load-error">
+          Could not load conversations
+        </li>
+      );
+    } else if (conversations === undefined) {
+      conversationItems.push(
+        <li className="rail-tree-message" key="loading">
+          Loading conversations…
+        </li>
+      );
+    } else if ((unpinnedConversations?.length ?? 0) === 0) {
+      conversationItems.push(
+        <li className="rail-tree-message" key="empty">
+          {conversations.length === 0
+            ? "No conversations yet"
+            : "All conversations pinned"}
+        </li>
+      );
+    } else {
+      conversationItems.push(
+        ...[...(unpinnedConversations ?? [])]
+          .sort(
+            (left, right) =>
+              Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+          )
+          .map((conversation) => (
+            <ConversationTreeItem
+              conversation={conversation}
+              conversationId={conversationId}
+              isPinned={pinnedConversationIds.includes(
+                conversation.buildSessionId
+              )}
+              key={conversation.buildSessionId}
+              onMenuAction={onConversationMenuAction}
+              onPin={onConversationPin}
+              onSelect={onConversationSelect}
+              projectId={project.projectId}
+              projectName={project.name}
+              selectedProjectId={selectedProjectId}
+            />
+          ))
+      );
+    }
+  }
+  const projectChildren = expanded ? (
+    <ul className="rail-tree-children">{conversationItems}</ul>
+  ) : null;
+
+  return (
+    <li className="rail-tree-project">
+      <div
+        className="rail-tree-project-row"
+        data-active={project.projectId === selectedProjectId || undefined}
+      >
+        <button
+          aria-expanded={expanded}
+          aria-label={`${expanded ? "Collapse" : "Expand"} ${project.name}`}
+          className="rail-tree-chevron"
+          onClick={onToggleProject}
+          type="button"
+          value={project.projectId}
+        >
+          {expanded ? (
+            <ChevronDown aria-hidden="true" size={14} />
+          ) : (
+            <ChevronRight aria-hidden="true" size={14} />
+          )}
+        </button>
+        <button
+          aria-current={
+            project.projectId === selectedProjectId ? "page" : undefined
+          }
+          className="rail-tree-project-select"
+          onClick={onProjectSelect}
+          title={project.name}
+          type="button"
+          value={project.projectId}
+        >
+          <FolderClosed aria-hidden="true" size={16} />
+          <span>{project.name}</span>
+        </button>
+        <div className="rail-tree-actions">
+          <button
+            aria-label={`New conversation in ${project.name}`}
+            className="rail-tree-action"
+            onClick={onCreateConversation}
+            title={`New conversation in ${project.name}`}
+            type="button"
+            value={project.projectId}
+          >
+            <SquarePen aria-hidden="true" size={15} />
+          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                aria-label={`More options for ${project.name}`}
+                className="rail-tree-action"
+                title={`More options for ${project.name}`}
+                type="button"
+              >
+                <MoreHorizontal aria-hidden="true" size={16} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              className="rail-project-menu"
+              side="right"
+              sideOffset={6}
+            >
+              <DropdownMenuItem
+                data-project-action="new-conversation"
+                data-project-id={project.projectId}
+                onSelect={onProjectMenuAction}
+              >
+                <SquarePen aria-hidden="true" />
+                New conversation
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                data-project-action="open-project"
+                data-project-id={project.projectId}
+                onSelect={onProjectMenuAction}
+              >
+                <FolderOpen aria-hidden="true" />
+                Open project
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                data-project-action="toggle-conversations"
+                data-project-id={project.projectId}
+                onSelect={onProjectMenuAction}
+              >
+                {expanded ? (
+                  <ChevronRight aria-hidden="true" />
+                ) : (
+                  <ChevronDown aria-hidden="true" />
+                )}
+                {expanded ? "Collapse conversations" : "Expand conversations"}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+      {projectChildren}
+    </li>
+  );
+}
+
 export function Rail({
   conversationId,
   conversationsByProject,
@@ -445,6 +755,42 @@ export function Rail({
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [expandedProjects, setExpandedProjects] = useState<string[]>([]);
+  const [pinnedConversationIds, setPinnedConversationIds] = useState<string[]>(
+    []
+  );
+  const [loadedPinnedOrganizationId, setLoadedPinnedOrganizationId] =
+    useState("");
+
+  useEffect(() => {
+    let storedIds: string[] = [];
+    try {
+      const value: unknown = JSON.parse(
+        window.localStorage.getItem(
+          `${PINNED_CONVERSATIONS_KEY}:${organizationId}`
+        ) ?? "[]"
+      );
+      if (
+        Array.isArray(value) &&
+        value.every((item) => typeof item === "string")
+      ) {
+        storedIds = value;
+      }
+    } catch {
+      storedIds = [];
+    }
+    setPinnedConversationIds(storedIds);
+    setLoadedPinnedOrganizationId(organizationId);
+  }, [organizationId]);
+
+  useEffect(() => {
+    if (loadedPinnedOrganizationId !== organizationId) {
+      return;
+    }
+    window.localStorage.setItem(
+      `${PINNED_CONVERSATIONS_KEY}:${organizationId}`,
+      JSON.stringify(pinnedConversationIds)
+    );
+  }, [loadedPinnedOrganizationId, organizationId, pinnedConversationIds]);
 
   useEffect(() => {
     const media = window.matchMedia("(max-width: 900px)");
@@ -525,6 +871,13 @@ export function Rail({
       ),
     [orderedConversations]
   );
+  const pinnedConversations = useMemo(
+    () =>
+      sortedConversations.filter(({ conversation }) =>
+        pinnedConversationIds.includes(conversation.buildSessionId)
+      ),
+    [pinnedConversationIds, sortedConversations]
+  );
   const organizationName =
     organizations.find((item) => item.organizationId === organizationId)
       ?.name ?? "No organization";
@@ -582,6 +935,63 @@ export function Rail({
       }
     },
     [chooseConversation]
+  );
+  const selectProjectMenuAction = useCallback(
+    (event: Event) => {
+      const target = event.currentTarget;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const targetProjectId = target.dataset.projectId;
+      const action = target.dataset.projectAction;
+      if (!(targetProjectId && action)) {
+        return;
+      }
+      if (action === "new-conversation") {
+        startProjectConversation(targetProjectId);
+      } else if (action === "open-project") {
+        onProjectSelect(targetProjectId);
+        closeNavigation();
+      } else if (action === "toggle-conversations") {
+        toggleProject(targetProjectId);
+      }
+    },
+    [closeNavigation, onProjectSelect, startProjectConversation, toggleProject]
+  );
+  const togglePinnedConversation = useCallback((buildSessionId: string) => {
+    setPinnedConversationIds((current) =>
+      current.includes(buildSessionId)
+        ? current.filter((item) => item !== buildSessionId)
+        : [buildSessionId, ...current]
+    );
+  }, []);
+  const pinConversationFromButton = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      const buildSessionId = event.currentTarget.dataset.conversationId;
+      if (buildSessionId) {
+        togglePinnedConversation(buildSessionId);
+      }
+    },
+    [togglePinnedConversation]
+  );
+  const selectConversationMenuAction = useCallback(
+    (event: Event) => {
+      const target = event.currentTarget;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const action = target.dataset.projectAction;
+      const buildSessionId = target.dataset.conversationId;
+      const targetProjectId = target.dataset.projectId;
+      if (action === "open-conversation" && buildSessionId && targetProjectId) {
+        chooseConversation(targetProjectId, buildSessionId);
+      } else if (action === "new-conversation" && targetProjectId) {
+        startProjectConversation(targetProjectId);
+      } else if (action === "toggle-pin" && buildSessionId) {
+        togglePinnedConversation(buildSessionId);
+      }
+    },
+    [chooseConversation, startProjectConversation, togglePinnedConversation]
   );
   const selectOrganizationFromMenu = useCallback(
     (event: Event) => {
@@ -667,7 +1077,11 @@ export function Rail({
         onClick={toggle}
         type="button"
       >
-        <span>{collapsed ? "Menu" : "Close"}</span>
+        {collapsed ? (
+          <Menu aria-hidden="true" size={20} />
+        ) : (
+          <X aria-hidden="true" size={20} />
+        )}
       </button>
 
       <div className="rail-body">
@@ -681,6 +1095,30 @@ export function Rail({
           <SquarePen aria-hidden="true" size={17} />
           <span className="rail-text">New conversation</span>
         </button>
+
+        {pinnedConversations.length > 0 && (
+          <div className="rail-block rail-pinned-block">
+            <div className="rail-label rail-pinned-label">Pinned</div>
+            <ul aria-label="Pinned conversations" className="rail-pinned-list">
+              {pinnedConversations.map(
+                ({ conversation, projectId: targetProjectId, projectName }) => (
+                  <ConversationTreeItem
+                    conversation={conversation}
+                    conversationId={conversationId}
+                    isPinned
+                    key={conversation.buildSessionId}
+                    onMenuAction={selectConversationMenuAction}
+                    onPin={pinConversationFromButton}
+                    onSelect={selectConversationFromButton}
+                    projectId={targetProjectId}
+                    projectName={projectName}
+                    selectedProjectId={projectId}
+                  />
+                )
+              )}
+            </ul>
+          </div>
+        )}
 
         <div className="rail-block rail-project-block">
           <div className="rail-label rail-project-label">
@@ -706,133 +1144,25 @@ export function Rail({
           </button>
 
           <ul aria-label="Projects and conversations" className="rail-tree">
-            {projects.map((project) => {
-              const expanded = expandedProjects.includes(project.projectId);
-              const projectConversations =
-                conversationsByProject[project.projectId];
-              let projectChildren: React.ReactNode = null;
-              if (
-                expanded &&
-                failedConversationProjects.includes(project.projectId)
-              ) {
-                projectChildren = (
-                  <ul className="rail-tree-children">
-                    <li className="rail-tree-message">
-                      Could not load conversations
-                    </li>
-                  </ul>
-                );
-              } else if (expanded && projectConversations === undefined) {
-                projectChildren = (
-                  <ul className="rail-tree-children">
-                    <li className="rail-tree-message">
-                      Loading conversations…
-                    </li>
-                  </ul>
-                );
-              } else if (expanded && projectConversations?.length === 0) {
-                projectChildren = (
-                  <ul className="rail-tree-children">
-                    <li className="rail-tree-message">No conversations yet</li>
-                  </ul>
-                );
-              } else if (expanded && projectConversations) {
-                projectChildren = (
-                  <ul className="rail-tree-children">
-                    {[...projectConversations]
-                      .sort(
-                        (left, right) =>
-                          Date.parse(right.updatedAt) -
-                          Date.parse(left.updatedAt)
-                      )
-                      .map((conversation) => (
-                        <li key={conversation.buildSessionId}>
-                          <button
-                            aria-current={
-                              conversation.buildSessionId === conversationId &&
-                              project.projectId === projectId
-                                ? "page"
-                                : undefined
-                            }
-                            className="rail-tree-conversation"
-                            data-active={
-                              conversation.buildSessionId === conversationId &&
-                              project.projectId === projectId
-                                ? "true"
-                                : undefined
-                            }
-                            data-project-id={project.projectId}
-                            onClick={selectConversationFromButton}
-                            title={
-                              conversation.title ?? "Untitled conversation"
-                            }
-                            type="button"
-                            value={conversation.buildSessionId}
-                          >
-                            <span
-                              aria-hidden="true"
-                              className="rail-tree-leaf"
-                            />
-                            <span className="rail-tree-conversation-title">
-                              {conversation.title ?? "Untitled conversation"}
-                            </span>
-                            {conversation.pendingRunId !== null && (
-                              <span aria-hidden="true" className="live-dot" />
-                            )}
-                          </button>
-                        </li>
-                      ))}
-                  </ul>
-                );
-              }
-              return (
-                <li className="rail-tree-project" key={project.projectId}>
-                  <div
-                    className="rail-tree-project-row"
-                    data-active={project.projectId === projectId || undefined}
-                  >
-                    <button
-                      aria-expanded={expanded}
-                      aria-label={`${expanded ? "Collapse" : "Expand"} ${project.name}`}
-                      className="rail-tree-chevron"
-                      onClick={toggleProjectFromButton}
-                      type="button"
-                      value={project.projectId}
-                    >
-                      {expanded ? (
-                        <ChevronDown aria-hidden="true" size={14} />
-                      ) : (
-                        <ChevronRight aria-hidden="true" size={14} />
-                      )}
-                    </button>
-                    <button
-                      aria-current={
-                        project.projectId === projectId ? "page" : undefined
-                      }
-                      className="rail-tree-project-select"
-                      onClick={selectProjectFromButton}
-                      title={project.name}
-                      type="button"
-                      value={project.projectId}
-                    >
-                      <FolderClosed aria-hidden="true" size={16} />
-                      <span>{project.name}</span>
-                    </button>
-                    <button
-                      aria-label={`New conversation in ${project.name}`}
-                      className="rail-tree-add"
-                      onClick={createConversationFromButton}
-                      title={`New conversation in ${project.name}`}
-                      type="button"
-                      value={project.projectId}
-                    >
-                      <Plus aria-hidden="true" size={15} />
-                    </button>
-                  </div>
-                  {projectChildren}
-                </li>
-              );
-            })}
+            {projects.map((project) => (
+              <ProjectTreeItem
+                conversationId={conversationId}
+                conversations={conversationsByProject[project.projectId]}
+                expanded={expandedProjects.includes(project.projectId)}
+                failed={failedConversationProjects.includes(project.projectId)}
+                key={project.projectId}
+                onConversationMenuAction={selectConversationMenuAction}
+                onConversationPin={pinConversationFromButton}
+                onConversationSelect={selectConversationFromButton}
+                onCreateConversation={createConversationFromButton}
+                onProjectMenuAction={selectProjectMenuAction}
+                onProjectSelect={selectProjectFromButton}
+                onToggleProject={toggleProjectFromButton}
+                pinnedConversationIds={pinnedConversationIds}
+                project={project}
+                selectedProjectId={projectId}
+              />
+            ))}
           </ul>
 
           {createProjectOpen && (
@@ -933,7 +1263,6 @@ export function Rail({
         onNewConversation={onNewConversation}
         onOpenChange={setChatPickerOpen}
         open={chatPickerOpen}
-        selectedConversationId={conversationId}
       />
       <ProjectPicker
         draftProjectName={draftProjectName}
