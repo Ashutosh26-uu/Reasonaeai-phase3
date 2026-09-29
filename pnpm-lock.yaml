@@ -12,6 +12,9 @@ catalogs:
     vitest:
       specifier: 5.0.1
       version: 5.0.1
+    zod:
+      specifier: 4.6.5
+      version: 4.6.5
 
 importers:
 
@@ -87,6 +90,9 @@ importers:
       pg:
         specifier: 8.23.0
         version: 8.23.0
+      redis:
+        specifier: 6.2.1
+        version: 6.2.1
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
@@ -117,15 +123,30 @@ importers:
       ai:
         specifier: 7.0.113
         version: 7.0.113(zod@4.6.5)
+      border-beam:
+        specifier: 1.4.1
+        version: 1.4.1(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      class-variance-authority:
+        specifier: 0.7.1
+        version: 0.7.1
+      cn:
+        specifier: 0.4.0
+        version: 0.4.0
       katex:
         specifier: 0.16.27
         version: 0.16.27
       lucide-react:
         specifier: 1.48.0
         version: 1.48.0(react@19.3.0)
+      nanoid:
+        specifier: ^6.0.1
+        version: 6.0.1
       next:
         specifier: 16.3.6
         version: 16.3.6(@types/node@22.20.4)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      radix-ui:
+        specifier: 1.6.7
+        version: 1.6.7(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       react:
         specifier: 19.3.0
         version: 19.3.0
@@ -138,9 +159,15 @@ importers:
       streamdown:
         specifier: 2.6.0
         version: 2.6.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      thinking-orbs:
+        specifier: 0.3.2
+        version: 0.3.2(react@19.3.0)
       use-stick-to-bottom:
         specifier: 1.1.6
         version: 1.1.6(react@19.3.0)
+      voice-glow:
+        specifier: 0.2.1
+        version: 0.2.1(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
     devDependencies:
       '@tailwindcss/postcss':
         specifier: 4.3.3
@@ -187,6 +214,9 @@ importers:
       '@reasonateai/sandbox':
         specifier: workspace:*
         version: link:../../packages/sandbox
+      redis:
+        specifier: 6.2.1
+        version: 6.2.1
       zod:
         specifier: 'catalog:'
         version: 4.6.5
@@ -350,9 +380,15 @@ importers:
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
+      cmdk:
+        specifier: 1.1.1
+        version: 1.1.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       cn:
         specifier: 0.4.0
         version: 0.4.0
+      lucide-react:
+        specifier: 1.48.0
+        version: 1.48.0(react@19.3.0)
       radix-ui:
         specifier: 1.6.7
         version: 1.6.7(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -2865,6 +2901,12 @@ packages:
   bl@4.1.0:
     resolution: {integrity: sha512-1W07cM9gS6DcLperZfFSj+bWLtaPGSOHWhPiGzXmvVJbRLdG82sH/Kn8EtW1VqWVA54AKf2h5k5BbnIbwF3h6w==}
 
+  border-beam@1.4.1:
+    resolution: {integrity: sha512-YyugmKjrhkg1PBC1ZKX7JvFo/zYzha6NXOq24VWrnvBYmDRvGCgFS9oxZoKJ+oS9Kn436l1etYGlAdGiWK+3ag==}
+    peerDependencies:
+      react: '>=18.0.0'
+      react-dom: '>=18.0.0'
+
   brace-expansion@1.1.21:
     resolution: {integrity: sha512-9zeA+KLZNNzglF2TPKRQEDyx6Yby7daAkuy8MiPzpXPsYDWi/DRM8jmwUDxokQjYqBpv5DgPiwD4h4ZZSy1Ujw==}
 
@@ -2967,6 +3009,12 @@ packages:
   cluster-key-slot@1.1.2:
     resolution: {integrity: sha512-RMr0FhtfXemyinomL4hrWcYJxmX6deFdCxpJzhDttxgO1+bcCnkk+9drydLVDmAMG7NE6aN/fl4F7ucU/90gAA==}
     engines: {node: '>=0.10.0'}
+
+  cmdk@1.1.1:
+    resolution: {integrity: sha512-Vsv7kFaXm+ptHDMZ7izaRsP70GgrW9NBNGswt9OZaVBLlE0SNpDq8eu/VGXyF9r7M0azK3Wy7OlYXsuyYLFzHg==}
+    peerDependencies:
+      react: ^18 || ^19 || ^19.0.0-rc
+      react-dom: ^18 || ^19 || ^19.0.0-rc
 
   cn@0.4.0:
     resolution: {integrity: sha512-qOAeUhPwPzBxx6jaeQdo646XIKliKHc2j1ZF7Ngb1o0pJZKH5gq8FkA0aVdUdPFUDXNXyUCXpCtoJISo6dhizg==}
@@ -4202,6 +4250,11 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
+  nanoid@6.0.1:
+    resolution: {integrity: sha512-3wVS3i51pE2pi1k5FFL/95BGfVS0kSsvDVuGXHOtxox/TywUmtgq+3qiTOTbs9J7KfHaXPiN171k/A6dBnaXFw==}
+    engines: {node: ^22 || ^24 || >=26}
+    hasBin: true
+
   needle@2.9.1:
     resolution: {integrity: sha512-6R9fqJ5Zcmf+uYaFgdIHmLwNldn5HbK8L5ybn7Uz+ylX/rnOsSp1AHcvQSrCaFN+qNM1wpymHqD7mVasEOlHGQ==}
     engines: {node: '>= 4.4.x'}
@@ -4847,6 +4900,11 @@ packages:
   text-decoder@1.2.7:
     resolution: {integrity: sha512-vlLytXkeP4xvEq2otHeJfSQIRyWxo/oZGEbXrtEEF9Hnmrdly59sUbzZ/QgyWuLYHctCHxFF4tRQZNQ9k60ExQ==}
 
+  thinking-orbs@0.3.2:
+    resolution: {integrity: sha512-QZFeBaPEzqhjiZoXy961EvDgaXk2WgXacF3Rbz+Sj5IfzDzBvTC86vdREUHniBffYibJFKSwbfllxLUdI/Xv6g==}
+    peerDependencies:
+      react: '>=18.0.0'
+
   thread-stream@4.2.0:
     resolution: {integrity: sha512-e2zZ96wSChazBsbENf/Pcm/4swHt2cEKQ92rhUjkL9GCKiTDJIaTBenjE/m9DXi0QBmTMDkFDdOomUy20A1tDQ==}
     engines: {node: '>=20'}
@@ -5122,6 +5180,12 @@ packages:
         optional: true
       jsdom:
         optional: true
+
+  voice-glow@0.2.1:
+    resolution: {integrity: sha512-Lpc+Ppd788kCDC88p9Hr8u3eFQh0X/hdISX76hqx1/x4BZiidrmCuQRLOE+jGOIkqB1BdaFBJ7F2rg1GsST6tw==}
+    peerDependencies:
+      react: '>=18.0.0'
+      react-dom: '>=18.0.0'
 
   web-namespaces@2.0.1:
     resolution: {integrity: sha512-bKr1DkiNa2krS7qxNtdrtHAmzuYGFQLiQ13TsorsdT6ULTkPLKuu5+GsFpDlg6JFjUTwX2DyhMPG2be8uPrqsQ==}
@@ -7595,6 +7659,11 @@ snapshots:
       inherits: 2.0.4
       readable-stream: 3.6.2
 
+  border-beam@1.4.1(react-dom@19.3.0(react@19.3.0))(react@19.3.0):
+    dependencies:
+      react: 19.3.0
+      react-dom: 19.3.0(react@19.3.0)
+
   brace-expansion@1.1.21:
     dependencies:
       balanced-match: 1.0.2
@@ -7690,6 +7759,18 @@ snapshots:
   clsx@2.1.1: {}
 
   cluster-key-slot@1.1.2: {}
+
+  cmdk@1.1.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0):
+    dependencies:
+      '@radix-ui/react-compose-refs': 1.1.5(@types/react@19.3.0)(react@19.3.0)
+      '@radix-ui/react-dialog': 1.1.23(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      '@radix-ui/react-id': 1.1.4(@types/react@19.3.0)(react@19.3.0)
+      '@radix-ui/react-primitive': 2.1.10(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      react: 19.3.0
+      react-dom: 19.3.0(react@19.3.0)
+    transitivePeerDependencies:
+      - '@types/react'
+      - '@types/react-dom'
 
   cn@0.4.0: {}
 
@@ -9199,6 +9280,8 @@ snapshots:
 
   nanoid@3.3.19: {}
 
+  nanoid@6.0.1: {}
+
   needle@2.9.1:
     dependencies:
       debug: 3.2.7
@@ -10067,6 +10150,10 @@ snapshots:
     transitivePeerDependencies:
       - react-native-b4a
 
+  thinking-orbs@0.3.2(react@19.3.0):
+    dependencies:
+      react: 19.3.0
+
   thread-stream@4.2.0:
     dependencies:
       real-require: 1.0.0
@@ -10322,6 +10409,11 @@ snapshots:
       '@types/node': 22.20.4
     transitivePeerDependencies:
       - msw
+
+  voice-glow@0.2.1(react-dom@19.3.0(react@19.3.0))(react@19.3.0):
+    dependencies:
+      react: 19.3.0
+      react-dom: 19.3.0(react@19.3.0)
 
   web-namespaces@2.0.1: {}
 

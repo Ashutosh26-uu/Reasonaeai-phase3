@@ -90,13 +90,20 @@ pnpm --filter @reasonateai/api smoke:checkpoint
 
 | Variable | Used by | Effect when unset |
 | --- | --- | --- |
-| `DATABASE_URL` | `@reasonateai/project-state` tests | Tests skip |
-| `REDIS_URL` | `@reasonateai/project-state` tests | Tests skip |
+| `DATABASE_URL` | `@reasonateai/project-state` tests, `apps/api`, `apps/worker` | Tests skip; the API and worker cannot start |
+| `REDIS_URL` | `@reasonateai/project-state`, `apps/api`, `apps/worker` | Tests skip; the API keeps its last-computed rate-limit decisions and cannot fan out run events, and the worker logs `run.live.disabled` and executes runs without publishing live deltas |
 | `TURSO_DATABASE_URL` | `apps/api` storage | Falls back to a local SQLite file |
 | `TURSO_AUTH_TOKEN` | `apps/api` storage | No auth token |
 | `DEEPSEEK_API_KEY` | Model router | Required before a real run can execute |
+| `REASONATE_PUBLIC_ORIGIN` | `apps/api` | The origin a sign-in link points back at; defaults to the dev server's own address |
+| `REASONATE_ALLOWED_ORIGINS` | `apps/api` | Origins allowed to make state-changing browser requests; a mismatched origin is refused |
+| `SESSION_SECRET` | `apps/api` | Signing key for the CSRF pair; identity routes refuse to run without it |
 
 Never commit a `.env` file. `.env` and `.env.*` are ignored, with `.env.example` as the documented template.
+
+### Live streaming needs a current worker
+
+Model text reaches a browser as live deltas published by the **worker** that claims the run, onto a bounded `reasonateai.run.live.<runId>` topic. A worker built before that publisher existed still executes runs correctly, but its runs show only durable events and tool activity — no streamed text. After pulling a change to the worker, restart it; `tsx src/main.ts` loads its source once and does not watch for changes.
 
 ---
 

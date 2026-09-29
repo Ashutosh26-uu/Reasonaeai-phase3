@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
+import type { AgentControllerEvent } from "@mastra/core/agent-controller";
+import type { PromptAttachment } from "@reasonateai/contracts/execution";
 import type { RunEventEnvelope } from "@reasonateai/contracts/execution-protocol";
-import type { RunId } from "@reasonateai/contracts/identity";
+import { type RunId, UserIdSchema } from "@reasonateai/contracts/identity";
 import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createStopSignal } from "../src/stop-signal.js";
@@ -11,6 +13,7 @@ import {
   createHarness,
   type Harness,
   type RunFixture,
+  recordingLiveEvents,
   removeRunArtifacts,
   scriptedRuntime,
   volumeCount,
@@ -74,6 +77,24 @@ async function ledger(
   });
 }
 
+/**
+ * An assistant message as the controller streams it: the same id and role with
+ * the text it has produced so far, updated in place.
+ */
+function streamed(id: string, text: string): AgentControllerMessage {
+  return {
+    content: { format: 2, parts: [{ text, type: "text" }] },
+    createdAt: new Date(),
+    id,
+    role: "assistant",
+  };
+}
+
+type AgentControllerMessage = Extract<
+  AgentControllerEvent,
+  { type: "message_update" }
+>["message"];
+
 describeWithDatabase("run execution", () => {
   let harness: Harness;
   const volumes: string[] = [];
@@ -93,11 +114,108 @@ describeWithDatabase("run execution", () => {
     await harness.dispose();
   });
 
-  async function fixture(message?: string): Promise<RunFixture> {
-    const allocated = await allocateRunFixture(harness, message);
+  async function fixture(
+    message?: string,
+    attachments?: PromptAttachment[]
+  ): Promise<RunFixture> {
+    const allocated = await allocateRunFixture(harness, message, attachments);
     volumes.push(allocated.volume);
     return allocated;
   }
+
+  it("forwards durable user attachments into the Mastra session", async () => {
+    const attachment = {
+      data: "data:image/png;base64,aGVsbG8=",
+      filename: "wireframe.png",
+      mediaType: "image/png",
+    };
+    const scripted = scriptedRuntime();
+    const executor = createExecutor({
+      harness,
+      holder: "worker-attachments",
+      runtime: scripted.runtime,
+    });
+    const allocated = await fixture("Inspect this screen", [attachment]);
+
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+    expect(session.lastFiles).toEqual([attachment]);
+    session.complete([{ reason: "complete", type: "agent_end" }]);
+
+    expect(await attempt).toBe("succeeded");
+  });
+
+  it("publishes the text its agent streams as live deltas, and the ledger keeps the message", async () => {
+    const scripted = scriptedRuntime({
+      events: [
+        {
+          message: streamed("m-live", "Reading the router "),
+          type: "message_update",
+        },
+        {
+          message: streamed("m-live", "Reading the router of the app."),
+          type: "message_update",
+        },
+        {
+          message: streamed("m-live", "Reading the router of the app."),
+          type: "message_end",
+        },
+        { reason: "complete", type: "agent_end" },
+      ],
+    });
+    const live = recordingLiveEvents();
+    const executor = createExecutor({
+      harness,
+      holder: "worker-live",
+      live: live.publisher,
+      runtime: scripted.runtime,
+    });
+    const allocated = await fixture("Trace the router");
+
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+    session.complete([{ reason: "complete", type: "agent_end" }]);
+
+    expect(await attempt).toBe("succeeded");
+
+    // Two updates, one delta each: the second carries only what it added, and
+    // the end of the message repeats nothing.
+    expect(live.frames).toMatchObject([
+      {
+        kind: "message.snapshot",
+        snapshot: {
+          finished: false,
+          parts: [{ text: "Reading the router " }],
+          revision: 1,
+        },
+      },
+      {
+        kind: "message.snapshot",
+        snapshot: {
+          finished: false,
+          parts: [{ text: "Reading the router of the app." }],
+          revision: 2,
+        },
+      },
+      {
+        kind: "message.snapshot",
+        snapshot: {
+          finished: true,
+          parts: [{ text: "Reading the router of the app." }],
+          revision: 3,
+        },
+      },
+    ]);
+
+    // The durable record still holds the completed message once, which is what
+    // a client that missed every delta reads.
+    const events = await ledger(harness, allocated);
+    expect(
+      events.filter((event) => event.payload.kind === "message_snapshot")
+    ).toHaveLength(2);
+  });
 
   it("sends the user's saved prompt to the CTO", async () => {
     const scripted = scriptedRuntime();
@@ -467,5 +585,34 @@ describeWithDatabase("run execution", () => {
 
     expect(await containerCount(allocated.volume)).toBe(0);
     expect(await volumeCount(allocated.volume)).toBe(0);
+  });
+
+  it("aborts an active Mastra run after a durable user cancellation request", async () => {
+    const scripted = scriptedRuntime();
+    const executor = createExecutor({
+      harness,
+      holder: "worker-user-cancel",
+      runtime: scripted.runtime,
+    });
+    const allocated = await fixture();
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+
+    expect(
+      await harness.store.requestRunCancellation({
+        buildSessionId: allocated.candidate.buildSessionId,
+        requestedByUserId: UserIdSchema.parse(randomUUID()),
+        runId: allocated.candidate.runId,
+        scope: allocated.scope,
+      })
+    ).toBe(true);
+    expect(await attempt).toBe("cancelled");
+    expect(session.aborted).toBe(true);
+    expect(await runStatus(harness, allocated)).toBe("cancelled");
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeUndefined();
+    expect((await ledger(harness, allocated)).at(-1)?.type).toBe(
+      "run.cancelled"
+    );
   });
 });

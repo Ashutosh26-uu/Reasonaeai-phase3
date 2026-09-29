@@ -15,10 +15,13 @@ import {
   type BuildSessionId,
   BuildSessionIdSchema,
   BuildSessionSchema,
+  type ConversationAttachment,
   type ConversationMessage,
   ConversationMessageSchema,
   type ConversationSummary,
   ConversationSummarySchema,
+  type PromptAttachment,
+  PromptAttachmentSchema,
   type SandboxEnvironment,
   type SandboxEnvironmentId,
   SandboxEnvironmentIdSchema,
@@ -147,6 +150,7 @@ export interface RunnableRun {
   projectId: ProjectId;
   runId: RunId;
   sandboxEnvironmentId: SandboxEnvironmentId;
+  userAttachments: PromptAttachment[];
   userMessage: string | null;
   workspaceUri: string;
 }
@@ -238,6 +242,17 @@ function asIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
 }
 
+function estimateDataUrlBytes(data: string): number {
+  const encoded = data.slice(data.indexOf(",") + 1);
+  let padding = 0;
+  if (encoded.endsWith("==")) {
+    padding = 2;
+  } else if (encoded.endsWith("=")) {
+    padding = 1;
+  }
+  return Math.floor((encoded.length * 3) / 4) - padding;
+}
+
 function toBuildSession(row: Record<string, unknown>): BuildSession {
   return BuildSessionSchema.parse({
     buildSessionId: row.build_session_id,
@@ -270,12 +285,14 @@ function toSandboxEnvironment(
 
 export interface ProjectStateStore {
   allocateBuildSession: (input: {
+    attachments?: PromptAttachment[];
     idempotencyKey: string;
     message?: string;
     scope: TenantScope;
     userSessionId: SessionId;
   }) => Promise<BuildSessionAllocation>;
   appendConversationTurn: (input: {
+    attachments?: PromptAttachment[];
     buildSessionId: BuildSessionId;
     idempotencyKey: string;
     message: string;
@@ -362,7 +379,15 @@ export interface ProjectStateStore {
     projectId: ProjectId;
     runId: RunId;
   }) => Promise<RunRecord | undefined>;
+  /** Reads the durable cancellation request while a worker holds the run. */
+  isRunCancellationRequested: (runId: RunId) => Promise<boolean>;
   listArtifacts: (scope: TenantScope) => Promise<ArtifactRecord[]>;
+  listConversationEvents: (input: {
+    buildSessionId: BuildSessionId;
+    scope: TenantScope;
+    after: number;
+    limit: number;
+  }) => Promise<RunEventEnvelope[]>;
   listConversationMessages: (input: {
     buildSessionId: BuildSessionId;
     scope: TenantScope;
@@ -422,6 +447,19 @@ export interface ProjectStateStore {
     scope: TenantScope;
   }) => Promise<boolean>;
   /**
+   * Renames an organization and records the audit event that describes it, in
+   * one transaction, so a rename nothing recorded cannot exist.
+   *
+   * Returns false when the organization does not exist, which is a refusal
+   * rather than an error: the caller was authorized for an organization that is
+   * gone, and there is nothing to report but that it did not happen.
+   */
+  renameOrganization: (input: {
+    audit: AuditEvent;
+    name: string;
+    organizationId: OrganizationId;
+  }) => Promise<boolean>;
+  /**
    * Extends the lease the caller still holds, and only that one: the row must
    * still carry this holder and this lease id and must not have lapsed. A lease
    * that expired mid-run reports `false` instead of being silently revived, and
@@ -432,6 +470,13 @@ export interface ProjectStateStore {
     holder: string;
     leaseId: string;
     ttlMs: number;
+  }) => Promise<boolean>;
+  /** Records an authorized cancellation request for a non-terminal run. */
+  requestRunCancellation: (input: {
+    runId: RunId;
+    scope: TenantScope;
+    buildSessionId: BuildSessionId;
+    requestedByUserId: UserId;
   }) => Promise<boolean>;
   sessions: SessionRepository;
   setRunStatus: (input: {
@@ -624,6 +669,7 @@ export function createProjectStateStore(config: {
   const usage = createUsageRepository(pool, { withTransaction });
 
   async function allocateBuildSession(input: {
+    attachments?: PromptAttachment[];
     idempotencyKey: string;
     message?: string;
     scope: TenantScope;
@@ -693,14 +739,15 @@ export function createProjectStateStore(config: {
 
       await client.query(
         `insert into runs
-           (run_id, organization_id, project_id, build_session_id, status, user_message)
-         values ($1, $2, $3, $4, 'queued', $5)`,
+           (run_id, organization_id, project_id, build_session_id, status, user_message, user_attachments)
+         values ($1, $2, $3, $4, 'queued', $5, $6::jsonb)`,
         [
           runId,
           input.scope.organizationId,
           input.scope.projectId,
           buildSessionId,
           input.message ?? null,
+          JSON.stringify(input.attachments ?? []),
         ]
       );
 
@@ -728,6 +775,7 @@ export function createProjectStateStore(config: {
   }
 
   async function appendConversationTurn(input: {
+    attachments?: PromptAttachment[];
     buildSessionId: BuildSessionId;
     idempotencyKey: string;
     message: string;
@@ -783,14 +831,15 @@ export function createProjectStateStore(config: {
       const runId = RunIdSchema.parse(randomUUID());
       await client.query(
         `insert into runs
-           (run_id, organization_id, project_id, build_session_id, status, user_message)
-         values ($1, $2, $3, $4, 'queued', $5)`,
+           (run_id, organization_id, project_id, build_session_id, status, user_message, user_attachments)
+         values ($1, $2, $3, $4, 'queued', $5, $6::jsonb)`,
         [
           runId,
           input.scope.organizationId,
           input.scope.projectId,
           input.buildSessionId,
           input.message,
+          JSON.stringify(input.attachments ?? []),
         ]
       );
       await client.query(
@@ -857,30 +906,60 @@ export function createProjectStateStore(config: {
     buildSessionId: BuildSessionId;
     scope: TenantScope;
   }): Promise<ConversationMessage[]> {
+    // `source_id` is the agent platform's own message id, which is what lets a
+    // client place the message it already holds where the work around it
+    // happened: the ledger records when a message ended, and a step's text is
+    // written before the tool calls it announces.
     const result = await pool.query(
-      `select id, role, text, created_at from (
+      `select id, role, text, created_at, source_id, reasoning, run_id, user_attachments from (
          select r.run_id::text as id, 'user'::text as role,
-                r.user_message as text, r.created_at, 0 as position
+                r.user_message as text, r.created_at, null::text as source_id,
+                null::text as reasoning, 0 as position, r.run_id,
+                r.user_attachments
            from runs r
           where r.build_session_id = $1 and r.organization_id = $2
             and r.project_id = $3 and r.user_message is not null
          union all
-         select e.event_id::text, 'assistant'::text, e.payload->>'text',
-                e.occurred_at, 1
-           from run_events e
-           join runs r on r.run_id = e.run_id
-          where r.build_session_id = $1 and r.organization_id = $2
-            and r.project_id = $3 and e.organization_id = $2
-            and e.project_id = $3 and e.payload->>'kind' = 'message_end'
-            and e.payload->>'role' = 'assistant'
+         select e.event_id::text, 'assistant'::text,
+                case when e.payload ? 'snapshot' then coalesce((
+                  select string_agg(part->>'text', E'\\n\\n' order by ord)
+                  from jsonb_array_elements(e.payload->'snapshot'->'parts') with ordinality as parts(part, ord)
+                  where part->>'type' = 'text'), '') else e.payload->>'text' end,
+                e.occurred_at, e.payload->>'messageId',
+                case when e.payload ? 'snapshot' then (
+                  select string_agg(part->>'text', E'\\n\\n' order by ord)
+                  from jsonb_array_elements(e.payload->'snapshot'->'parts') with ordinality as parts(part, ord)
+                  where part->>'type' = 'reasoning') else e.payload->>'reasoning' end,
+                1, e.run_id, null::jsonb
+           from (
+             select distinct on (e.run_id, e.payload->>'messageId') e.*
+             from run_events e join runs r on r.run_id = e.run_id
+             where r.build_session_id = $1 and r.organization_id = $2
+               and r.project_id = $3 and e.organization_id = $2 and e.project_id = $3
+               and e.payload->>'kind' in ('message_end', 'message_snapshot')
+               and e.payload->>'role' = 'assistant'
+             order by e.run_id, e.payload->>'messageId', e.sequence desc
+           ) e
        ) messages order by created_at, position, id`,
       [input.buildSessionId, input.scope.organizationId, input.scope.projectId]
     );
     return result.rows.map((row) =>
       ConversationMessageSchema.parse({
+        attachments: PromptAttachmentSchema.array()
+          .parse(row.user_attachments ?? [])
+          .map(
+            (attachment): ConversationAttachment => ({
+              filename: attachment.filename,
+              mediaType: attachment.mediaType,
+              sizeBytes: estimateDataUrlBytes(attachment.data),
+            })
+          ),
         createdAt: asIso(row.created_at as Date),
         id: row.id,
+        reasoning: (row.reasoning as string | null) ?? null,
         role: row.role,
+        runId: row.run_id,
+        sourceId: (row.source_id as string | null) ?? null,
         text: row.text,
       })
     );
@@ -895,6 +974,65 @@ export function createProjectStateStore(config: {
     return await withTransaction(
       async (client) => await insertRunEvent(client, input)
     );
+  }
+
+  async function requestRunCancellation(input: {
+    runId: RunId;
+    scope: TenantScope;
+    buildSessionId: BuildSessionId;
+    requestedByUserId: UserId;
+  }): Promise<boolean> {
+    return await withTransaction(async (client) => {
+      const result = await client.query<{
+        cancellation_requested_at: Date | null;
+        status: RunStatus;
+      }>(
+        `select cancellation_requested_at, status from runs
+          where run_id = $1 and organization_id = $2 and project_id = $3
+            and build_session_id = $4
+          for update`,
+        [
+          input.runId,
+          input.scope.organizationId,
+          input.scope.projectId,
+          input.buildSessionId,
+        ]
+      );
+      const [run] = result.rows;
+      if (
+        !run ||
+        run.status === "completed" ||
+        run.status === "failed" ||
+        run.status === "cancelled"
+      ) {
+        return false;
+      }
+      if (run.cancellation_requested_at !== null) {
+        return true;
+      }
+
+      await client.query(
+        `update runs set cancellation_requested_at = now(), updated_at = now()
+          where run_id = $1`,
+        [input.runId]
+      );
+      await insertRunEvent(client, {
+        payload: { requestedByUserId: input.requestedByUserId },
+        runId: input.runId,
+        scope: input.scope,
+        type: "run.cancel.requested",
+      });
+      return true;
+    });
+  }
+
+  async function isRunCancellationRequested(runId: RunId): Promise<boolean> {
+    const result = await pool.query(
+      `select cancellation_requested_at is not null as requested
+         from runs where run_id = $1`,
+      [runId]
+    );
+    return result.rows[0]?.requested === true;
   }
 
   /**
@@ -925,7 +1063,8 @@ export function createProjectStateStore(config: {
               r.build_session_id,
               bs.sandbox_environment_id,
               se.workspace_uri,
-              r.user_message
+              r.user_message,
+              r.user_attachments
          from runs r
          join build_sessions bs
            on bs.build_session_id = r.build_session_id
@@ -954,6 +1093,9 @@ export function createProjectStateStore(config: {
       runId: RunIdSchema.parse(row.run_id),
       sandboxEnvironmentId: SandboxEnvironmentIdSchema.parse(
         row.sandbox_environment_id
+      ),
+      userAttachments: PromptAttachmentSchema.array().parse(
+        row.user_attachments ?? []
       ),
       userMessage:
         typeof row.user_message === "string" ? row.user_message : null,
@@ -1235,6 +1377,29 @@ export function createProjectStateStore(config: {
   }
 
   /**
+   * The rename and its audit row commit together, so a rename that nothing
+   * recorded cannot exist, and a rename of an organization that is gone reports
+   * that it did not happen rather than inventing a success.
+   */
+  async function renameOrganization(input: {
+    audit: AuditEvent;
+    name: string;
+    organizationId: OrganizationId;
+  }): Promise<boolean> {
+    return await withTransaction(async (client) => {
+      const updated = await client.query(
+        "update organizations set name = $2 where organization_id = $1",
+        [input.organizationId, input.name]
+      );
+      if (updated.rowCount !== 1) {
+        return false;
+      }
+      await recordWith(client, input.audit);
+      return true;
+    });
+  }
+
+  /**
    * Project, membership, and audit row commit together, as organization
    * creation does. The project identifier is taken from the event when the
    * caller minted it, and the audit row is stamped with the organization the
@@ -1374,6 +1539,40 @@ export function createProjectStateStore(config: {
     );
 
     return result.rowCount === 1;
+  }
+
+  async function listConversationEvents(input: {
+    buildSessionId: BuildSessionId;
+    scope: TenantScope;
+    after: number;
+    limit: number;
+  }): Promise<RunEventEnvelope[]> {
+    const result = await pool.query(
+      `select e.* from run_events e join runs r on r.run_id = e.run_id
+       and r.organization_id = e.organization_id and r.project_id = e.project_id
+       where r.build_session_id = $1 and e.organization_id = $2 and e.project_id = $3
+       order by r.created_at, r.run_id, e.sequence limit $4 offset $5`,
+      [
+        input.buildSessionId,
+        input.scope.organizationId,
+        input.scope.projectId,
+        Math.min(input.limit, 500),
+        input.after,
+      ]
+    );
+    return result.rows.map((row) =>
+      RunEventEnvelopeSchema.parse({
+        eventId: row.event_id,
+        occurredAt: asIso(row.occurred_at as Date),
+        organizationId: row.organization_id,
+        payload: row.payload,
+        projectId: row.project_id,
+        runId: row.run_id,
+        schemaVersion: 1,
+        sequence: Number(row.sequence),
+        type: row.type,
+      })
+    );
   }
 
   async function listRunEvents(input: {
@@ -1686,7 +1885,9 @@ export function createProjectStateStore(config: {
     finishRun,
     getBuildSession,
     getRun,
+    isRunCancellationRequested,
     listArtifacts,
+    listConversationEvents,
     listConversationMessages,
     listConversations,
     listOrganizationMemberships,
@@ -1743,7 +1944,9 @@ export function createProjectStateStore(config: {
     recordArtifact,
     recordDeployment,
     releaseRunLease,
+    renameOrganization,
     renewRunLease,
+    requestRunCancellation,
     sessions,
     setRunStatus,
     usage,

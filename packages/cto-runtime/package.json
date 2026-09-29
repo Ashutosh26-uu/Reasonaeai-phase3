@@ -52,6 +52,10 @@
       "types": "./src/run-events.ts",
       "import": "./dist/run-events.js"
     },
+    "./run-live-events": {
+      "types": "./src/run-live-events.ts",
+      "import": "./dist/run-live-events.js"
+    },
     "./runtime": {
       "types": "./src/runtime.ts",
       "import": "./dist/runtime.js"

@@ -141,6 +141,10 @@ The execution plane is private. A worker fleet consumes authorized commands, obt
 
 PostgreSQL is authoritative for commands, idempotency keys, build sessions, runs, leases, approval state, checkpoints, artifact metadata, deployments, audit records, and a monotonically sequenced event ledger. Each transaction writes an outbox record before a relay publishes it. Redis Streams is the distributed command and live-event transport, never the only record of a command or user-visible transition. Browser reconnect uses the durable event ledger and `Last-Event-ID`, then joins the live SSE stream.
 
+The event stream carries two channels of different authority. The durable channel is the ledger: sequenced, replayable, and the only record of what a run did. The live channel carries versioned, bounded snapshots of ordered assistant text, explicit reasoning, and tool references on a separate topic that expires with the run, with no sequence or `id` on its frames. A snapshot revision replaces an earlier revision of that message; it never advances the durable ledger cursor. Periodic durable snapshots and a final snapshot preserve partial output through suspension or worker failure. History pages replay events across every run in the selected conversation, ordered by run creation and per-run sequence, and remain tenant/project scoped.
+
+The workspace URL includes both selected resource identifiers as query parameters: `/?projectId=<id>&conversationId=<build-session-id>`. Selecting a project without a conversation opens a blank conversation pane; prior conversations open only when selected or when their URL is loaded. Browser back/forward restores the prior selection.
+
 Mastra `AgentController` session state is process-local and therefore non-authoritative. ReasonateAI reconstructs a controller session from the durable build-session, run, approval, and thread binding after restart; no correctness, authorization, or recovery decision depends on an in-memory controller session.
 
 ### Source, workspace, and artifact storage

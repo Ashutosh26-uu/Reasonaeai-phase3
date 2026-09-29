@@ -138,17 +138,27 @@ function magicLinkUrl(publicOrigin: string, token: string): string {
   return `${origin}${AUTH_CALLBACK_PATH}?token=${encodeURIComponent(token)}`;
 }
 
+/** The separators an address uses where a person would write a space. */
+const LOCAL_PART_SEPARATORS = /[._-]+/;
+
 /**
  * A first sign-in has no organization to name, and the caller has told us
- * exactly one thing about themselves: their address. The domain after the `@`
- * is therefore the tenant's name, and an address with no domain part — which
- * the request schema rejects, but a stored address is re-read here — falls back
- * to the generic name. An owner renames the organization afterwards.
+ * exactly one thing about themselves: their address. The first segment of the
+ * local part is therefore what the workspace is called — "Mohan's workspace" is
+ * a name a person recognizes and can change, where a mail domain is neither
+ * theirs nor a name at all, and where the rest of the local part is often an
+ * opaque suffix rather than another word. An address with no local part falls
+ * back to the generic name, and an owner renames the workspace afterwards.
  */
 function firstOrganizationName(email: string): string {
   const separator = email.lastIndexOf("@");
-  const domain = separator === -1 ? "" : email.slice(separator + 1).trim();
-  return domain.length > 0 ? domain : "My organization";
+  const local = (separator === -1 ? email : email.slice(0, separator)).trim();
+  const [given = ""] = local.split(LOCAL_PART_SEPARATORS);
+  const readable = given.trim();
+  if (readable.length === 0) {
+    return "My workspace";
+  }
+  return `${readable[0]?.toUpperCase()}${readable.slice(1)}'s workspace`;
 }
 
 /**

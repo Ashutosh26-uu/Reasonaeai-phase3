@@ -423,7 +423,8 @@ describeWithDatabase("identity routes", () => {
     expect((await second.json()).error.code).toBe("unauthenticated");
 
     // The first sign-in created the caller's organization, named after the
-    // address's domain, with the caller as its owner.
+    // local part of the address — the one thing the caller told us about
+    // themselves that reads as a name — with the caller as its owner.
     const view = await handlers.readSession(
       context({ cookies, requestId: "req-view" })
     );
@@ -432,7 +433,9 @@ describeWithDatabase("identity routes", () => {
     expect(session.userId).toBe(principal?.userId);
     expect(session.organizations).toHaveLength(1);
     expect(session.organizations[0]?.role).toBe("owner");
-    expect(session.organizations[0]?.name).toBe("example.test");
+    // `emailFor("single-use")` is `single-use-<suffix>@example.test`: the
+    // first segment is the name, and the suffix is not part of it.
+    expect(session.organizations[0]?.name).toBe("Single's workspace");
     // Idle expiry is a real, shorter deadline: using the session pushes it
     // back, and absolute expiry is what stops that from extending forever.
     expect(Date.parse(session.idleExpiresAt)).toBeLessThan(

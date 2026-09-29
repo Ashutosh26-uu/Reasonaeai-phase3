@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import { SESSION_COOKIE } from "@reasonateai/contracts/auth";
 import {
   type RunEventEnvelope,
+  type RunLiveEvent,
+  RunLiveEventSchema,
   runEventTopic,
+  runLiveTopic,
 } from "@reasonateai/contracts/execution-protocol";
 import {
   OrganizationIdSchema,
@@ -17,10 +20,12 @@ import {
 } from "@reasonateai/project-state/postgres";
 import {
   createRedisStreamPublisher,
+  DEFAULT_REDIS_KEY_PREFIX,
   type StreamPublisher,
 } from "@reasonateai/project-state/relay";
 import { subscribeToRunEvents } from "@reasonateai/project-state/run-event-stream";
 import { Pool } from "pg";
+import { createClient, type RedisClientType } from "redis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resolveSessionPrincipal } from "../src/mastra/principal";
 import type { HandlerContext } from "../src/mastra/routes/build-sessions";
@@ -31,6 +36,7 @@ import {
 import {
   createRunEventFanout,
   type RunEventStreamFactory,
+  type RunLiveStreamFactory,
 } from "../src/mastra/run-event-fanout";
 
 const connectionString = process.env.DATABASE_URL;
@@ -72,12 +78,20 @@ function context(input: StubRequest): HandlerContext {
 interface Frame {
   data: Record<string, unknown>;
   event: string;
-  id: number;
+  /**
+   * The ledger sequence a durable frame carries, or null for a live frame. An
+   * `id` is what a reconnecting browser sends back as `Last-Event-ID`, so only
+   * the durable record may have one.
+   */
+  id: number | null;
 }
 
 interface EventStream {
   cancel: () => Promise<void>;
+  /** The next durable frame. Live frames it passes are not consumed twice. */
   nextData: () => Promise<Frame>;
+  /** The next live frame. */
+  nextLive: () => Promise<Frame>;
 }
 
 /**
@@ -92,6 +106,7 @@ function openStream(response: Response): EventStream {
 
   const reader = body.getReader();
   const decoder = new TextDecoder();
+  const deferred: Frame[] = [];
   let buffered = "";
 
   async function readRaw(): Promise<string> {
@@ -116,54 +131,76 @@ function openStream(response: Response): EventStream {
     }
   }
 
-  /**
-   * Awaits the next data frame. Recursion rather than a loop keeps the return
-   * type exact and avoids awaiting inside a loop; a frame missing any of the
-   * three fields is not one this test can use, and the server always writes all
-   * three.
-   */
-  async function nextData(): Promise<Frame> {
+  async function readFrame(): Promise<Frame> {
     const raw = await readRaw();
     const lines = raw.split("\n");
     const idLine = lines.find((line) => line.startsWith("id: "));
     const eventLine = lines.find((line) => line.startsWith("event: "));
     const dataLine = lines.find((line) => line.startsWith("data: "));
 
-    if (!(idLine && eventLine && dataLine)) {
-      return await nextData();
+    if (!(eventLine && dataLine)) {
+      return await readFrame();
     }
 
     return {
       data: JSON.parse(dataLine.slice("data: ".length)),
       event: eventLine.slice("event: ".length),
-      id: Number(idLine.slice("id: ".length)),
+      id: idLine ? Number(idLine.slice("id: ".length)) : null,
     };
+  }
+
+  /**
+   * The next frame of one kind. A frame of the other kind is kept, so a test
+   * that reads durable frames and then live ones — or the reverse — sees every
+   * frame the server wrote, in the order it wrote them.
+   */
+  async function next(idRequired: boolean): Promise<Frame> {
+    const held = deferred.findIndex((frame) =>
+      idRequired ? frame.id !== null : frame.id === null
+    );
+    if (held !== -1) {
+      return deferred.splice(held, 1)[0] as Frame;
+    }
+
+    for (;;) {
+      // biome-ignore lint/performance/noAwaitInLoops: frames arrive one at a time
+      const frame = await readFrame();
+      if ((frame.id !== null) === idRequired) {
+        return frame;
+      }
+      deferred.push(frame);
+    }
   }
 
   return {
     cancel: async () => await reader.cancel(),
-    nextData,
+    nextData: async () => await next(true),
+    nextLive: async () => await next(false),
   };
 }
 
 /**
- * A push-driven stand-in for a run's event topic.
+ * A push-driven stand-in for a run's event topics.
  *
  * Tests publish exactly the sequences they mean to, so live delivery is
  * asserted without sleeps and without a broker, and the count of opened and
  * released transport subscriptions is observable.
  */
 function createTopicHarness() {
-  interface TopicState {
-    buffer: RunEventEnvelope[];
+  interface TopicState<T> {
+    buffer: T[];
     closed: boolean;
     wake: (() => void) | undefined;
   }
 
-  const live = new Map<string, TopicState>();
+  const live = new Map<string, TopicState<RunEventEnvelope>>();
   const queued = new Map<string, RunEventEnvelope[]>();
+  const liveFrames = new Map<string, TopicState<RunLiveEvent>>();
+  const queuedFrames = new Map<string, RunLiveEvent[]>();
   const opens = new Map<string, number>();
+  const liveOpens = new Map<string, number>();
   const releases = new Map<string, number>();
+  const liveReleases = new Map<string, number>();
 
   /** Publishes an event to a run's topic, as the outbox relay would. */
   function publish(runId: string, event: RunEventEnvelope): void {
@@ -183,24 +220,53 @@ function createTopicHarness() {
     queued.set(runId, [event]);
   }
 
-  const subscribe: RunEventStreamFactory = ({ runId, signal }) => {
-    const state: TopicState = {
-      buffer: queued.get(runId) ?? [],
+  /** Publishes a live frame to a run's topic, as the worker's publisher does. */
+  function publishLive(runId: string, frame: RunLiveEvent): void {
+    const state = liveFrames.get(runId);
+    if (state) {
+      state.buffer.push(frame);
+      state.wake?.();
+      return;
+    }
+    const buffered = queuedFrames.get(runId);
+    if (buffered) {
+      buffered.push(frame);
+      return;
+    }
+    queuedFrames.set(runId, [frame]);
+  }
+
+  /**
+   * One subscription over a queue, aborted with the signal it was opened with.
+   * The durable and live topics differ only in what they carry, so both are
+   * driven by the same reader.
+   */
+  function subscribeTo<T>(
+    input: { runId: string; signal?: AbortSignal },
+    registry: Map<string, TopicState<T>>,
+    pending: Map<string, T[]>,
+    counters: { opens: Map<string, number>; releases: Map<string, number> }
+  ): Promise<AsyncIterable<T>> {
+    const state: TopicState<T> = {
+      buffer: pending.get(input.runId) ?? [],
       closed: false,
       wake: undefined,
     };
-    queued.delete(runId);
-    live.set(runId, state);
-    opens.set(runId, (opens.get(runId) ?? 0) + 1);
+    pending.delete(input.runId);
+    registry.set(input.runId, state);
+    counters.opens.set(input.runId, (counters.opens.get(input.runId) ?? 0) + 1);
 
-    signal?.addEventListener(
+    input.signal?.addEventListener(
       "abort",
       () => {
         state.closed = true;
         state.wake?.();
-        releases.set(runId, (releases.get(runId) ?? 0) + 1);
-        if (live.get(runId) === state) {
-          live.delete(runId);
+        counters.releases.set(
+          input.runId,
+          (counters.releases.get(input.runId) ?? 0) + 1
+        );
+        if (registry.get(input.runId) === state) {
+          registry.delete(input.runId);
         }
       },
       { once: true }
@@ -217,7 +283,7 @@ function createTopicHarness() {
           if (state.closed) {
             return;
           }
-          // biome-ignore lint/performance/noAwaitInLoops: the queue hands over one published event at a time
+          // biome-ignore lint/performance/noAwaitInLoops: the queue hands over one published entry at a time
           await new Promise<void>((resolve) => {
             state.wake = resolve;
           });
@@ -225,15 +291,30 @@ function createTopicHarness() {
         }
       },
     });
-  };
+  }
+
+  const subscribe: RunEventStreamFactory = (input) =>
+    subscribeTo(input, live, queued, { opens, releases });
+
+  const subscribeLive: RunLiveStreamFactory = (input) =>
+    subscribeTo(input, liveFrames, queuedFrames, {
+      opens: liveOpens,
+      releases: liveReleases,
+    });
 
   return {
+    /** How many live subscriptions a run opened. */
+    liveOpens: (runId: string) => liveOpens.get(runId) ?? 0,
+    /** How many live subscriptions a run released. */
+    liveReleases: (runId: string) => liveReleases.get(runId) ?? 0,
     /** How many transport subscriptions a run opened. */
     opens: (runId: string) => opens.get(runId) ?? 0,
     publish,
+    publishLive,
     /** How many transport subscriptions a run released. */
     releases: (runId: string) => releases.get(runId) ?? 0,
     subscribe,
+    subscribeLive,
   };
 }
 
@@ -254,7 +335,10 @@ describeWithDatabase("run event stream", () => {
   let cookie: string;
 
   const handlers = createRunEventHandlers({
-    fanout: createRunEventFanout({ subscribe: topics.subscribe }),
+    fanout: createRunEventFanout({
+      subscribe: topics.subscribe,
+      subscribeLive: topics.subscribeLive,
+    }),
     resolvePrincipal: async ({ cookieHeader }) =>
       await resolveSessionPrincipal({
         cookieHeader,
@@ -606,6 +690,130 @@ describeWithDatabase("run event stream", () => {
     }
   });
 
+  it("delivers live text to every stream of a run without touching the ledger", async () => {
+    const buildSession = await allocate();
+    const { runId } = buildSession;
+    const head = await ledgerHead(runId);
+    const liveOpensBefore = topics.liveOpens(runId);
+
+    const first = openStream(
+      await handlers.stream(
+        streamRequest({ buildSessionId: buildSession.buildSessionId })
+      )
+    );
+    const second = openStream(
+      await handlers.stream(
+        streamRequest({ buildSessionId: buildSession.buildSessionId })
+      )
+    );
+
+    try {
+      await drainReplay(first, head);
+      await drainReplay(second, head);
+      await settle();
+
+      topics.publishLive(
+        runId,
+        RunLiveEventSchema.parse({
+          delta: "Reading ",
+          kind: "message.delta",
+          messageId: "m-1",
+          mode: "append",
+          organizationId,
+          projectId,
+          runId,
+          schemaVersion: 1,
+        })
+      );
+
+      const firstFrame = await first.nextLive();
+      const secondFrame = await second.nextLive();
+
+      expect(firstFrame.event).toBe("message.delta");
+      expect(firstFrame.data.delta).toBe("Reading ");
+      // No `id` line: a delta has no ledger position, and a browser that
+      // replayed one as `Last-Event-ID` would skip every durable event between
+      // its last sequence and a number the ledger never issued.
+      expect(firstFrame.id).toBeNull();
+      expect(secondFrame.data.delta).toBe("Reading ");
+      expect(topics.liveOpens(runId) - liveOpensBefore).toBe(1);
+    } finally {
+      await first.cancel();
+      await second.cancel();
+    }
+  });
+
+  it("keeps a live frame out of the run's durable ledger", async () => {
+    const buildSession = await allocate();
+    const { runId } = buildSession;
+    const head = await ledgerHead(runId);
+    const stream = openStream(
+      await handlers.stream(
+        streamRequest({ buildSessionId: buildSession.buildSessionId })
+      )
+    );
+
+    try {
+      await drainReplay(stream, head);
+      await settle();
+      topics.publishLive(
+        runId,
+        RunLiveEventSchema.parse({
+          delta: "partial text",
+          kind: "message.delta",
+          messageId: "m-2",
+          mode: "append",
+          organizationId,
+          projectId,
+          runId,
+          schemaVersion: 1,
+        })
+      );
+      expect((await stream.nextLive()).data.delta).toBe("partial text");
+
+      // A durable event published afterwards is still the only thing the
+      // ledger holds, so the live view never becomes the record.
+      const next = await publishNext(runId, "after live");
+      expect((await stream.nextData()).id).toBe(next.sequence);
+      expect(await ledgerHead(runId)).toBe(next.sequence);
+    } finally {
+      await stream.cancel();
+    }
+  });
+
+  it("releases a run's live subscription with its last listener", async () => {
+    const buildSession = await allocate();
+    const { runId } = buildSession;
+    const head = await ledgerHead(runId);
+    const liveReleasesBefore = topics.liveReleases(runId);
+
+    const first = openStream(
+      await handlers.stream(
+        streamRequest({ buildSessionId: buildSession.buildSessionId })
+      )
+    );
+    const second = openStream(
+      await handlers.stream(
+        streamRequest({ buildSessionId: buildSession.buildSessionId })
+      )
+    );
+
+    try {
+      await drainReplay(first, head);
+      await drainReplay(second, head);
+      await settle();
+
+      await second.cancel();
+      expect(topics.liveReleases(runId)).toBe(liveReleasesBefore);
+
+      await first.cancel();
+      expect(topics.liveReleases(runId)).toBe(liveReleasesBefore + 1);
+    } finally {
+      await first.cancel();
+      await second.cancel();
+    }
+  });
+
   it("releases the transport subscription when the last listener leaves", async () => {
     const buildSession = await allocate();
     const { runId } = buildSession;
@@ -655,6 +863,7 @@ describeWithDatabase("run event stream", () => {
   describeWithTransport("over the run topic", () => {
     let opens = 0;
     let publisher: StreamPublisher;
+    let liveClient: RedisClientType;
 
     const transportHandlers = createRunEventHandlers({
       fanout: createRunEventFanout({
@@ -671,12 +880,15 @@ describeWithDatabase("run event stream", () => {
       store: () => store,
     });
 
-    beforeAll(() => {
+    beforeAll(async () => {
       publisher = createRedisStreamPublisher({ url: redisUrl as string });
+      liveClient = createClient({ url: redisUrl as string });
+      await liveClient.connect();
     });
 
     afterAll(async () => {
       await publisher.close();
+      await liveClient.quit();
     });
 
     it("follows a published event to concurrent streams over one subscription", async () => {
@@ -715,6 +927,108 @@ describeWithDatabase("run event stream", () => {
       } finally {
         await first.cancel();
         await second.cancel();
+      }
+    }, 20_000);
+
+    it("follows a live delta published by the worker to the browser over Redis", async () => {
+      const buildSession = await allocate();
+      const { runId } = buildSession;
+      const head = await ledgerHead(runId);
+
+      const stream = openStream(
+        await transportHandlers.stream(
+          streamRequest({ buildSessionId: buildSession.buildSessionId })
+        )
+      );
+
+      try {
+        await drainReplay(stream, head);
+        await settle();
+
+        const frame = RunLiveEventSchema.parse({
+          delta: "Checking checkout",
+          kind: "message.delta",
+          messageId: "m-transport",
+          mode: "append",
+          organizationId,
+          projectId,
+          runId,
+          schemaVersion: 1,
+        });
+        // The same key and shape the worker's publisher writes.
+        await liveClient.xAdd(
+          `${DEFAULT_REDIS_KEY_PREFIX}:${runLiveTopic(runId)}`,
+          "*",
+          { event: JSON.stringify(frame) }
+        );
+
+        const delivered = await stream.nextLive();
+        expect(delivered.event).toBe("message.delta");
+        expect(delivered.data.delta).toBe("Checking checkout");
+        expect(delivered.id).toBeNull();
+      } finally {
+        await stream.cancel();
+        await liveClient.del(
+          `${DEFAULT_REDIS_KEY_PREFIX}:${runLiveTopic(runId)}`
+        );
+      }
+    }, 20_000);
+
+    /**
+     * The live channel through the factories the process actually uses. The
+     * suites above inject their transport so they can publish exact sequences;
+     * this one leaves both subscriptions on their own defaults, which is what
+     * catches a live topic that no default subscription ever reads.
+     */
+    it("reads live deltas through the route's own default subscriptions", async () => {
+      const buildSession = await allocate();
+      const { runId } = buildSession;
+      const head = await ledgerHead(runId);
+
+      const defaultHandlers = createRunEventHandlers({
+        resolvePrincipal: async ({ cookieHeader }) =>
+          await resolveSessionPrincipal({
+            cookieHeader,
+            sessions: store.sessions,
+          }),
+        store: () => store,
+      });
+
+      const stream = openStream(
+        await defaultHandlers.stream(
+          streamRequest({ buildSessionId: buildSession.buildSessionId })
+        )
+      );
+
+      try {
+        await drainReplay(stream, head);
+        await settle();
+
+        await liveClient.xAdd(
+          `${DEFAULT_REDIS_KEY_PREFIX}:${runLiveTopic(runId)}`,
+          "*",
+          {
+            event: JSON.stringify({
+              delta: "default subscription",
+              kind: "message.delta",
+              messageId: "m-default",
+              mode: "append",
+              organizationId,
+              projectId,
+              runId,
+              schemaVersion: 1,
+            }),
+          }
+        );
+
+        const delivered = await stream.nextLive();
+        expect(delivered.data.delta).toBe("default subscription");
+        expect(delivered.id).toBeNull();
+      } finally {
+        await stream.cancel();
+        await liveClient.del(
+          `${DEFAULT_REDIS_KEY_PREFIX}:${runLiveTopic(runId)}`
+        );
       }
     }, 20_000);
   });

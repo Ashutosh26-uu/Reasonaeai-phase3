@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   BuildSessionIdSchema,
+  ConversationMessageSchema,
   DeploymentExposureSchema,
   SandboxEnvironmentIdSchema,
 } from "./execution.js";
@@ -20,6 +21,14 @@ export type RunCommandId = z.infer<typeof RunCommandIdSchema>;
 
 export const RunLeaseIdSchema = z.uuid().brand<"RunLeaseId">();
 export type RunLeaseId = z.infer<typeof RunLeaseIdSchema>;
+
+export const RunCancellationAcceptedSchema = z.strictObject({
+  accepted: z.literal(true),
+  runId: RunIdSchema,
+});
+export type RunCancellationAccepted = z.infer<
+  typeof RunCancellationAcceptedSchema
+>;
 
 export const ArtifactIdSchema = z.uuid().brand<"ArtifactId">();
 export type ArtifactId = z.infer<typeof ArtifactIdSchema>;
@@ -64,6 +73,7 @@ export const RunEventTypeSchema = z.enum([
   "deployment.failed",
   "run.completed",
   "run.failed",
+  "run.cancel.requested",
   "run.cancelled",
 ]);
 export type RunEventType = z.infer<typeof RunEventTypeSchema>;
@@ -107,6 +117,134 @@ export const RunEventEnvelopeSchema = z.strictObject({
   type: RunEventTypeSchema,
 });
 export type RunEventEnvelope = z.infer<typeof RunEventEnvelopeSchema>;
+
+const TranscriptSpan = {
+  endedAt: IsoDateTimeSchema.nullable(),
+  index: z.number().int().nonnegative(),
+  startedAt: IsoDateTimeSchema,
+};
+
+export const TranscriptPartSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    ...TranscriptSpan,
+    text: z.string().max(1_000_000),
+    type: z.literal("text"),
+  }),
+  z.strictObject({
+    ...TranscriptSpan,
+    text: z.string().max(1_000_000),
+    type: z.literal("reasoning"),
+  }),
+  z.strictObject({
+    index: z.number().int().nonnegative(),
+    toolCallId: z.string().min(1).max(256),
+    type: z.literal("tool"),
+  }),
+]);
+export type TranscriptPart = z.infer<typeof TranscriptPartSchema>;
+
+/** Versioned snapshots retain source-part order without persisting every token. */
+export const MessageSnapshotSchema = z
+  .strictObject({
+    finished: z.boolean(),
+    messageId: z.string().min(1).max(256),
+    parts: z.array(TranscriptPartSchema).max(4096),
+    recovery: z
+      .strictObject({
+        source: z.literal("mastra.parts.v1"),
+        sourceEventId: RunEventIdSchema,
+        sourceSequence: z.number().int().positive(),
+      })
+      .optional(),
+    revision: z.number().int().positive(),
+    startedAt: IsoDateTimeSchema,
+    version: z.literal(1),
+  })
+  .refine(
+    (snapshot) =>
+      snapshot.parts.reduce(
+        (size, part) => size + (part.type === "tool" ? 0 : part.text.length),
+        0
+      ) <= 1_000_000,
+    "Transcript exceeds the message size limit"
+  );
+export type MessageSnapshot = z.infer<typeof MessageSnapshotSchema>;
+
+export const ConversationTranscriptSchema = z.strictObject({
+  events: z.array(RunEventEnvelopeSchema).max(500),
+  messages: z.array(ConversationMessageSchema),
+  nextAfter: z.number().int().nonnegative().nullable(),
+});
+
+/**
+ * A transient frame of a run's live view: text an agent is still producing.
+ *
+ * Deltas are deliberately not durable. A ledger entry per token would record
+ * one message thousands of times and make the ledger a transcript store, so the
+ * ledger keeps the completed message and this channel carries the same text as
+ * it arrives. Delivery is therefore at-most-once and is never replayed from the
+ * beginning: a client that misses a delta loses only part of a partial view of
+ * a message it will receive complete from the durable ledger.
+ *
+ * A live frame carries its tenant scope for the same reason a durable event
+ * does — the topic names one run, so a payload that does not match the
+ * subscription's scope is a transport fault, not a delivery.
+ */
+const LiveScope = {
+  organizationId: OrganizationIdSchema,
+  projectId: ProjectIdSchema,
+  runId: RunIdSchema,
+  schemaVersion: z.literal(1),
+};
+
+/**
+ * The assistant text of one message as the model produces it. `mode` is
+ * `append` when `delta` continues the message so far and `replace` when the
+ * message was rewritten and `delta` is its text in full.
+ */
+export const RunLiveMessageDeltaSchema = z.strictObject({
+  ...LiveScope,
+  delta: z.string().min(1),
+  kind: z.literal("message.delta"),
+  messageId: z.string().min(1).max(256),
+  mode: z.enum(["append", "replace"]),
+});
+export type RunLiveMessageDelta = z.infer<typeof RunLiveMessageDeltaSchema>;
+
+/**
+ * The text one delegated worker is producing. A subagent runs in parallel with
+ * its parent, so its text is addressed by the delegation tool call that spawned
+ * it rather than by the parent's streaming message.
+ */
+export const RunLiveSubagentDeltaSchema = z.strictObject({
+  ...LiveScope,
+  agentType: z.string().min(1).max(64),
+  delta: z.string().min(1),
+  kind: z.literal("subagent.delta"),
+  toolCallId: z.string().min(1).max(256),
+});
+export type RunLiveSubagentDelta = z.infer<typeof RunLiveSubagentDeltaSchema>;
+
+export const RunLiveEventSchema = z.discriminatedUnion("kind", [
+  RunLiveMessageDeltaSchema,
+  RunLiveSubagentDeltaSchema,
+  z.strictObject({
+    ...LiveScope,
+    kind: z.literal("message.snapshot"),
+    snapshot: MessageSnapshotSchema,
+  }),
+]);
+export type RunLiveEvent = z.infer<typeof RunLiveEventSchema>;
+
+/**
+ * The live frame kinds, taken from the schema rather than written again.
+ *
+ * A browser registers one SSE listener per frame kind, so the names it
+ * subscribes to have to be exactly the names the schema accepts; deriving them
+ * is what keeps a renamed kind from silently reaching nobody.
+ */
+export const RUN_LIVE_EVENT_KINDS: readonly string[] =
+  RunLiveEventSchema.options.map((option) => option.shape.kind.value);
 
 export const RunLeaseSchema = z.strictObject({
   expiresAt: IsoDateTimeSchema,
@@ -169,6 +307,15 @@ export type ReleaseDescriptor = z.infer<typeof ReleaseDescriptorSchema>;
 
 export const runEventTopic = (runId: string): string =>
   `reasonateai.run.events.${runId}`;
+
+/**
+ * The topic that carries a run's live deltas. A separate topic from the durable
+ * one because the two have different retention: the ledger's topic is what a
+ * reconnecting client replays, while this one is bounded and expires with the
+ * run.
+ */
+export const runLiveTopic = (runId: string): string =>
+  `reasonateai.run.live.${runId}`;
 
 export const runCommandTopic = "reasonateai.run.commands";
 

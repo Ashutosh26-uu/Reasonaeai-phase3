@@ -14,18 +14,21 @@ import {
 import {
   AllocateBuildSessionRequestSchema,
   AppendConversationTurnRequestSchema,
+  type BuildSessionId,
   BuildSessionIdSchema,
   BuildSessionSchema,
-  ConversationHistorySchema,
   ConversationListSchema,
   ConversationTurnAcceptedSchema,
+  type PromptAttachment,
 } from "@reasonateai/contracts/execution";
+import { ConversationTranscriptSchema } from "@reasonateai/contracts/execution-protocol";
 import {
   type OrganizationId,
   OrganizationIdSchema,
   type Permission,
   type ProjectId,
   ProjectIdSchema,
+  RunIdSchema,
   type UserPrincipal,
 } from "@reasonateai/contracts/identity";
 import {
@@ -49,6 +52,8 @@ export const CONVERSATION_MESSAGES_PATH =
   "/v1/build-sessions/:buildSessionId/messages";
 export const CONVERSATION_TURNS_PATH =
   "/v1/build-sessions/:buildSessionId/turns";
+export const RUN_CANCELLATION_PATH =
+  "/v1/build-sessions/:buildSessionId/runs/:runId/cancel";
 
 /**
  * The subset of a Hono `Context` these handlers use. Declaring it structurally
@@ -67,10 +72,136 @@ export interface HandlerContext {
   };
 }
 
-const AllocationBodySchema = AllocateBuildSessionRequestSchema.omit({
-  idempotencyKey: true,
-  userSessionId: true,
+const AllocationBodySchema = z.strictObject({
+  attachments: AllocateBuildSessionRequestSchema.shape.attachments,
+  message: AllocateBuildSessionRequestSchema.shape.message,
+  organizationId: AllocateBuildSessionRequestSchema.shape.organizationId,
+  projectId: AllocateBuildSessionRequestSchema.shape.projectId,
 });
+
+const MAX_PROMPT_ATTACHMENT_BYTES = 12 * 1024 * 1024;
+const ATTACHMENT_ONLY_MESSAGE = "Please review the attached files.";
+
+function promptMessage(message: string | undefined): string {
+  return message?.trim() || ATTACHMENT_ONLY_MESSAGE;
+}
+
+function attachmentsWithinLimit(attachments: PromptAttachment[] | undefined) {
+  return (
+    (attachments ?? []).reduce((total, attachment) => {
+      const encoded = attachment.data.slice(attachment.data.indexOf(",") + 1);
+      let padding = 0;
+      if (encoded.endsWith("==")) {
+        padding = 2;
+      } else if (encoded.endsWith("=")) {
+        padding = 1;
+      }
+      return total + Math.floor((encoded.length * 3) / 4) - padding;
+    }, 0) <= MAX_PROMPT_ATTACHMENT_BYTES
+  );
+}
+
+async function parseConversationTurn(
+  context: HandlerContext,
+  requestId: string
+) {
+  const parsed = AppendConversationTurnRequestSchema.safeParse(
+    await context.req.json()
+  );
+  if (!parsed.success) {
+    return apiErrorResponse({
+      code: "invalid_request",
+      message:
+        "A message, idempotency key, conversation, and project scope are required.",
+      requestId,
+    });
+  }
+  if (!attachmentsWithinLimit(parsed.data.attachments)) {
+    return apiErrorResponse({
+      code: "invalid_request",
+      message: "Attachments must total 12 MB or less.",
+      requestId,
+    });
+  }
+  return parsed.data;
+}
+
+async function appendAcceptedConversationTurn(input: {
+  attachments: PromptAttachment[];
+  buildSessionId: BuildSessionId;
+  idempotencyKey: string;
+  message: string;
+  requestId: string;
+  scope: { organizationId: OrganizationId; projectId: ProjectId };
+  store: ProjectStateStore;
+}) {
+  let accepted: Awaited<
+    ReturnType<ProjectStateStore["appendConversationTurn"]>
+  >;
+  try {
+    accepted = await input.store.appendConversationTurn({
+      attachments: input.attachments,
+      buildSessionId: input.buildSessionId,
+      idempotencyKey: input.idempotencyKey,
+      message: input.message,
+      scope: input.scope,
+    });
+  } catch (error) {
+    await input.store.usage.record({
+      amount: -RUN_SLOT,
+      metric: RUN_METRIC,
+      organizationId: input.scope.organizationId,
+      runId: null,
+    });
+    if (error instanceof ConversationBusyError) {
+      return apiErrorResponse({
+        code: "conflict",
+        message: error.message,
+        requestId: input.requestId,
+      });
+    }
+    throw error;
+  }
+  if (!accepted.created) {
+    await input.store.usage.record({
+      amount: -RUN_SLOT,
+      metric: RUN_METRIC,
+      organizationId: input.scope.organizationId,
+      runId: null,
+    });
+  }
+  return accepted;
+}
+
+function parseConversationTurnScope(context: HandlerContext) {
+  const idempotencyKey = context.req.header("idempotency-key");
+  const organizationId = OrganizationIdSchema.safeParse(
+    context.req.query("organizationId")
+  );
+  const projectId = ProjectIdSchema.safeParse(context.req.query("projectId"));
+  const buildSessionId = BuildSessionIdSchema.safeParse(
+    context.req.param("buildSessionId")
+  );
+  if (
+    !(
+      idempotencyKey &&
+      idempotencyKey.length <= 128 &&
+      organizationId.success &&
+      projectId.success &&
+      buildSessionId.success
+    )
+  ) {
+    return null;
+  }
+  return {
+    buildSessionId: buildSessionId.data,
+    idempotencyKey,
+    scope: {
+      organizationId: organizationId.data,
+      projectId: projectId.data,
+    },
+  };
+}
 
 const BuildSessionParamsSchema = z.strictObject({
   buildSessionId: z.uuid(),
@@ -256,6 +387,7 @@ async function admitRun(input: {
  * in.
  */
 async function allocateOrRefund(input: {
+  attachments?: PromptAttachment[];
   idempotencyKey: string;
   message?: string;
   organizationId: OrganizationId;
@@ -274,6 +406,9 @@ async function allocateOrRefund(input: {
   try {
     allocation = await input.store.allocateBuildSession({
       idempotencyKey: input.idempotencyKey,
+      ...(input.attachments === undefined
+        ? {}
+        : { attachments: input.attachments }),
       ...(input.message === undefined ? {} : { message: input.message }),
       scope: {
         organizationId: input.organizationId,
@@ -339,6 +474,13 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
           requestId: rid,
         });
       }
+      if (!attachmentsWithinLimit(body.data.attachments)) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message: "Attachments must total 12 MB or less.",
+          requestId: rid,
+        });
+      }
 
       const organizationId = OrganizationIdSchema.safeParse(
         body.data.organizationId
@@ -384,10 +526,9 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
       }
 
       const allocation = await allocateOrRefund({
+        attachments: body.data.attachments ?? [],
         idempotencyKey,
-        ...(body.data.message === undefined
-          ? {}
-          : { message: body.data.message }),
+        message: promptMessage(body.data.message),
         organizationId: organizationId.data,
         principal,
         projectId: projectId.data,
@@ -417,7 +558,85 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
           requestId: rid,
         });
       }
-      const idempotencyKey = c.req.header("idempotency-key");
+      const turnScope = parseConversationTurnScope(c);
+      const body = await parseConversationTurn(c, rid);
+      if (body instanceof Response) {
+        return body;
+      }
+      if (!turnScope) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message:
+            "A message, idempotency key, conversation, and project scope are required.",
+          requestId: rid,
+        });
+      }
+      const { buildSessionId, idempotencyKey, scope } = turnScope;
+      const decision = await authorizeProjectAction({
+        action: "agent:run",
+        deps,
+        ...scope,
+        principal,
+      });
+      if (!decision.allowed) {
+        return apiErrorResponse({
+          code: "forbidden",
+          message: "You are not authorized to run this CTO.",
+          requestId: rid,
+        });
+      }
+      const store = deps.store();
+      if (!(await store.getBuildSession(scope, buildSessionId))) {
+        return apiErrorResponse({
+          code: "not_found",
+          message: "No such conversation.",
+          requestId: rid,
+        });
+      }
+      const refusal = await admitRun({
+        entitlements: PLAN_ENTITLEMENTS[defaultPlan],
+        organizationId: scope.organizationId,
+        requestId: rid,
+        store,
+      });
+      if (refusal) {
+        return refusal;
+      }
+      const accepted = await appendAcceptedConversationTurn({
+        attachments: body.attachments ?? [],
+        buildSessionId,
+        idempotencyKey,
+        message: promptMessage(body.message),
+        requestId: rid,
+        scope,
+        store,
+      });
+      if (accepted instanceof Response) {
+        return accepted;
+      }
+      return c.json(
+        ConversationTurnAcceptedSchema.parse({
+          buildSessionId,
+          runId: accepted.runId,
+          sequence: 1,
+        }),
+        202
+      );
+    },
+
+    /** A durable, project-authorized request for the worker to abort this run. */
+    cancelRun: async (c: HandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+      const principal = await deps.resolvePrincipal({
+        cookieHeader: c.req.header("cookie"),
+      });
+      if (!principal) {
+        return apiErrorResponse({
+          code: "unauthenticated",
+          message: "A valid browser session is required.",
+          requestId: rid,
+        });
+      }
       const organizationId = OrganizationIdSchema.safeParse(
         c.req.query("organizationId")
       );
@@ -425,23 +644,18 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
       const buildSessionId = BuildSessionIdSchema.safeParse(
         c.req.param("buildSessionId")
       );
-      const body = AppendConversationTurnRequestSchema.safeParse(
-        await c.req.json()
-      );
+      const runId = RunIdSchema.safeParse(c.req.param("runId"));
       if (
         !(
-          idempotencyKey &&
-          idempotencyKey.length <= 128 &&
           organizationId.success &&
           projectId.success &&
           buildSessionId.success &&
-          body.success
+          runId.success
         )
       ) {
         return apiErrorResponse({
           code: "invalid_request",
-          message:
-            "A message, idempotency key, conversation, and project scope are required.",
+          message: "A conversation, run, and project scope are required.",
           requestId: rid,
         });
       }
@@ -458,70 +672,36 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
       if (!decision.allowed) {
         return apiErrorResponse({
           code: "forbidden",
-          message: "You are not authorized to run this CTO.",
+          message: "You are not authorized to stop work on this project.",
           requestId: rid,
         });
       }
       const store = deps.store();
-      if (!(await store.getBuildSession(scope, buildSessionId.data))) {
+      const [session, run] = await Promise.all([
+        store.getBuildSession(scope, buildSessionId.data),
+        store.getRun({ ...scope, runId: runId.data }),
+      ]);
+      if (!(session && run) || run.buildSessionId !== buildSessionId.data) {
         return apiErrorResponse({
           code: "not_found",
-          message: "No such conversation.",
+          message: "No such active run.",
           requestId: rid,
         });
       }
-      const refusal = await admitRun({
-        entitlements: PLAN_ENTITLEMENTS[defaultPlan],
-        organizationId: scope.organizationId,
-        requestId: rid,
-        store,
+      const accepted = await store.requestRunCancellation({
+        buildSessionId: buildSessionId.data,
+        requestedByUserId: principal.userId,
+        runId: runId.data,
+        scope,
       });
-      if (refusal) {
-        return refusal;
-      }
-      let accepted: {
-        runId: import("@reasonateai/contracts/identity").RunId;
-        created: boolean;
-      };
-      try {
-        accepted = await store.appendConversationTurn({
-          buildSessionId: buildSessionId.data,
-          idempotencyKey,
-          message: body.data.message,
-          scope,
-        });
-      } catch (error) {
-        await store.usage.record({
-          amount: -RUN_SLOT,
-          metric: RUN_METRIC,
-          organizationId: scope.organizationId,
-          runId: null,
-        });
-        if (error instanceof ConversationBusyError) {
-          return apiErrorResponse({
-            code: "conflict",
-            message: error.message,
-            requestId: rid,
-          });
-        }
-        throw error;
-      }
-      if (!accepted.created) {
-        await store.usage.record({
-          amount: -RUN_SLOT,
-          metric: RUN_METRIC,
-          organizationId: scope.organizationId,
-          runId: null,
+      if (!accepted) {
+        return apiErrorResponse({
+          code: "conflict",
+          message: "This run has already finished.",
+          requestId: rid,
         });
       }
-      return c.json(
-        ConversationTurnAcceptedSchema.parse({
-          buildSessionId: buildSessionId.data,
-          runId: accepted.runId,
-          sequence: 1,
-        }),
-        202
-      );
+      return c.json({ accepted: true, runId: runId.data }, 202);
     },
 
     /** User-visible messages, including turns from earlier runs. */
@@ -577,11 +757,37 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
           requestId: rid,
         });
       }
+      const after = z.coerce
+        .number()
+        .int()
+        .min(0)
+        .max(1_000_000)
+        .safeParse(c.req.query("after") ?? 0);
+      if (!after.success) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message: "Invalid conversation cursor.",
+          requestId: rid,
+        });
+      }
       const messages = await deps.store().listConversationMessages({
         buildSessionId: buildSessionId.data,
         scope,
       });
-      return c.json(ConversationHistorySchema.parse({ messages }), 200);
+      const events = await deps.store().listConversationEvents({
+        after: after.data,
+        buildSessionId: buildSessionId.data,
+        limit: 500,
+        scope,
+      });
+      return c.json(
+        ConversationTranscriptSchema.parse({
+          events,
+          messages,
+          nextAfter: events.length === 500 ? after.data + events.length : null,
+        }),
+        200
+      );
     },
     /** All conversations visible to a member of this project. */
     listConversations: async (c: HandlerContext): Promise<Response> => {

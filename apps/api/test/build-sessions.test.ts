@@ -248,6 +248,115 @@ describeWithDatabase("build session routes", () => {
     );
   });
 
+  it("accepts an image attachment on a later turn and returns only its metadata in history", async () => {
+    const allocated = await handlers.allocate(
+      allocationRequest({ body: body() })
+    );
+    expect(allocated.status).toBe(202);
+    const {
+      buildSession: { buildSessionId, runId },
+    } = await allocated.json();
+    const holder = `attachment-test-${randomUUID()}`;
+    const lease = await store.beginRun({ holder, runId, ttlMs: 60_000 });
+    if (!lease) {
+      throw new Error("The initial run could not be leased for the test.");
+    }
+    await store.finishRun({
+      holder,
+      leaseId: lease.leaseId,
+      runId,
+      status: "succeeded",
+    });
+
+    const append = await handlers.appendTurn(
+      context({
+        body: {
+          attachments: [
+            {
+              data: "data:image/png;base64,aGVsbG8=",
+              filename: "wireframe.png",
+              mediaType: "image/png",
+            },
+          ],
+          message: "Review this screen",
+        },
+        cookie: ownerCookie,
+        idempotencyKey: `attachment-turn-${randomUUID()}`,
+        params: { buildSessionId },
+        query: { organizationId, projectId },
+      })
+    );
+    expect(append.status).toBe(202);
+
+    const history = await handlers.history(
+      context({
+        cookie: ownerCookie,
+        params: { buildSessionId },
+        query: { organizationId, projectId },
+      })
+    );
+    expect(history.status).toBe(200);
+    const transcript = await history.json();
+    expect(transcript.messages).toContainEqual(
+      expect.objectContaining({
+        attachments: [
+          {
+            filename: "wireframe.png",
+            mediaType: "image/png",
+            sizeBytes: 5,
+          },
+        ],
+        text: "Review this screen",
+      })
+    );
+  });
+
+  it("accepts a scoped cancellation request only from a builder", async () => {
+    const allocated = await handlers.allocate(
+      allocationRequest({ idempotencyKey: `cancel-${randomUUID()}` })
+    );
+    expect(allocated.status).toBe(202);
+    const { buildSession } = await allocated.json();
+    const params = {
+      buildSessionId: buildSession.buildSessionId,
+      runId: buildSession.runId,
+    };
+    const query = { organizationId, projectId };
+
+    const viewer = await handlers.cancelRun(
+      context({ cookie: await issueCookie(viewerUserId), params, query })
+    );
+    expect(viewer.status).toBe(403);
+
+    const stopped = await handlers.cancelRun(
+      context({ cookie: ownerCookie, params, query })
+    );
+    expect(stopped.status).toBe(202);
+    expect(await stopped.json()).toEqual({
+      accepted: true,
+      runId: buildSession.runId,
+    });
+    expect(
+      (
+        await handlers.cancelRun(
+          context({ cookie: ownerCookie, params, query })
+        )
+      ).status
+    ).toBe(202);
+    expect(await store.isRunCancellationRequested(buildSession.runId)).toBe(
+      true
+    );
+    const events = await store.listRunEvents({
+      afterSequence: 0,
+      limit: 20,
+      runId: buildSession.runId,
+      scope: { organizationId, projectId },
+    });
+    expect(
+      events.filter((event) => event.type === "run.cancel.requested")
+    ).toHaveLength(1);
+  });
+
   it("denies a member whose role lacks the capability", async () => {
     const response = await handlers.allocate(
       context({

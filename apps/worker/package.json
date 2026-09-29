@@ -22,6 +22,7 @@
     "@reasonateai/cto-runtime": "workspace:*",
     "@reasonateai/project-state": "workspace:*",
     "@reasonateai/sandbox": "workspace:*",
+    "redis": "6.2.1",
     "zod": "catalog:"
   },
   "devDependencies": {

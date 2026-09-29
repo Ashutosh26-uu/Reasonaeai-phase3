@@ -1,6 +1,7 @@
 import type { RequestContext } from "@mastra/core/request-context";
 import type { WorkspaceSandbox } from "@mastra/core/workspace";
 import type { RunEventType } from "@reasonateai/contracts/execution-protocol";
+import { RunLiveEventMapper } from "@reasonateai/cto-runtime/run-live-events";
 import type { RunScope } from "@reasonateai/cto-runtime/run-scope";
 import type {
   ProjectStateStore,
@@ -20,6 +21,7 @@ import {
 import { describeFailure, type FailureDescription } from "./failure.js";
 import { LeaseKeeper } from "./lease.js";
 import { type Ledger, RunEventAppender } from "./ledger.js";
+import type { LiveEventPublisher } from "./live-events.js";
 import type { LogFields, Logger } from "./logger.js";
 import {
   candidateScope,
@@ -62,6 +64,8 @@ export interface RunExecutorDeps {
   checkpoints: CheckpointStore;
   config: RunExecutionConfig;
   ledger: Ledger;
+  /** The run's live view: text as the model produces it. */
+  live: LiveEventPublisher;
   logger: Logger;
   resolveSandbox: (input: {
     requestContext: RequestContext;
@@ -78,7 +82,7 @@ const TERMINAL_EVENT: Record<RunFinishStatus, RunEventType> = {
   succeeded: "run.completed",
 };
 
-type StopCause = "lease-lost" | "shutdown";
+type StopCause = "lease-lost" | "shutdown" | "user";
 
 type DriveResult =
   | { kind: "completed" }
@@ -181,6 +185,7 @@ export class RunExecutor {
         scope,
         session,
         stopSignal,
+        userAttachments: candidate.userAttachments,
       });
     } catch (error) {
       driven = { kind: "failed", reason: describeFailure(error).message };
@@ -203,6 +208,7 @@ export class RunExecutor {
     fields: LogFields;
     lease: { expiresAt: Date; leaseId: string };
     message: string | null;
+    userAttachments: RunnableRun["userAttachments"];
     requestContext: RequestContext;
     scope: RunScope;
     session: RunSession;
@@ -222,10 +228,13 @@ export class RunExecutor {
         return;
       }
       stop = { cause, reason };
-      logger.warn(
-        cause === "lease-lost" ? "run.lease.lost.stop" : "run.shutdown.stop",
-        { ...fields, reason }
-      );
+      let event = "run.shutdown.stop";
+      if (cause === "lease-lost") {
+        event = "run.lease.lost.stop";
+      } else if (cause === "user") {
+        event = "run.cancel.requested";
+      }
+      logger.warn(event, { ...fields, reason });
       input.session.abortRun();
       settleStop?.({ cause, reason });
     };
@@ -233,6 +242,26 @@ export class RunExecutor {
     const unsubscribeStop = input.stopSignal.subscribe((reason) =>
       requestStop("shutdown", reason)
     );
+    let cancellationPoll: NodeJS.Timeout | undefined;
+    let cancellationCheckInFlight = false;
+    const checkCancellation = async () => {
+      if (stop !== undefined || cancellationCheckInFlight) {
+        return;
+      }
+      cancellationCheckInFlight = true;
+      try {
+        if (await store.isRunCancellationRequested(scope.runId)) {
+          requestStop("user", "the user stopped this run");
+        }
+      } catch (error) {
+        logger.warn("run.cancel.poll.failed", {
+          ...fields,
+          failure: describeFailure(error).message,
+        });
+      } finally {
+        cancellationCheckInFlight = false;
+      }
+    };
     const keeper = new LeaseKeeper({
       expiresAt: input.lease.expiresAt,
       fields,
@@ -251,29 +280,61 @@ export class RunExecutor {
       ledger,
       logger,
     });
+    // The same controller events feed both views: the ledger records what the
+    // run did, and the live channel carries the text it is writing now.
+    const live = new RunLiveEventMapper({ scope });
     const unsubscribeEvents = input.session.subscribe((event) => {
-      appends.push(event, new Date());
+      const at = new Date();
+      if (
+        event.type !== "message_start" &&
+        event.type !== "message_update" &&
+        event.type !== "message_end"
+      ) {
+        appends.push(event, at);
+      }
+      const delta = live.map(event, at);
+      if (delta !== undefined) {
+        if (delta.kind === "message.snapshot") {
+          appends.pushSnapshot(delta.snapshot, at);
+        }
+        this.#deps.live.publish(delta);
+      }
     });
 
     // The directive goes out before the lease keeper is useful, but the send is
     // not awaited here: a stop request has to be able to win the race.
-    const sending = input.session
-      .sendMessage({
-        content:
-          input.message ??
-          runDirective({
-            buildSessionId: scope.buildSessionId,
-            runId: scope.runId,
-          }),
-        requestContext: input.requestContext,
-        untilIdle: true,
-      })
-      .then(
-        () => undefined,
-        (error: unknown) => {
-          failure = describeFailure(error);
-        }
-      );
+    await checkCancellation();
+    cancellationPoll = setInterval(() => {
+      checkCancellation().catch((error: unknown) => {
+        logger.error("run.cancel.poll.crashed", {
+          ...fields,
+          failure: describeFailure(error).message,
+        });
+      });
+    }, 500);
+    const sending =
+      stop === undefined
+        ? input.session
+            .sendMessage({
+              content:
+                input.message ??
+                runDirective({
+                  buildSessionId: scope.buildSessionId,
+                  runId: scope.runId,
+                }),
+              ...(input.userAttachments.length > 0
+                ? { files: input.userAttachments }
+                : {}),
+              requestContext: input.requestContext,
+              untilIdle: true,
+            })
+            .then(
+              () => undefined,
+              (error: unknown) => {
+                failure = describeFailure(error);
+              }
+            )
+        : Promise.resolve();
 
     keeper.start();
     try {
@@ -290,9 +351,16 @@ export class RunExecutor {
         }
       }
     } finally {
+      clearInterval(cancellationPoll);
       await keeper.stop();
       unsubscribeStop();
       unsubscribeEvents();
+      for (const frame of live.finish()) {
+        if (frame.kind === "message.snapshot") {
+          appends.pushSnapshot(frame.snapshot, new Date());
+        }
+        this.#deps.live.publish(frame);
+      }
       await appends.drain();
     }
 

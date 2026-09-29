@@ -1,6 +1,7 @@
 import type { AgentControllerEvent } from "@mastra/core/agent-controller";
 import type { RequestContext } from "@mastra/core/request-context";
 import { PostgresStore } from "@mastra/pg";
+import type { PromptAttachment } from "@reasonateai/contracts/execution";
 import { createReasonateCtoRuntime } from "@reasonateai/cto-runtime";
 import {
   buildSandboxEnvironment,
@@ -23,6 +24,7 @@ export interface RunSession {
   abortRun: () => void;
   sendMessage: (input: {
     content: string;
+    files?: Pick<PromptAttachment, "data" | "filename" | "mediaType">[];
     requestContext: RequestContext;
     untilIdle?: boolean;
   }) => Promise<void>;

@@ -17,10 +17,12 @@ import {
   createProjectStateStore,
   type ProjectStateStore,
 } from "@reasonateai/project-state/postgres";
+import { resolveAsrAdapter } from "./adapters/asr";
 import { createMagicLinkSender } from "./adapters/magic-link-sender";
 import { createCsrfMiddleware } from "./middleware";
 import { frontierModel } from "./model";
 import { startOutboxRelay } from "./outbox-relay";
+import { createPreviewService } from "./preview-service";
 import { resolveSessionPrincipal } from "./principal";
 import {
   ARTIFACT_ACCESS_PATH,
@@ -42,16 +44,30 @@ import {
   CONVERSATION_TURNS_PATH,
   createBuildSessionHandlers,
   PROJECT_CONVERSATIONS_PATH,
+  RUN_CANCELLATION_PATH,
 } from "./routes/build-sessions";
 import {
   createOrganizationHandlers,
   ORGANIZATION_COLLECTION_PATH,
 } from "./routes/organizations";
 import {
+  BUILD_SESSION_PREVIEW_PATH,
+  createPreviewHandlers,
+  PREVIEW_ITEM_PATH,
+  PREVIEW_PROXY_PATH,
+  PREVIEW_STATUS_PATH,
+} from "./routes/previews";
+import {
   createProjectHandlers,
   PROJECT_COLLECTION_PATH,
 } from "./routes/projects";
 import { createRunEventHandlers, RUN_EVENTS_PATH } from "./routes/run-events";
+import { createVoiceHandlers, VOICE_TRANSCRIPTION_PATH } from "./routes/voice";
+import {
+  createWorkspaceHandlers,
+  WORKSPACE_FILE_PATH,
+  WORKSPACE_TREE_PATH,
+} from "./routes/workspace";
 import { serverMiddleware } from "./server";
 import {
   buildSandboxEnvironment,
@@ -200,6 +216,47 @@ const runEventHandlers = createRunEventHandlers({
   store: stateStore,
 });
 
+const workspaceHandlers = createWorkspaceHandlers({
+  resolvePrincipal: resolvePrincipalFrom,
+  store: stateStore,
+});
+
+/**
+ * The preview service owns sandboxes for previews, not for runs: it restores a
+ * project's latest checkpoint into its own container and starts the app there.
+ * One service per process, so its idle sweep and its exit teardown cover every
+ * preview this process started.
+ */
+const previewService = createPreviewService({
+  onOrphansRemoved: (count) => {
+    // Reported rather than cleaned silently: a deployment that keeps finding
+    // orphans is telling you its API is restarting more than it should.
+    console.info(
+      `Previews: removed ${count} container(s) left by a previous process.`
+    );
+  },
+});
+// A preview's registry does not survive a restart, so anything a previous
+// process left is unreachable: cleaned at boot rather than when someone next
+// opens a preview.
+await previewService.sweepOrphans();
+
+const previewHandlers = createPreviewHandlers({
+  previews: previewService,
+  resolvePrincipal: resolvePrincipalFrom,
+  store: stateStore,
+});
+
+/**
+ * Transcription is resolved per request: a deployment with no ASR endpoint
+ * configured has no adapter, and the route says so rather than inventing text.
+ */
+const voiceHandlers = createVoiceHandlers({
+  asr: () => resolveAsrAdapter(process.env),
+  resolvePrincipal: resolvePrincipalFrom,
+  store: stateStore,
+});
+
 const artifactHandlers = createArtifactHandlers({
   artifacts: localArtifacts,
   publicOrigin,
@@ -267,6 +324,16 @@ export const mastra = new Mastra({
         handler: (c) => buildSessionHandlers.appendTurn(c),
         method: "POST",
       }),
+      registerApiRoute(RUN_CANCELLATION_PATH, {
+        handler: (c) => buildSessionHandlers.cancelRun(c),
+        method: "POST",
+        openapi: {
+          description:
+            "Requests cancellation of an active run in the caller's authorized project scope.",
+          summary: "Stop a run",
+          tags: ["Build sessions"],
+        },
+      }),
       registerApiRoute(BUILD_SESSION_COLLECTION_PATH, {
         handler: (c) => buildSessionHandlers.allocate(c),
         method: "POST",
@@ -295,6 +362,89 @@ export const mastra = new Mastra({
             "Streams a run's durable events as server-sent events, replaying from Last-Event-ID before following live.",
           summary: "Follow build session events",
           tags: ["Build sessions"],
+        },
+      }),
+      registerApiRoute(WORKSPACE_TREE_PATH, {
+        handler: (c) => workspaceHandlers.tree(c),
+        method: "GET",
+        openapi: {
+          description:
+            "Lists the generated source of the project's latest checkpoint as workspace-relative paths, excluding dependencies, caches, and repository metadata. A project that has not produced a checkpoint yet is an empty listing, not an error.",
+          summary: "List a project's generated source",
+          tags: ["Workspace"],
+        },
+      }),
+      registerApiRoute(WORKSPACE_FILE_PATH, {
+        handler: (c) => workspaceHandlers.file(c),
+        method: "GET",
+        openapi: {
+          description:
+            "Reads one file from the project's latest checkpoint. A binary or oversized file is reported as binary with no body, and the same centralized project authorization guards both workspace reads.",
+          summary: "Read a generated source file",
+          tags: ["Workspace"],
+        },
+      }),
+      registerApiRoute(BUILD_SESSION_PREVIEW_PATH, {
+        handler: (c) => previewHandlers.create(c),
+        method: "POST",
+        openapi: {
+          description:
+            "Starts the generated app from the project's latest checkpoint in its own sandbox and returns the preview's status and proxied address. Calling it again while a preview is live returns that preview rather than starting a second one.",
+          summary: "Start a preview",
+          tags: ["Previews"],
+        },
+      }),
+      // Order matters here. The item path is the running app's own root, so the
+      // status route sits on its own path, the root is proxied, and the
+      // wildcard follows — a page load must never receive the status document.
+      registerApiRoute(PREVIEW_STATUS_PATH, {
+        handler: (c) => previewHandlers.status(c),
+        method: "GET",
+        openapi: {
+          description:
+            "Reads one preview's status, including why it failed when it did.",
+          summary: "Read a preview",
+          tags: ["Previews"],
+        },
+      }),
+      registerApiRoute(PREVIEW_ITEM_PATH, {
+        handler: (c) => previewHandlers.proxy(c),
+        method: "GET",
+        openapi: {
+          description:
+            "Serves the running preview's own root document. The preview's tenant scope is resolved from the preview itself, never from the request.",
+          summary: "Serve a running preview",
+          tags: ["Previews"],
+        },
+      }),
+      registerApiRoute(PREVIEW_PROXY_PATH, {
+        handler: (c) => previewHandlers.proxy(c),
+        method: "ALL",
+        openapi: {
+          description:
+            "Serves the running preview's own responses. The preview's tenant scope is resolved from the preview itself, never from the request.",
+          summary: "Serve a running preview",
+          tags: ["Previews"],
+        },
+      }),
+      registerApiRoute(PREVIEW_ITEM_PATH, {
+        handler: (c) => previewHandlers.stop(c),
+        method: "DELETE",
+        openapi: {
+          description:
+            "Stops a preview and destroys the sandbox that was serving it.",
+          summary: "Stop a preview",
+          tags: ["Previews"],
+        },
+      }),
+      registerApiRoute(VOICE_TRANSCRIPTION_PATH, {
+        handler: (c) => voiceHandlers.transcribe(c),
+        method: "POST",
+        openapi: {
+          description:
+            "Transcribes one recorded message through the deployment's configured speech-to-text adapter. A deployment with no adapter answers with a typed refusal that names what is missing.",
+          summary: "Transcribe a recorded message",
+          tags: ["Voice"],
         },
       }),
       registerApiRoute(ARTIFACT_COLLECTION_PATH, {

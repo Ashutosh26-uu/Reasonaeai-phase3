@@ -121,8 +121,84 @@ describeWithDatabase("run dispatch", () => {
       projectId: scope.projectId,
       runId: allocation.buildSession.runId,
       sandboxEnvironmentId: allocation.sandbox.sandboxEnvironmentId,
+      userAttachments: [],
       userMessage: null,
       workspaceUri: allocation.sandbox.workspaceUri,
+    });
+  });
+
+  it("replays ordered transcript pages across turns without crossing tenant scope", async () => {
+    const { allocation, scope } = await queuedRun();
+    const firstRun = allocation.buildSession.runId;
+    await store.appendRunEvent({
+      payload: { kind: "tool_start", toolCallId: "one", toolName: "read" },
+      runId: firstRun,
+      scope,
+      type: "agent.progress",
+    });
+    const lease = await store.beginRun({
+      holder: "history-test",
+      runId: firstRun,
+      ttlMs: 60_000,
+    });
+    if (!lease) {
+      throw new Error("Missing fixture lease");
+    }
+    await store.finishRun({
+      holder: "history-test",
+      leaseId: lease.leaseId,
+      runId: firstRun,
+      status: "succeeded",
+    });
+    const turn = await store.appendConversationTurn({
+      buildSessionId: allocation.buildSession.buildSessionId,
+      idempotencyKey: randomUUID(),
+      message: "Follow up",
+      scope,
+    });
+    fixtureRuns.push(turn.runId);
+    await store.appendRunEvent({
+      payload: { kind: "tool_start", toolCallId: "two", toolName: "list" },
+      runId: turn.runId,
+      scope,
+      type: "agent.progress",
+    });
+    const input = {
+      after: 0,
+      buildSessionId: allocation.buildSession.buildSessionId,
+      limit: 2,
+      scope,
+    };
+    const first = await store.listConversationEvents(input);
+    const second = await store.listConversationEvents({ ...input, after: 2 });
+    expect(first.map((event) => event.runId)).toEqual([firstRun, firstRun]);
+    expect(second.map((event) => event.runId)).toEqual([
+      turn.runId,
+      turn.runId,
+    ]);
+    expect([...first, ...second].map((event) => event.sequence)).toEqual([
+      1, 2, 1, 2,
+    ]);
+    expect(
+      await store.listConversationEvents({
+        ...input,
+        scope: { ...scope, organizationId: otherOrganizationId },
+      })
+    ).toEqual([]);
+    expect(
+      await store.listConversationEvents({
+        ...input,
+        scope: { ...scope, projectId: ProjectIdSchema.parse(randomUUID()) },
+      })
+    ).toEqual([]);
+    const messages = await store.listConversationMessages({
+      buildSessionId: allocation.buildSession.buildSessionId,
+      scope,
+    });
+    expect(messages.at(-1)).toMatchObject({
+      role: "user",
+      runId: turn.runId,
+      text: "Follow up",
     });
   });
 
