@@ -96,6 +96,12 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [projectId, setProjectId] = useState(route.projectId);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [conversationsByProject, setConversationsByProject] = useState<
+    Record<string, ConversationSummary[] | undefined>
+  >({});
+  const [failedConversationProjects, setFailedConversationProjects] = useState<
+    string[]
+  >([]);
   const [conversationId, setConversationId] = useState(route.conversationId);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [history, setHistory] = useState<{
@@ -153,11 +159,27 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       (value) => ConversationListSchema.parse(value).conversations
     );
     setConversations(result);
+    setConversationsByProject((current) => ({
+      ...current,
+      [projectId]: result,
+    }));
+    setFailedConversationProjects((current) =>
+      current.filter((failedProjectId) => failedProjectId !== projectId)
+    );
     setConversationId((selected) =>
       result.some((item) => item.buildSessionId === selected) ? selected : ""
     );
     return result;
   }, [organizationId, projectId]);
+
+  const loadProjectConversations = useCallback(
+    async (targetProjectId: string) =>
+      await request(
+        `/v1/projects/${targetProjectId}/conversations?organizationId=${encodeURIComponent(organizationId)}`,
+        (value) => ConversationListSchema.parse(value).conversations
+      ),
+    [organizationId]
+  );
 
   const loadHistory = useCallback(async () => {
     if (!(organizationId && projectId && conversationId)) {
@@ -185,6 +207,60 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       setError(describeError(cause, "Could not load projects."))
     );
   }, [loadProjects]);
+
+  useEffect(() => {
+    let current = true;
+    if (projects.length === 0) {
+      setConversationsByProject({});
+      setFailedConversationProjects([]);
+      return () => {
+        current = false;
+      };
+    }
+
+    const requestedProjectIds = projects.map(
+      (itemProject) => itemProject.projectId
+    );
+    Promise.allSettled(
+      requestedProjectIds.map(async (requestedProjectId) => ({
+        conversations: await loadProjectConversations(requestedProjectId),
+        projectId: requestedProjectId,
+      }))
+    ).then((results) => {
+      if (!current) {
+        return;
+      }
+      const next: Record<string, ConversationSummary[] | undefined> = {};
+      const failedProjects: string[] = [];
+      for (const [index, result] of results.entries()) {
+        if (result.status === "fulfilled") {
+          next[result.value.projectId] = result.value.conversations;
+        } else {
+          const failedProjectId = requestedProjectIds[index];
+          if (failedProjectId) {
+            failedProjects.push(failedProjectId);
+          }
+        }
+      }
+      setConversationsByProject((existing) => {
+        const merged = { ...existing, ...next };
+        for (const failedProjectId of failedProjects) {
+          delete merged[failedProjectId];
+        }
+        return merged;
+      });
+      setFailedConversationProjects(failedProjects);
+      if (failedProjects.length > 0) {
+        setError(
+          "Some project conversations could not be loaded. Reload the workspace to retry."
+        );
+      }
+    });
+
+    return () => {
+      current = false;
+    };
+  }, [loadProjectConversations, projects]);
 
   useEffect(() => {
     setConversations([]);
@@ -470,6 +546,9 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     setOrganizationId(nextOrganizationId);
     setProjectId("");
     setConversationId("");
+    setConversations([]);
+    setConversationsByProject({});
+    setFailedConversationProjects([]);
     setMessages([]);
   }, []);
 
@@ -481,12 +560,13 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   }, []);
 
   const selectConversation = useCallback(
-    (nextConversationId: string) => {
+    (nextProjectId: string, nextConversationId: string) => {
+      setProjectId(nextProjectId);
       setConversationId(nextConversationId);
       setMessages([]);
-      writeRoute(projectId, nextConversationId);
+      writeRoute(nextProjectId, nextConversationId);
     },
-    [projectId]
+    []
   );
 
   const newConversation = useCallback(() => {
@@ -497,6 +577,16 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     writeRoute(projectId, "");
     document.getElementById("prompt")?.focus();
   }, [projectId]);
+
+  const newConversationForProject = useCallback((nextProjectId: string) => {
+    setProjectId(nextProjectId);
+    setConversationId("");
+    setMessages([]);
+    setDraft("");
+    setNotice("");
+    writeRoute(nextProjectId, "");
+    document.getElementById("prompt")?.focus();
+  }, []);
 
   const refreshConversation = useCallback(() => {
     loadConversations().catch((cause: unknown) =>
@@ -582,15 +672,19 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     <div className="app" data-panel={panelOpen || undefined}>
       <Rail
         conversationId={conversationId}
-        conversations={conversations}
+        conversationsByProject={conversationsByProject}
         draftProjectName={projectName}
+        errorMessage={error}
+        failedConversationProjects={failedConversationProjects}
         onConversationSelect={selectConversation}
         onNewConversation={newConversation}
+        onNewConversationForProject={newConversationForProject}
         onOrganizationSelect={selectOrganization}
         onProjectNameChange={updateProjectName}
         onProjectSelect={selectProject}
         onProjectSubmit={createProject}
         onSettings={openSettings}
+        onSignOut={signOut}
         organizationId={organizationId}
         organizations={session.organizations}
         projectId={projectId}
@@ -690,7 +784,6 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
         <Settings
           onClose={closeSettings}
           onRenamed={renameOrganization}
-          onSignOut={signOut}
           organizationId={organizationId}
           organizationName={organizationName}
         />

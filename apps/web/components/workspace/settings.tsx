@@ -8,7 +8,6 @@ export interface SettingsProps {
   onClose: () => void;
   /** Called with the new name once the server has committed it. */
   onRenamed: () => void;
-  onSignOut: () => void;
   organizationId: string;
   organizationName: string;
 }
@@ -24,7 +23,6 @@ export interface SettingsProps {
 export function Settings({
   onClose,
   onRenamed,
-  onSignOut,
   organizationId,
   organizationName,
 }: SettingsProps) {
@@ -112,12 +110,6 @@ export function Settings({
             provider router. The identifier is pinned per deployment, not per
             conversation.
           </p>
-        </div>
-
-        <div className="sheet-block sheet-foot">
-          <button className="sheet-signout" onClick={onSignOut} type="button">
-            Sign out of this browser
-          </button>
         </div>
       </div>
     </div>
