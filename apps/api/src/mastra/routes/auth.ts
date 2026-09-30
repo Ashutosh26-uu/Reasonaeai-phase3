@@ -3,12 +3,14 @@ import { mintCsrfToken } from "@reasonateai/auth/csrf";
 import { safeRedirectPath } from "@reasonateai/auth/redirect";
 import { sessionCookie, sessionState } from "@reasonateai/auth/session-policy";
 import {
+  AccountProfileSchema,
   CSRF_COOKIE,
   MagicLinkAcceptedSchema,
   MagicLinkRequestSchema,
   SESSION_COOKIE,
   SessionViewSchema,
   SignedOutSchema,
+  UpdateAccountProfileRequestSchema,
 } from "@reasonateai/contracts/auth";
 import {
   type AuditAction,
@@ -45,6 +47,7 @@ import type { HandlerContext } from "./build-sessions";
 export const MAGIC_LINKS_PATH = "/v1/auth/magic-links";
 export const AUTH_CALLBACK_PATH = "/v1/auth/callback";
 export const AUTH_SESSION_PATH = "/v1/auth/session";
+export const AUTH_PROFILE_PATH = "/v1/auth/profile";
 
 /**
  * How long a sign-in link lives. It is a bearer credential delivered over
@@ -339,6 +342,30 @@ export function createAuthHandlers(deps: AuthRouteDeps) {
 
       return response;
     },
+    readProfile: async (c: HandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+      const store = deps.store();
+      const principal = await resolveSessionPrincipal({
+        cookieHeader: c.req.header("cookie"),
+        sessions: store.sessions,
+      });
+      if (!principal) {
+        return unauthenticatedResponse(rid);
+      }
+      const profile = await store.users.getProfile({
+        userId: principal.userId,
+      });
+      if (!profile) {
+        return apiErrorResponse({
+          code: "not_found",
+          message: "The account profile could not be found.",
+          requestId: rid,
+        });
+      }
+      const response = c.json(AccountProfileSchema.parse(profile), 200);
+      response.headers.set("Cache-Control", "no-store");
+      return response;
+    },
 
     /**
      * The caller's own session. It reports the session's clocks and the
@@ -495,6 +522,42 @@ export function createAuthHandlers(deps: AuthRouteDeps) {
           secure: deps.secureCookies,
         })
       );
+      response.headers.set("Cache-Control", "no-store");
+      return response;
+    },
+    updateProfile: async (c: HandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+      const store = deps.store();
+      const principal = await resolveSessionPrincipal({
+        cookieHeader: c.req.header("cookie"),
+        sessions: store.sessions,
+      });
+      if (!principal) {
+        return unauthenticatedResponse(rid);
+      }
+      const body = UpdateAccountProfileRequestSchema.safeParse(
+        await readJsonBody(c.req)
+      );
+      if (!body.success) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message: "A display name of at most 80 characters is required.",
+          requestId: rid,
+        });
+      }
+      const displayName = body.data.displayName.trim();
+      const profile = await store.users.setDisplayName({
+        displayName: displayName.length > 0 ? displayName : null,
+        userId: principal.userId,
+      });
+      if (!profile) {
+        return apiErrorResponse({
+          code: "not_found",
+          message: "The account profile could not be found.",
+          requestId: rid,
+        });
+      }
+      const response = c.json(AccountProfileSchema.parse(profile), 200);
       response.headers.set("Cache-Control", "no-store");
       return response;
     },

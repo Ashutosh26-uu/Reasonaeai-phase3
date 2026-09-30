@@ -1,5 +1,10 @@
 import { z } from "zod";
 import {
+  EntitlementsSchema,
+  PlanIdSchema,
+  UsageSnapshotSchema,
+} from "./entitlements.js";
+import {
   IsoDateTimeSchema,
   OrganizationIdSchema,
   OrganizationRoleSchema,
@@ -54,11 +59,40 @@ export const SessionViewSchema = z.strictObject({
 });
 export type SessionView = z.infer<typeof SessionViewSchema>;
 
+export const AccountProfileSchema = z.strictObject({
+  displayName: z.string().max(80).nullable(),
+  email: z.email().max(254).nullable(),
+  userId: UserIdSchema,
+});
+export type AccountProfile = z.infer<typeof AccountProfileSchema>;
+
+export const UpdateAccountProfileRequestSchema = z.strictObject({
+  displayName: z.string().max(80),
+});
+export type UpdateAccountProfileRequest = z.infer<
+  typeof UpdateAccountProfileRequestSchema
+>;
+
+export const OrganizationPlanUsageSchema = z.strictObject({
+  billingMode: z.literal("default"),
+  entitlements: EntitlementsSchema,
+  plan: PlanIdSchema,
+  usage: UsageSnapshotSchema,
+});
+export type OrganizationPlanUsage = z.infer<typeof OrganizationPlanUsageSchema>;
+
 export const CreateOrganizationRequestSchema = z.strictObject({
   name: z.string().min(1).max(120),
 });
 export type CreateOrganizationRequest = z.infer<
   typeof CreateOrganizationRequestSchema
+>;
+
+export const RenameOrganizationRequestSchema = z.strictObject({
+  name: z.string().trim().min(1).max(120),
+});
+export type RenameOrganizationRequest = z.infer<
+  typeof RenameOrganizationRequestSchema
 >;
 
 export const CreateOrganizationResponseSchema = z.strictObject({

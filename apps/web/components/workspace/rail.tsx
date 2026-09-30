@@ -40,6 +40,8 @@ import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export interface RailProps {
+  accountEmail: string;
+  accountName: string;
   conversationId: string;
   conversationsByProject: Record<string, ConversationSummary[] | undefined>;
   draftProjectName: string;
@@ -730,6 +732,8 @@ function ProjectTreeItem({
 }
 
 export function Rail({
+  accountEmail,
+  accountName,
   conversationId,
   conversationsByProject,
   failedConversationProjects,
@@ -1197,7 +1201,7 @@ export function Rail({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
-              aria-label="Open profile menu"
+              aria-label={`Open account menu${accountName ? ` for ${accountName}` : ""}`}
               className="rail-profile"
               title="Profile menu"
               type="button"
@@ -1205,7 +1209,7 @@ export function Rail({
               <span className="rail-profile-mark">
                 <UserRound aria-hidden="true" size={18} />
               </span>
-              <span className="rail-text">Profile</span>
+              <span className="rail-text">{accountName || "Profile"}</span>
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent
@@ -1214,6 +1218,15 @@ export function Rail({
             side="top"
             sideOffset={8}
           >
+            <DropdownMenuLabel>
+              <span className="rail-menu-org-name">
+                {accountName || "Your account"}
+              </span>
+              {accountEmail && (
+                <span className="rail-menu-eyebrow">{accountEmail}</span>
+              )}
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
             <DropdownMenuLabel>
               <span className="rail-menu-eyebrow">Workspace</span>
               <span className="rail-menu-org-name">{organizationName}</span>

@@ -1,9 +1,22 @@
 "use client";
 
+import type { ProjectSummary } from "@reasonateai/contracts/auth";
 import type { PromptAttachment } from "@reasonateai/contracts/execution";
 import { BorderBeam } from "border-beam";
-import { ArrowUp, ChevronDown, Mic, Paperclip, Square } from "lucide-react";
+import {
+  ArrowUp,
+  Check,
+  ChevronDown,
+  Folder,
+  FolderPlus,
+  Mic,
+  Paperclip,
+  Search,
+  Square,
+  X,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useMicrophone, VoiceBeam } from "voice-glow";
 import { Attachments } from "@/components/ai-elements/attachments";
 import {
@@ -26,11 +39,13 @@ import {
 function ComposerHint({
   error,
   pending,
+  projectSelected,
   recording,
   transcribing,
 }: {
   error: string;
   pending: boolean;
+  projectSelected: boolean;
   recording: boolean;
   transcribing: boolean;
 }) {
@@ -46,6 +61,9 @@ function ComposerHint({
   }
   if (transcribing) {
     return <span>Transcribing…</span>;
+  }
+  if (!projectSelected) {
+    return <span>Choose a project to start a conversation.</span>;
   }
   if (pending) {
     return (
@@ -101,7 +119,9 @@ export interface ComposerProps {
   /** The model this workspace runs on, shown so the choice is visible. */
   model: string;
   onChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => void;
+  onCreateProject: (name: string) => Promise<boolean>;
   onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  onProjectSelect: (projectId: string) => void;
   /** Stops the active CTO run while its response is streaming. */
   onStop: () => void;
   onSubmit: (input: {
@@ -112,7 +132,235 @@ export interface ComposerProps {
   onTranscribe: (audio: Blob) => Promise<string>;
   pending: boolean;
   placeholder: string;
+  projectId: string;
+  projectPickerDisabled: boolean;
+  projects: ProjectSummary[];
   stopping: boolean;
+}
+
+function ProjectPicker({
+  disabled,
+  onCreateProject,
+  onSelect,
+  projectId,
+  projects,
+}: {
+  disabled: boolean;
+  onCreateProject: (name: string) => Promise<boolean>;
+  onSelect: (projectId: string) => void;
+  projectId: string;
+  projects: ProjectSummary[];
+}) {
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
+  const [position, setPosition] = useState({ bottom: 0, left: 0 });
+  const root = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const menuRoot = useRef<HTMLDivElement>(null);
+  const activeProject = projects.find((item) => item.projectId === projectId);
+  const shown = projects.filter((item) =>
+    item.name.toLocaleLowerCase().includes(filter.trim().toLocaleLowerCase())
+  );
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const rect = trigger.current?.getBoundingClientRect();
+    if (rect) {
+      setPosition({
+        bottom: window.innerHeight - rect.top + 8,
+        left: Math.max(12, Math.min(rect.left, window.innerWidth - 372)),
+      });
+    }
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (
+        !(root.current?.contains(target) || menuRoot.current?.contains(target))
+      ) {
+        setOpen(false);
+      }
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [open]);
+
+  const choose = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      onSelect(event.currentTarget.value);
+      setOpen(false);
+      setCreating(false);
+      setFilter("");
+    },
+    [onSelect]
+  );
+
+  const create = useCallback(
+    async (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const trimmed = name.trim();
+      if (!trimmed || disabled) {
+        return;
+      }
+      if (await onCreateProject(trimmed)) {
+        setName("");
+        setCreating(false);
+        setOpen(false);
+      }
+    },
+    [disabled, name, onCreateProject]
+  );
+  const toggleOpen = useCallback(() => setOpen((value) => !value), []);
+  const changeFilter = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) =>
+      setFilter(event.currentTarget.value),
+    []
+  );
+  const changeName = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) =>
+      setName(event.currentTarget.value),
+    []
+  );
+  const beginCreate = useCallback(() => setCreating(true), []);
+  const cancelCreate = useCallback(() => {
+    setName("");
+    setCreating(false);
+  }, []);
+  const closePicker = useCallback(() => {
+    setOpen(false);
+    setCreating(false);
+    setName("");
+  }, []);
+
+  return (
+    <div className="project-picker" ref={root}>
+      <button
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        className="prompt-chip is-button project-picker-trigger"
+        disabled={disabled}
+        onClick={toggleOpen}
+        ref={trigger}
+        type="button"
+      >
+        <Folder aria-hidden="true" size={15} />
+        <span>{activeProject?.name ?? "No project"}</span>
+        <ChevronDown aria-hidden="true" size={13} />
+      </button>
+      {open &&
+        createPortal(
+          <div
+            className="project-picker-menu"
+            ref={menuRoot}
+            style={{ bottom: position.bottom, left: position.left }}
+          >
+            <div className="project-picker-search-row">
+              <label className="project-picker-search">
+                <Search aria-hidden="true" size={15} />
+                <input
+                  autoFocus
+                  onChange={changeFilter}
+                  placeholder="Search projects"
+                  value={filter}
+                />
+              </label>
+              <button
+                aria-label="Close project picker"
+                className="project-picker-close"
+                onClick={closePicker}
+                type="button"
+              >
+                <X aria-hidden="true" size={17} />
+              </button>
+            </div>
+            {creating ? (
+              <form className="project-picker-create" onSubmit={create}>
+                <input
+                  aria-label="New project name"
+                  autoFocus
+                  maxLength={120}
+                  onChange={changeName}
+                  placeholder="Project name"
+                  value={name}
+                />
+                <button
+                  aria-label="Create project"
+                  disabled={!name.trim() || disabled}
+                  type="submit"
+                >
+                  <Check aria-hidden="true" size={16} />
+                </button>
+                <button
+                  aria-label="Cancel project creation"
+                  onClick={cancelCreate}
+                  type="button"
+                >
+                  <X aria-hidden="true" size={16} />
+                </button>
+              </form>
+            ) : (
+              <button
+                className="project-picker-option"
+                disabled={disabled}
+                onClick={beginCreate}
+                type="button"
+              >
+                <FolderPlus aria-hidden="true" size={16} />
+                <span>New project</span>
+              </button>
+            )}
+            <div
+              aria-label="Projects"
+              className="project-picker-list"
+              role="listbox"
+            >
+              {shown.map((project) => (
+                <button
+                  aria-selected={project.projectId === projectId}
+                  className="project-picker-option"
+                  key={project.projectId}
+                  onClick={choose}
+                  role="option"
+                  type="button"
+                  value={project.projectId}
+                >
+                  <Folder aria-hidden="true" size={16} />
+                  <span>{project.name}</span>
+                  {project.projectId === projectId && (
+                    <Check aria-hidden="true" size={16} />
+                  )}
+                </button>
+              ))}
+              {shown.length === 0 && (
+                <p className="project-picker-empty">No matching projects</p>
+              )}
+            </div>
+            <button
+              className="project-picker-option project-picker-none"
+              onClick={choose}
+              type="button"
+              value=""
+            >
+              <X aria-hidden="true" size={16} />
+              <span>Don’t work in a project</span>
+              {!projectId && <Check aria-hidden="true" size={16} />}
+            </button>
+          </div>,
+          document.body
+        )}
+    </div>
+  );
 }
 
 /** How long a recording may run before it stops itself. */
@@ -407,6 +655,11 @@ export function Composer({
   limit,
   listFiles,
   model,
+  onCreateProject,
+  onProjectSelect,
+  projectId,
+  projectPickerDisabled,
+  projects,
   onChange,
   onKeyDown,
   onSubmit,
@@ -577,7 +830,13 @@ export function Composer({
 
             <PromptInputFooter className="prompt-bottom">
               <PromptInputTools className="prompt-chips">
-                <span className="prompt-chip">Agent</span>
+                <ProjectPicker
+                  disabled={projectPickerDisabled}
+                  onCreateProject={onCreateProject}
+                  onSelect={onProjectSelect}
+                  projectId={projectId}
+                  projects={projects}
+                />
                 <button
                   className="prompt-chip is-button"
                   onClick={toggleNotes}
@@ -623,6 +882,7 @@ export function Composer({
         <ComposerHint
           error={attachmentError || voice.error}
           pending={pending}
+          projectSelected={projectId.length > 0}
           recording={voice.recording}
           transcribing={voice.transcribing}
         />

@@ -32,6 +32,7 @@ import {
 } from "./routes/artifacts";
 import {
   AUTH_CALLBACK_PATH,
+  AUTH_PROFILE_PATH,
   AUTH_SESSION_PATH,
   createAuthHandlers,
   MAGIC_LINKS_PATH,
@@ -49,6 +50,8 @@ import {
 import {
   createOrganizationHandlers,
   ORGANIZATION_COLLECTION_PATH,
+  ORGANIZATION_ITEM_PATH,
+  ORGANIZATION_USAGE_PATH,
 } from "./routes/organizations";
 import {
   BUILD_SESSION_PREVIEW_PATH,
@@ -81,6 +84,7 @@ import {
  * request failure rather than a silent fallback to different storage.
  */
 let projectStateStore: ProjectStateStore | undefined;
+let projectStateMigration: Promise<void> | undefined;
 
 function stateStore(): ProjectStateStore {
   if (projectStateStore) {
@@ -99,6 +103,16 @@ function stateStore(): ProjectStateStore {
     sessionIdleTtlMs: SESSION_IDLE_TTL_MS,
   });
   return projectStateStore;
+}
+
+function migrateProjectState(): Promise<void> {
+  projectStateMigration ??= stateStore()
+    .migrate()
+    .catch((error: unknown) => {
+      projectStateMigration = undefined;
+      throw error;
+    });
+  return projectStateMigration;
 }
 
 /**
@@ -205,6 +219,14 @@ const csrfMiddleware = createCsrfMiddleware({
   origins: allowedOrigins,
   sessions: () => stateStore().sessions,
 });
+
+const projectStateMigrationMiddleware = {
+  handler: async (_context: unknown, next: () => Promise<void>) => {
+    await migrateProjectState();
+    await next();
+  },
+  path: "/v1/*",
+};
 
 const buildSessionHandlers = createBuildSessionHandlers({
   resolvePrincipal: resolvePrincipalFrom,
@@ -517,6 +539,25 @@ export const mastra = new Mastra({
           tags: ["Identity"],
         },
       }),
+      registerApiRoute(AUTH_PROFILE_PATH, {
+        handler: (c) => authHandlers.readProfile(c),
+        method: "GET",
+        openapi: {
+          description:
+            "Reads the authenticated caller's own account profile without exposing account data to other principals.",
+          summary: "Read account profile",
+          tags: ["Identity"],
+        },
+      }),
+      registerApiRoute(AUTH_PROFILE_PATH, {
+        handler: (c) => authHandlers.updateProfile(c),
+        method: "PATCH",
+        openapi: {
+          description: "Updates the authenticated caller's display name.",
+          summary: "Update account profile",
+          tags: ["Identity"],
+        },
+      }),
       registerApiRoute(AUTH_SESSION_PATH, {
         handler: (c) => authHandlers.signOut(c),
         method: "DELETE",
@@ -537,6 +578,26 @@ export const mastra = new Mastra({
           tags: ["Tenancy"],
         },
       }),
+      registerApiRoute(ORGANIZATION_ITEM_PATH, {
+        handler: (c) => organizationHandlers.rename(c),
+        method: "PATCH",
+        openapi: {
+          description:
+            "Renames an organization after centralized authorization and records the change in the audit ledger.",
+          summary: "Rename a workspace",
+          tags: ["Tenancy"],
+        },
+      }),
+      registerApiRoute(ORGANIZATION_USAGE_PATH, {
+        handler: (c) => organizationHandlers.usage(c),
+        method: "GET",
+        openapi: {
+          description:
+            "Reads the authorized organization's current plan entitlements and metered usage.",
+          summary: "Read plan and usage",
+          tags: ["Tenancy"],
+        },
+      }),
       registerApiRoute(PROJECT_COLLECTION_PATH, {
         handler: (c) => projectHandlers.list(c),
         method: "GET",
@@ -554,7 +615,11 @@ export const mastra = new Mastra({
     ],
     // The built-in route denials come first; every product command then passes
     // the CSRF and origin check before its handler runs.
-    middleware: [...serverMiddleware, csrfMiddleware],
+    middleware: [
+      ...serverMiddleware,
+      projectStateMigrationMiddleware,
+      csrfMiddleware,
+    ],
   },
   storage,
 });

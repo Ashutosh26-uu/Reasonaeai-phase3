@@ -448,11 +448,11 @@ export function ActivityOutline({ tool }: { tool: ToolEntry }) {
         <span className="activity-main">
           <span className="activity-title-row">
             <span className="activity-title">{title}</span>
+            {!delegated && detail && (
+              <span className="activity-summary">{detail}</span>
+            )}
             {delegated && <span className="activity-agent-type">{role}</span>}
           </span>
-          {!delegated && detail && (
-            <span className="activity-summary">{detail}</span>
-          )}
         </span>
         {delegated && children.length > 0 && (
           <span className="activity-count">

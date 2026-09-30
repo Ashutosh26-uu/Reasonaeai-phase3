@@ -116,6 +116,14 @@ Agents, workers, and sandboxes are workload principals, not users. They receive 
 
 Passkeys, MFA, recovery codes, enterprise SSO, domain verification, and SCIM are approved product direction but are sequenced in [`FUTURE.md`](./FUTURE.md) unless promoted into the active phase.
 
+### Account and workspace settings
+
+- Users can edit their account display name; the verified sign-in email remains managed by the identity flow.
+- Appearance offers System, Light, and Dark themes, saved as a browser-local preference.
+- Workspace settings show the member's role, project count, current enforced plan, and metered usage against that plan's entitlements. Until billing assigns plans, the documented default plan is authoritative and the interface must identify billing and plan changes as unavailable.
+- Workspace renaming is available only to owners and admins and is authorized centrally and audited. Other workspace settings are read-only unless a corresponding authorized save operation exists.
+- Security settings show the current session's idle and absolute expiry and allow that session to be revoked. Device/session management and stronger authentication controls remain deferred until their server contracts exist.
+
 ## Secrets
 
 - Secrets are encrypted at rest through a managed key system in production.

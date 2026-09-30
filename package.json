@@ -6,6 +6,7 @@
   "scripts": {
     "build": "turbo run build",
     "check": "ultracite check",
+    "dev": "node --env-file-if-exists=apps/api/.env node_modules/turbo/bin/turbo run dev --filter=@reasonateai/api --filter=@reasonateai/worker --filter=@reasonateai/web --env-mode=loose",
     "fix": "ultracite fix",
     "prepare": "lefthook install",
     "test": "turbo run test",

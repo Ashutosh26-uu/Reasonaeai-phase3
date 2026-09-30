@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  type AccountProfile,
+  AccountProfileSchema,
   ProjectListSchema,
   type ProjectSummary,
   ProjectViewSchema,
@@ -312,6 +314,62 @@ function readRoute() {
   };
 }
 
+function hasWorkspaceScope(
+  organizationId: string,
+  projectId: string,
+  conversationId: string
+): boolean {
+  return Boolean(organizationId && projectId && conversationId);
+}
+
+function useAccountProfile() {
+  const [profile, setProfile] = useState<AccountProfile | null>(null);
+
+  useEffect(() => {
+    request("/v1/auth/profile", AccountProfileSchema.parse)
+      .then(setProfile)
+      .catch(() => setProfile(null));
+  }, []);
+
+  return [profile, setProfile] as const;
+}
+
+function useRunSettlement({
+  loadConversations,
+  loadHistory,
+  setNotice,
+}: {
+  loadConversations: () => Promise<ConversationSummary[]>;
+  loadHistory: () => Promise<void>;
+  setNotice: Dispatch<SetStateAction<string>>;
+}) {
+  return useCallback(
+    async (buildSessionId: string, runId: string): Promise<void> => {
+      const settle = async (attempt: number): Promise<void> => {
+        const [items] = await Promise.all([loadConversations(), loadHistory()]);
+        const stillRunning = items.some(
+          (item) =>
+            item.buildSessionId === buildSessionId &&
+            item.pendingRunId === runId
+        );
+        if (!stillRunning) {
+          return;
+        }
+        if (attempt === 9) {
+          setNotice(
+            "The run finished, but its status has not settled yet. Refresh to read it."
+          );
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        await settle(attempt + 1);
+      };
+      await settle(0);
+    },
+    [loadConversations, loadHistory, setNotice]
+  );
+}
+
 function writeRoute(
   projectId: string,
   conversationId: string,
@@ -342,6 +400,51 @@ export interface WorkspaceProps {
   session: SessionView;
 }
 
+function ConversationHeader({
+  conversationId,
+  heading,
+  onOpenPanel,
+  onRefresh,
+  projectName,
+  selectedProject,
+  working,
+}: {
+  conversationId: string;
+  heading: string;
+  onOpenPanel: () => void;
+  onRefresh: () => void;
+  projectName: string;
+  selectedProject: boolean;
+  working: boolean;
+}) {
+  return (
+    <header className="pane-head">
+      <div className="pane-titles">
+        <div className="pane-title">{heading}</div>
+        <div className="pane-meta">
+          <span>{projectName}</span>
+          <span aria-hidden="true">·</span>
+          <span data-state={working ? "working" : "ready"}>
+            {working ? "Working" : "Ready"}
+          </span>
+        </div>
+      </div>
+      <div className="pane-tools">
+        {selectedProject && (
+          <button className="pane-button" onClick={onRefresh} type="button">
+            <RefreshCw size={14} /> Refresh
+          </button>
+        )}
+        {selectedProject && conversationId.length > 0 && (
+          <button className="pane-button" onClick={onOpenPanel} type="button">
+            <PanelRight size={14} /> Workspace
+          </button>
+        )}
+      </div>
+    </header>
+  );
+}
+
 /**
  * The open workspace: the rail, the conversation, and the workspace panel.
  *
@@ -356,6 +459,8 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [projectName, setProjectName] = useState("");
+  const [organizations, setOrganizations] = useState(session.organizations);
+  const [accountProfile, setAccountProfile] = useAccountProfile();
   const [organizationId, setOrganizationId] = useState(
     initialOrganizationId(session)
   );
@@ -458,7 +563,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   );
 
   const loadHistory = useCallback(async () => {
-    if (!(organizationId && projectId && conversationId)) {
+    if (!hasWorkspaceScope(organizationId, projectId, conversationId)) {
       setMessages([]);
       return;
     }
@@ -542,31 +647,11 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
    * The terminal ledger event is written just before the run's status commits,
    * so the authoritative status is re-read until it agrees that the run ended.
    */
-  const settle = useCallback(
-    async (
-      buildSessionId: string,
-      runId: string,
-      attempt = 0
-    ): Promise<void> => {
-      const [items] = await Promise.all([loadConversations(), loadHistory()]);
-      const stillRunning = items.some(
-        (item) =>
-          item.buildSessionId === buildSessionId && item.pendingRunId === runId
-      );
-      if (!stillRunning) {
-        return;
-      }
-      if (attempt === 9) {
-        setNotice(
-          "The run finished, but its status has not settled yet. Refresh to read it."
-        );
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      await settle(buildSessionId, runId, attempt + 1);
-    },
-    [loadConversations, loadHistory]
-  );
+  const settle = useRunSettlement({
+    loadConversations,
+    loadHistory,
+    setNotice,
+  });
 
   const onEnded = useCallback(() => {
     if (!(conversationId && pendingRunId)) {
@@ -732,9 +817,11 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     [organizationId, projectId]
   );
 
-  const createProject = useCallback(
-    async (event: React.FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
+  const createProjectNamed = useCallback(
+    async (name: string): Promise<boolean> => {
+      if (!(organizationId && name.trim())) {
+        return false;
+      }
       setSubmitting(true);
       setError("");
       try {
@@ -742,7 +829,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
           "/v1/projects",
           (value) => ProjectViewSchema.parse(value).projectId,
           {
-            body: JSON.stringify({ name: projectName.trim(), organizationId }),
+            body: JSON.stringify({ name: name.trim(), organizationId }),
             method: "POST",
           }
         );
@@ -752,21 +839,29 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
         setMessages([]);
         setProjectName("");
         setPanelOpen(false);
+        writeRoute(created, "");
+        return true;
       } catch (cause) {
         setError(describeError(cause, "Could not create the project."));
+        return false;
       } finally {
         setSubmitting(false);
       }
     },
-    [loadProjects, organizationId, projectName]
+    [loadProjects, organizationId]
+  );
+
+  const createProject = useCallback(
+    async (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      await createProjectNamed(projectName);
+    },
+    [createProjectNamed, projectName]
   );
 
   const signOut = useCallback(async () => {
-    try {
-      await request("/v1/auth/session", (value) => value, { method: "DELETE" });
-    } finally {
-      onSignedOut();
-    }
+    await request("/v1/auth/session", (value) => value, { method: "DELETE" });
+    onSignedOut();
   }, [onSignedOut]);
 
   const updateProjectName = useCallback(
@@ -842,8 +937,15 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   const openSettings = useCallback(() => setSettingsOpen(true), []);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
   const renameOrganization = useCallback(
-    () => loadProjects().catch(() => undefined),
-    [loadProjects]
+    (name: string) => {
+      setOrganizations((current) =>
+        current.map((item) =>
+          item.organizationId === organizationId ? { ...item, name } : item
+        )
+      );
+      loadProjects().catch(() => undefined);
+    },
+    [loadProjects, organizationId]
   );
 
   const selectStarter = useCallback(
@@ -861,7 +963,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
    * they guessed at.
    */
   const listFiles = useCallback(async (): Promise<string[]> => {
-    if (!(organizationId && projectId && conversationId)) {
+    if (!hasWorkspaceScope(organizationId, projectId, conversationId)) {
       return [];
     }
     const tree = await request(
@@ -884,7 +986,9 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       listFiles={listFiles}
       model={MODEL}
       onChange={updateDraft}
+      onCreateProject={createProjectNamed}
       onKeyDown={promptKeyDown}
+      onProjectSelect={selectProject}
       onStop={stopRun}
       onSubmit={submitMessage}
       onTranscribe={transcribe}
@@ -894,6 +998,9 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
           ? "Describe the product, or the change you want next…"
           : "Choose a project first…"
       }
+      projectId={projectId}
+      projectPickerDisabled={working || submitting}
+      projects={projects}
       stopping={stoppingRunId === pendingRunId}
     />
   );
@@ -903,8 +1010,11 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     active?.title ?? (conversationId ? "Conversation" : "New conversation");
   const project = projects.find((item) => item.projectId === projectId);
   const organizationName =
-    session.organizations.find((item) => item.organizationId === organizationId)
+    organizations.find((item) => item.organizationId === organizationId)
       ?.name ?? "This workspace";
+  const organizationRole =
+    organizations.find((item) => item.organizationId === organizationId)
+      ?.role ?? "viewer";
   const showWorkspacePanel = hasVisibleWorkspacePanel(
     panelOpen,
     conversationId
@@ -913,6 +1023,8 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   return (
     <div className="app">
       <Rail
+        accountEmail={accountProfile?.email ?? ""}
+        accountName={accountProfile?.displayName ?? ""}
         conversationId={conversationId}
         conversationsByProject={conversationsByProject}
         draftProjectName={projectName}
@@ -928,7 +1040,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
         onSettings={openSettings}
         onSignOut={signOut}
         organizationId={organizationId}
-        organizations={session.organizations}
+        organizations={organizations}
         projectId={projectId}
         projects={projects}
         submitting={submitting}
@@ -941,38 +1053,15 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
         style={{ "--workspace-panel-width": `${panelWidth}%` } as CSSProperties}
       >
         <main className="pane">
-          <header className="pane-head">
-            <div className="pane-titles">
-              <div className="pane-title">{heading}</div>
-              <div className="pane-meta">
-                <span>{project?.name ?? "No project selected"}</span>
-                <span aria-hidden="true">·</span>
-                <span data-state={working ? "working" : "ready"}>
-                  {working ? "Working" : "Ready"}
-                </span>
-              </div>
-            </div>
-            <div className="pane-tools">
-              {selectedProject && (
-                <button
-                  className="pane-button"
-                  onClick={refreshConversation}
-                  type="button"
-                >
-                  <RefreshCw size={14} /> Refresh
-                </button>
-              )}
-              {selectedProject && conversationId.length > 0 && (
-                <button
-                  className="pane-button"
-                  onClick={openPanel}
-                  type="button"
-                >
-                  <PanelRight size={14} /> Workspace
-                </button>
-              )}
-            </div>
-          </header>
+          <ConversationHeader
+            conversationId={conversationId}
+            heading={heading}
+            onOpenPanel={openPanel}
+            onRefresh={refreshConversation}
+            projectName={project?.name ?? "No project selected"}
+            selectedProject={selectedProject}
+            working={working}
+          />
 
           {error.length > 0 && (
             <div className="banner is-error" role="alert">
@@ -1041,9 +1130,14 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       {settingsOpen && (
         <Settings
           onClose={closeSettings}
+          onProfileUpdated={setAccountProfile}
           onRenamed={renameOrganization}
+          onSignOut={signOut}
           organizationId={organizationId}
           organizationName={organizationName}
+          organizationRole={organizationRole}
+          projectCount={projects.length}
+          session={session}
         />
       )}
     </div>

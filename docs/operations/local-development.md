@@ -64,8 +64,18 @@ docker rm reasonate-pg reasonate-redis
 
 ## Commands
 
+Start the web app, API, and worker together from the repository root. The
+command loads `apps/api/.env` when present, streams each service's logs in the
+terminal, and Ctrl+C stops all three processes. PostgreSQL and Redis must be
+running first.
+
+```powershell
+pnpm dev
+```
+
 | Command | Purpose |
 | --- | --- |
+| `pnpm dev` | Run the web app on port 3219, the API on port 4111, and the worker together |
 | `pnpm install --frozen-lockfile` | Install exactly what the lockfile pins |
 | `pnpm check` | Formatting and linting across the repository |
 | `pnpm fix` | Apply safe formatting and lint fixes |

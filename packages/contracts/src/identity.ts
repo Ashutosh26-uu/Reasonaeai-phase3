@@ -149,6 +149,7 @@ export const AuditActionSchema = z.enum([
   "identity.session_revoked",
   "organization.created",
   "organization.membership_changed",
+  "organization.updated",
   "project.created",
   "authorization.denied",
   "capability.issued",

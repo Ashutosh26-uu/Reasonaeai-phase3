@@ -11,8 +11,11 @@ export const AUTH_SESSION_MIGRATION_SQL = `
 create table if not exists users (
   user_id uuid primary key,
   primary_email text,
+  display_name text,
   created_at timestamptz not null default now()
 );
+
+alter table users add column if not exists display_name text;
 
 create table if not exists auth_sessions (
   session_id uuid primary key,
