@@ -357,6 +357,114 @@ describeWithDatabase("build session routes", () => {
     ).toHaveLength(1);
   });
 
+  it("accepts an ask_user answer only from an authorized builder and keeps it out of events", async () => {
+    const allocated = await handlers.allocate(
+      allocationRequest({ idempotencyKey: `answer-${randomUUID()}` })
+    );
+    expect(allocated.status).toBe(202);
+    const { buildSession } = await allocated.json();
+    const scope = { organizationId, projectId };
+    const lease = await store.beginRun({
+      holder: "answer-route-test",
+      runId: buildSession.runId,
+      ttlMs: 60_000,
+    });
+    expect(lease).toBeDefined();
+    await store.appendRunEvent({
+      payload: {
+        kind: "tool_suspended",
+        suspendPayload: { question: "Which region?" },
+        toolCallId: "ask-1",
+        toolName: "ask_user",
+      },
+      runId: buildSession.runId,
+      scope,
+      type: "approval.requested",
+    });
+    const params = {
+      buildSessionId: buildSession.buildSessionId,
+      runId: buildSession.runId,
+    };
+    const query = scope;
+    const answerBody = { answer: "Europe", toolCallId: "ask-1" };
+    expect(
+      (
+        await handlers.answerRun(
+          context({
+            body: answerBody,
+            cookie: await issueCookie(viewerUserId),
+            params,
+            query,
+          })
+        )
+      ).status
+    ).toBe(403);
+    expect(
+      (
+        await handlers.answerRun(
+          context({
+            body: answerBody,
+            cookie: ownerCookie,
+            params,
+            query: {
+              organizationId: foreignOrganizationId,
+              projectId: foreignProjectId,
+            },
+          })
+        )
+      ).status
+    ).toBe(403);
+    expect(
+      (
+        await handlers.answerRun(
+          context({ body: answerBody, cookie: ownerCookie, params, query })
+        )
+      ).status
+    ).toBe(202);
+    expect(
+      (
+        await handlers.answerRun(
+          context({ body: answerBody, cookie: ownerCookie, params, query })
+        )
+      ).status
+    ).toBe(202);
+    expect(
+      (
+        await handlers.answerRun(
+          context({
+            body: { answer: "Asia", toolCallId: "ask-1" },
+            cookie: ownerCookie,
+            params,
+            query,
+          })
+        )
+      ).status
+    ).toBe(409);
+    expect(
+      await store.takeRunAnswer({
+        runId: buildSession.runId,
+        scope,
+        toolCallId: "ask-1",
+      })
+    ).toBe("Europe");
+    const events = await store.listRunEvents({
+      afterSequence: 0,
+      limit: 20,
+      runId: buildSession.runId,
+      scope,
+    });
+    expect(
+      events.filter((event) => event.type === "approval.resolved")
+    ).toHaveLength(1);
+    expect(JSON.stringify(events)).not.toContain("Europe");
+    await store.finishRun({
+      holder: "answer-route-test",
+      leaseId: lease?.leaseId ?? "",
+      runId: buildSession.runId,
+      status: "succeeded",
+    });
+  });
+
   it("denies a member whose role lacks the capability", async () => {
     const response = await handlers.allocate(
       context({

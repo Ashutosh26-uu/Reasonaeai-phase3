@@ -4,7 +4,15 @@ import type { PromptAttachment } from "@reasonateai/contracts/execution";
 import type { RunEventEnvelope } from "@reasonateai/contracts/execution-protocol";
 import { type RunId, UserIdSchema } from "@reasonateai/contracts/identity";
 import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { createStopSignal } from "../src/stop-signal.js";
 import {
   allocateRunFixture,
@@ -144,6 +152,76 @@ describeWithDatabase("run execution", () => {
     session.complete([{ reason: "complete", type: "agent_end" }]);
 
     expect(await attempt).toBe("succeeded");
+  });
+
+  it("keeps a suspended ask_user run leased, then resumes the same session with the answer", async () => {
+    const scripted = scriptedRuntime({
+      events: [
+        {
+          message: streamed("partial-answer", "I need one detail."),
+          type: "message_update",
+        },
+      ],
+    });
+    const executor = createExecutor({
+      harness,
+      holder: "worker-question",
+      runtime: scripted.runtime,
+    });
+    const allocated = await fixture("Choose a region");
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+    session.complete([
+      {
+        args: { question: "Which region?" },
+        resumeSchema: "string",
+        suspendPayload: { question: "Which region?" },
+        toolCallId: "ask-1",
+        toolName: "ask_user",
+        type: "tool_suspended",
+      },
+      { reason: "suspended", type: "agent_end" },
+    ]);
+    await vi.waitFor(async () => {
+      expect(await runStatus(harness, allocated)).toBe("awaiting_approval");
+    });
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeDefined();
+    expect(await containerCount(allocated.volume)).toBe(1);
+    expect(
+      (
+        await harness.store.listConversationMessages({
+          buildSessionId: allocated.buildSessionId,
+          scope: allocated.scope,
+        })
+      ).some((message) => message.text === "I need one detail.")
+    ).toBe(true);
+    const runnables = await harness.store.listRunnableRuns({ limit: 64 });
+    expect(
+      runnables.some((run) => run.runId === allocated.candidate.runId)
+    ).toBe(false);
+    expect(
+      await harness.store.answerRunQuestion({
+        answer: "Europe",
+        buildSessionId: allocated.buildSessionId,
+        requestedByUserId: UserIdSchema.parse(randomUUID()),
+        runId: allocated.candidate.runId,
+        scope: allocated.scope,
+        toolCallId: "ask-1",
+      })
+    ).toBe("accepted");
+    await vi.waitFor(
+      () => {
+        expect(session.lastResumeData).toBe("Europe");
+      },
+      { timeout: 3000 }
+    );
+    expect(session.lastResumedToolCallId).toBe("ask-1");
+    session.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await attempt).toBe("succeeded");
+    expect(await runStatus(harness, allocated)).toBe("completed");
+    expect(session.sendCalls).toBe(1);
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeUndefined();
   });
 
   it("publishes the text its agent streams as live deltas, and the ledger keeps the message", async () => {

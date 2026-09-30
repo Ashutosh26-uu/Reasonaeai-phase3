@@ -291,6 +291,14 @@ export interface ProjectStateStore {
     scope: TenantScope;
     userSessionId: SessionId;
   }) => Promise<BuildSessionAllocation>;
+  answerRunQuestion: (input: {
+    answer: string;
+    buildSessionId: BuildSessionId;
+    requestedByUserId: UserId;
+    runId: RunId;
+    scope: TenantScope;
+    toolCallId: string;
+  }) => Promise<"accepted" | "replayed" | "conflict">;
   appendConversationTurn: (input: {
     attachments?: PromptAttachment[];
     buildSessionId: BuildSessionId;
@@ -484,6 +492,11 @@ export interface ProjectStateStore {
     scope: TenantScope;
     status: RunStatus;
   }) => Promise<boolean>;
+  takeRunAnswer: (input: {
+    runId: RunId;
+    scope: TenantScope;
+    toolCallId: string;
+  }) => Promise<string | undefined>;
   usage: UsageRepository;
   users: UserRepository;
 }
@@ -817,7 +830,7 @@ export function createProjectStateStore(config: {
       const active = await client.query(
         `select 1 from runs where build_session_id = $1
           and organization_id = $2 and project_id = $3
-          and status in ('queued', 'running') limit 1`,
+          and status in ('queued', 'running', 'awaiting_approval') limit 1`,
         [
           input.buildSessionId,
           input.scope.organizationId,
@@ -892,7 +905,9 @@ export function createProjectStateStore(config: {
         createdAt: asIso(row.created_at as Date),
         latestRunId: row.run_id,
         pendingRunId:
-          row.run_status === "queued" || row.run_status === "running"
+          row.run_status === "queued" ||
+          row.run_status === "running" ||
+          row.run_status === "awaiting_approval"
             ? row.run_id
             : null,
         status: row.status,
@@ -971,9 +986,119 @@ export function createProjectStateStore(config: {
     scope: TenantScope;
     type: RunEventType;
   }): Promise<RunEventEnvelope> {
-    return await withTransaction(
-      async (client) => await insertRunEvent(client, input)
-    );
+    return await withTransaction(async (client) => {
+      if (
+        input.type === "approval.requested" &&
+        input.payload.kind === "tool_suspended" &&
+        input.payload.toolName === "ask_user" &&
+        typeof input.payload.toolCallId === "string"
+      ) {
+        const updated = await client.query(
+          `update runs set status = 'awaiting_approval',
+             pending_tool_call_id = $4, pending_answer = null,
+             pending_answered_by = null, updated_at = now()
+           where run_id = $1 and organization_id = $2 and project_id = $3
+             and status = 'running'`,
+          [
+            input.runId,
+            input.scope.organizationId,
+            input.scope.projectId,
+            input.payload.toolCallId,
+          ]
+        );
+        if (updated.rowCount !== 1) {
+          throw new Error("The run cannot be suspended for this question.");
+        }
+      }
+      return await insertRunEvent(client, input);
+    });
+  }
+
+  async function answerRunQuestion(input: {
+    answer: string;
+    buildSessionId: BuildSessionId;
+    requestedByUserId: UserId;
+    runId: RunId;
+    scope: TenantScope;
+    toolCallId: string;
+  }): Promise<"accepted" | "replayed" | "conflict"> {
+    return await withTransaction(async (client) => {
+      const result = await client.query<{
+        pending_answer: string | null;
+        pending_tool_call_id: string | null;
+        status: RunStatus;
+      }>(
+        `select status, pending_tool_call_id, pending_answer from runs
+          where run_id = $1 and organization_id = $2 and project_id = $3
+            and build_session_id = $4 for update`,
+        [
+          input.runId,
+          input.scope.organizationId,
+          input.scope.projectId,
+          input.buildSessionId,
+        ]
+      );
+      const [run] = result.rows;
+      if (
+        run?.status !== "awaiting_approval" ||
+        run.pending_tool_call_id !== input.toolCallId
+      ) {
+        return "conflict";
+      }
+      if (run.pending_answer !== null) {
+        return run.pending_answer === input.answer ? "replayed" : "conflict";
+      }
+      await client.query(
+        `update runs set pending_answer = $2, pending_answered_by = $3,
+           updated_at = now() where run_id = $1`,
+        [input.runId, input.answer, input.requestedByUserId]
+      );
+      await insertRunEvent(client, {
+        payload: {
+          kind: "answer_submitted",
+          requestedByUserId: input.requestedByUserId,
+          toolCallId: input.toolCallId,
+        },
+        runId: input.runId,
+        scope: input.scope,
+        type: "approval.resolved",
+      });
+      return "accepted";
+    });
+  }
+
+  async function takeRunAnswer(input: {
+    runId: RunId;
+    scope: TenantScope;
+    toolCallId: string;
+  }): Promise<string | undefined> {
+    return await withTransaction(async (client) => {
+      const values = [
+        input.runId,
+        input.scope.organizationId,
+        input.scope.projectId,
+        input.toolCallId,
+      ];
+      const result = await client.query<{ pending_answer: string }>(
+        `select pending_answer from runs
+          where run_id = $1 and organization_id = $2 and project_id = $3
+            and status = 'awaiting_approval' and pending_tool_call_id = $4
+            and pending_answer is not null and cancellation_requested_at is null
+          for update`,
+        values
+      );
+      const answer = result.rows[0]?.pending_answer;
+      if (answer === undefined) {
+        return;
+      }
+      await client.query(
+        `update runs set status = 'running', pending_tool_call_id = null,
+           pending_answer = null, pending_answered_by = null, updated_at = now()
+         where run_id = $1`,
+        [input.runId]
+      );
+      return answer;
+    });
   }
 
   async function requestRunCancellation(input: {
@@ -1075,6 +1200,7 @@ export function createProjectStateStore(config: {
           and se.organization_id = r.organization_id
           and se.project_id = r.project_id
         where r.status <> all($2::text[])
+          and r.status <> 'awaiting_approval'
           and not exists (
             select 1
               from run_leases lease
@@ -1178,7 +1304,7 @@ export function createProjectStateStore(config: {
       }
       const competing = await client.query(
         `select 1 from runs where organization_id = $1 and project_id = $2
-          and run_id <> $3 and status = 'running' limit 1`,
+          and run_id <> $3 and status in ('running', 'awaiting_approval') limit 1`,
         [projectRow.organization_id, projectRow.project_id, input.runId]
       );
       if (competing.rowCount !== 0) {
@@ -1192,6 +1318,7 @@ export function createProjectStateStore(config: {
            from runs r
           where r.run_id = $1::uuid
             and r.status <> all($5::text[])
+            and r.status <> 'awaiting_approval'
          on conflict (run_id) do update
             set lease_id = excluded.lease_id,
                 holder = excluded.holder,
@@ -1205,6 +1332,7 @@ export function createProjectStateStore(config: {
          from claimed
         where runs.run_id = $1::uuid
           and runs.status <> all($5::text[])
+          and runs.status <> 'awaiting_approval'
        returning claimed.lease_id, claimed.expires_at`,
         [
           input.runId,
@@ -1871,6 +1999,7 @@ export function createProjectStateStore(config: {
 
   return {
     allocateBuildSession,
+    answerRunQuestion,
     appendConversationTurn,
     appendRunEvent,
     audit,
@@ -1949,6 +2078,7 @@ export function createProjectStateStore(config: {
     requestRunCancellation,
     sessions,
     setRunStatus,
+    takeRunAnswer,
     usage,
     users,
   };

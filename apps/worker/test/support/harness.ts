@@ -273,6 +273,8 @@ export interface SessionScript {
 export class ScriptedSession implements RunSession {
   aborted = false;
   lastMessage: string | undefined;
+  lastResumeData: string | undefined;
+  lastResumedToolCallId: string | undefined;
   lastFiles: SessionSendInput["files"];
   readonly events: AgentControllerEvent[];
   readonly started: Promise<void>;
@@ -326,6 +328,18 @@ export class ScriptedSession implements RunSession {
     }
     this.#markStarted();
 
+    return new Promise<void>((resolve, reject) => {
+      this.#finish = resolve;
+      this.#fail = reject;
+    });
+  };
+
+  resumeToolCall = (input: {
+    resumeData: string;
+    toolCallId: string;
+  }): Promise<void> => {
+    this.lastResumeData = input.resumeData;
+    this.lastResumedToolCallId = input.toolCallId;
     return new Promise<void>((resolve, reject) => {
       this.#finish = resolve;
       this.#fail = reject;

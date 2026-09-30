@@ -45,6 +45,7 @@ import {
   CONVERSATION_TURNS_PATH,
   createBuildSessionHandlers,
   PROJECT_CONVERSATIONS_PATH,
+  RUN_ANSWER_PATH,
   RUN_CANCELLATION_PATH,
 } from "./routes/build-sessions";
 import {
@@ -344,6 +345,10 @@ export const mastra = new Mastra({
       }),
       registerApiRoute(CONVERSATION_TURNS_PATH, {
         handler: (c) => buildSessionHandlers.appendTurn(c),
+        method: "POST",
+      }),
+      registerApiRoute(RUN_ANSWER_PATH, {
+        handler: (c) => buildSessionHandlers.answerRun(c),
         method: "POST",
       }),
       registerApiRoute(RUN_CANCELLATION_PATH, {

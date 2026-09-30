@@ -136,6 +136,13 @@ export class RunLiveEventMapper {
     };
   }
 
+  /** The exact partial text to persist before parking on a user question. */
+  snapshots(): MessageSnapshot[] {
+    return [...this.#messages.values()].filter(
+      (snapshot) => !snapshot.finished
+    );
+  }
+
   /** Seal partial content even if the controller never emits message_end. */
   finish(at = new Date()): RunLiveEvent[] {
     const frames: RunLiveEvent[] = [];

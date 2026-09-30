@@ -204,6 +204,7 @@ export class RunExecutor {
    * Drives the session: subscribe, send the run's directive, and stop the step
    * the moment the lease is lost or the process is told to shut down.
    */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: lease, cancellation, event persistence, and suspension must share one run lifecycle
   async #drive(input: {
     fields: LogFields;
     lease: { expiresAt: Date; leaseId: string };
@@ -218,6 +219,7 @@ export class RunExecutor {
     const { fields, scope } = input;
 
     let failure: FailureDescription | undefined;
+    let pendingQuestion: string | undefined;
     let stop: StopRequest | undefined;
     let settleStop: ((request: StopRequest) => void) | undefined;
     const stopRequested = new Promise<StopRequest>((resolve) => {
@@ -285,6 +287,9 @@ export class RunExecutor {
     const live = new RunLiveEventMapper({ scope });
     const unsubscribeEvents = input.session.subscribe((event) => {
       const at = new Date();
+      if (event.type === "tool_suspended" && event.toolName === "ask_user") {
+        pendingQuestion = event.toolCallId;
+      }
       if (
         event.type !== "message_start" &&
         event.type !== "message_update" &&
@@ -339,6 +344,51 @@ export class RunExecutor {
     keeper.start();
     try {
       await Promise.race([sending, stopRequested]);
+      if (pendingQuestion) {
+        for (const snapshot of live.snapshots()) {
+          appends.pushSnapshot(snapshot, new Date(), true);
+        }
+      }
+      await appends.drain();
+      while (stop === undefined && failure === undefined && pendingQuestion) {
+        const toolCallId = pendingQuestion;
+        logger.info("run.question.waiting", { ...fields, toolCallId });
+        let answer: string | undefined;
+        while (stop === undefined && answer === undefined) {
+          // biome-ignore lint/performance/noAwaitInLoops: the worker must wait for this answer before resuming the controller
+          await Promise.race([
+            new Promise<void>((resolve) => setTimeout(resolve, 500)),
+            stopRequested,
+          ]);
+          if (stop === undefined) {
+            answer = await store.takeRunAnswer({
+              runId: scope.runId,
+              scope,
+              toolCallId,
+            });
+          }
+        }
+        if (stop !== undefined || answer === undefined) {
+          break;
+        }
+        pendingQuestion = undefined;
+        logger.info("run.question.resuming", { ...fields, toolCallId });
+        const resuming = input.session.resumeToolCall({
+          requestContext: input.requestContext,
+          resumeData: answer,
+          toolCallId,
+        });
+        await Promise.race([resuming, stopRequested]);
+        if (stop === undefined) {
+          await resuming;
+          if (pendingQuestion) {
+            for (const snapshot of live.snapshots()) {
+              appends.pushSnapshot(snapshot, new Date(), true);
+            }
+          }
+          await appends.drain();
+        }
+      }
       if (stop !== undefined) {
         const settled = await settleWithin(sending, config.stopGraceMs);
         if (!settled) {
@@ -391,6 +441,12 @@ export class RunExecutor {
         kind: "stopped",
         leaseLost: false,
         reason: verdict.reason ?? "the run's controller aborted it",
+      };
+    }
+    if (verdict?.type !== "run.completed") {
+      return {
+        kind: "failed",
+        reason: "the controller stopped without completing the run",
       };
     }
     return { kind: "completed" };

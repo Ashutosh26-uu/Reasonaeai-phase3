@@ -30,6 +30,17 @@ export type RunCancellationAccepted = z.infer<
   typeof RunCancellationAcceptedSchema
 >;
 
+export const RunAnswerRequestSchema = z.strictObject({
+  answer: z.string().trim().min(1).max(20_000),
+  toolCallId: z.string().min(1).max(256),
+});
+
+export const RunAnswerAcceptedSchema = z.strictObject({
+  accepted: z.literal(true),
+  runId: RunIdSchema,
+  toolCallId: z.string(),
+});
+
 export const ArtifactIdSchema = z.uuid().brand<"ArtifactId">();
 export type ArtifactId = z.infer<typeof ArtifactIdSchema>;
 

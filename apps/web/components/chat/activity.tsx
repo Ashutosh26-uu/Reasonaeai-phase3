@@ -153,10 +153,14 @@ function Status({ tool }: { tool: ToolEntry }) {
     "output-error": { Icon: X, label: "Failed" },
   }[tool.state];
   const { Icon, label } = stateView;
+  const visibleLabel =
+    tool.state === "approval-requested" && tool.name === "ask_user"
+      ? "Needs your answer"
+      : label;
   return (
     <span className="activity-status" data-status={tool.state}>
       <Icon aria-hidden="true" size={14} />
-      {label}
+      {visibleLabel}
     </span>
   );
 }

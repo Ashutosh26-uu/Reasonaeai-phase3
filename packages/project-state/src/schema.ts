@@ -6,7 +6,7 @@
  * ledger that browser reconnect depends on. Redis Streams is transport and
  * never the only record of work.
  */
-export const PROJECT_STATE_SCHEMA_VERSION = 3;
+export const PROJECT_STATE_SCHEMA_VERSION = 4;
 
 export const PROJECT_STATE_MIGRATION_SQL = `
 create table if not exists organizations (
@@ -60,11 +60,16 @@ create table if not exists runs (
 alter table runs add column if not exists user_message text;
 alter table runs add column if not exists user_attachments jsonb not null default '[]'::jsonb;
 alter table runs add column if not exists cancellation_requested_at timestamptz;
+alter table runs add column if not exists pending_tool_call_id text;
+alter table runs add column if not exists pending_answer text;
+alter table runs add column if not exists pending_answered_by uuid;
 create index if not exists runs_session_recent_idx
   on runs (build_session_id, created_at desc);
 
-create unique index if not exists runs_one_running_project_idx
-  on runs (organization_id, project_id) where status = 'running';
+drop index if exists runs_one_running_project_idx;
+create unique index if not exists runs_one_active_project_idx
+  on runs (organization_id, project_id)
+  where status in ('running', 'awaiting_approval');
 
 create table if not exists conversation_turn_keys (
   organization_id uuid not null,

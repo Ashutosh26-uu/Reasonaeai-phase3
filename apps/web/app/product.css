@@ -1706,6 +1706,38 @@
   padding: 6px 26px 20px;
 }
 
+.question-form {
+  display: grid;
+  gap: 10px;
+  width: min(100%, 760px);
+  padding: 16px;
+  margin: 0 auto 12px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+
+.question-form label {
+  font-weight: 600;
+}
+
+.question-form textarea {
+  width: 100%;
+  min-height: 76px;
+  padding: 10px;
+  color: var(--ink);
+  resize: vertical;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.question-form button {
+  justify-self: end;
+  padding: 8px 14px;
+  border-radius: 8px;
+}
+
 .composer {
   width: min(100%, 760px);
   margin: 0 auto;

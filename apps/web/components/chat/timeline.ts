@@ -18,6 +18,51 @@ export interface Timeline {
 export const EMPTY_TIMELINE: Timeline = { runs: {}, sawLiveText: false };
 const emptyRun = (): RunTimeline => ({ events: {}, live: {}, workers: {} });
 
+function questionText(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null) {
+    return;
+  }
+  const { question } = value as Record<string, unknown>;
+  return typeof question === "string" ? question : undefined;
+}
+
+export function pendingQuestion(
+  timeline: Timeline,
+  runId: string
+): { question: string; toolCallId: string } | undefined {
+  const events = Object.values(timeline.runs[runId]?.events ?? {}).sort(
+    (a, b) => a.sequence - b.sequence
+  );
+  let pending: { question: string; toolCallId: string } | undefined;
+  for (const event of events) {
+    const { payload } = event;
+    if (
+      event.type === "approval.requested" &&
+      payload.kind === "tool_suspended" &&
+      payload.toolName === "ask_user" &&
+      typeof payload.toolCallId === "string"
+    ) {
+      pending = {
+        question:
+          questionText(payload.suspendPayload) ??
+          questionText(payload.args) ??
+          "What would you like the CTO to do?",
+        toolCallId: payload.toolCallId,
+      };
+    }
+    if (
+      event.type === "approval.resolved" &&
+      payload.toolCallId === pending?.toolCallId
+    ) {
+      pending = undefined;
+    }
+    if (["run.completed", "run.failed", "run.cancelled"].includes(event.type)) {
+      pending = undefined;
+    }
+  }
+  return pending;
+}
+
 export function foldDurable(
   timeline: Timeline,
   event: RunEventEnvelope
@@ -168,6 +213,10 @@ function updateTool(tool: ToolEntry, event: RunEventEnvelope): void {
       tool.state = "output-denied";
       tool.endedAt = event.occurredAt;
       tool.output = p.reason;
+      break;
+    case "answer_submitted":
+      tool.state = "input-available";
+      tool.output = "Answer sent.";
       break;
     case "subagent_tool_start":
       tool.children.push(

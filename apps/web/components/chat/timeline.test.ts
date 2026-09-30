@@ -11,6 +11,7 @@ import {
   EMPTY_TIMELINE,
   foldDurable,
   foldLive,
+  pendingQuestion,
   projectTranscript,
 } from "./timeline";
 
@@ -90,6 +91,37 @@ const events = [
 ];
 
 describe("conversation transcript", () => {
+  it("shows only the unanswered ask_user question for an active run", () => {
+    const asked = event(
+      4,
+      {
+        kind: "tool_suspended",
+        suspendPayload: { question: "Which region?" },
+        toolCallId: "ask-1",
+        toolName: "ask_user",
+      },
+      runId,
+      "approval.requested"
+    );
+    const timeline = foldDurable(EMPTY_TIMELINE, asked);
+    expect(pendingQuestion(timeline, runId)).toEqual({
+      question: "Which region?",
+      toolCallId: "ask-1",
+    });
+    const resolved = foldDurable(
+      timeline,
+      event(
+        5,
+        {
+          kind: "answer_submitted",
+          toolCallId: "ask-1",
+        },
+        runId,
+        "approval.resolved"
+      )
+    );
+    expect(pendingQuestion(resolved, runId)).toBeUndefined();
+  });
   it("renders the reported sequence at equal timestamps and with tool results arriving later", () => {
     const timeline = events.reduce(foldDurable, EMPTY_TIMELINE);
     const entries = projectTranscript(timeline, [])[0]?.entries;

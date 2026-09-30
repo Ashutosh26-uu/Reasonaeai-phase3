@@ -22,6 +22,11 @@ import {
 
 export interface RunSession {
   abortRun: () => void;
+  resumeToolCall: (input: {
+    requestContext?: RequestContext;
+    resumeData: string;
+    toolCallId: string;
+  }) => Promise<void>;
   sendMessage: (input: {
     content: string;
     files?: Pick<PromptAttachment, "data" | "filename" | "mediaType">[];

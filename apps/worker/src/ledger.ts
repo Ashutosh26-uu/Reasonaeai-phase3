@@ -207,7 +207,7 @@ export class RunEventAppender {
   }
 
   /** Persist boundaries immediately and growing text at most once a second. */
-  pushSnapshot(snapshot: MessageSnapshot, at: Date): void {
+  pushSnapshot(snapshot: MessageSnapshot, at: Date, force = false): void {
     const shape = snapshot.parts
       .map(
         (part) =>
@@ -216,7 +216,7 @@ export class RunEventAppender {
       .join("|");
     const previous = this.#snapshots.get(snapshot.messageId);
     if (
-      !snapshot.finished &&
+      !(force || snapshot.finished) &&
       previous?.shape === shape &&
       at.getTime() - previous.at < 1000
     ) {

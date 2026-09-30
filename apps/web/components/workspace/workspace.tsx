@@ -18,6 +18,7 @@ import {
 } from "@reasonateai/contracts/execution";
 import {
   ConversationTranscriptSchema,
+  RunAnswerAcceptedSchema,
   RunCancellationAcceptedSchema,
   type RunEventEnvelope,
 } from "@reasonateai/contracts/execution-protocol";
@@ -36,6 +37,7 @@ import {
 } from "react";
 import { Composer } from "@/components/chat/composer";
 import { EmptyState } from "@/components/chat/empty-state";
+import { pendingQuestion } from "@/components/chat/timeline";
 import { Transcript } from "@/components/chat/transcript";
 import { useRunStream } from "@/components/chat/use-run-stream";
 import { Panel } from "@/components/workspace/panel";
@@ -454,6 +456,7 @@ function ConversationHeader({
  * the stream carries the transitions, and the store is re-read only for what a
  * stream cannot express, which is the conversation's own status.
  */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the workspace coordinates the existing project, conversation, and stream state in one component
 export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   const [route] = useState(readRoute);
   const [error, setError] = useState("");
@@ -486,6 +489,11 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [stoppingRunId, setStoppingRunId] = useState<string | null>(null);
+  const [answerDraft, setAnswerDraft] = useState("");
+  const [answering, setAnswering] = useState(false);
+  const [answeredToolCallId, setAnsweredToolCallId] = useState<string | null>(
+    null
+  );
   const [panelOpen, setPanelOpen] = useState(
     () => route.conversationId.length > 0
   );
@@ -673,6 +681,61 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     organizationId,
     projectId,
   });
+  const question = pendingRunId
+    ? pendingQuestion(timeline, pendingRunId)
+    : undefined;
+  const answerQuestion = useCallback(
+    async (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (
+        !(
+          question &&
+          pendingRunId &&
+          conversationId &&
+          organizationId &&
+          projectId
+        )
+      ) {
+        return;
+      }
+      const answer = answerDraft.trim();
+      if (!answer || answer.length > DRAFT_LIMIT) {
+        return;
+      }
+      setAnswering(true);
+      setError("");
+      try {
+        await request(
+          `/v1/build-sessions/${conversationId}/runs/${pendingRunId}/answers?${scopeQuery(organizationId, projectId)}`,
+          RunAnswerAcceptedSchema.parse,
+          {
+            body: JSON.stringify({ answer, toolCallId: question.toolCallId }),
+            method: "POST",
+          }
+        );
+        setAnsweredToolCallId(question.toolCallId);
+        setAnswerDraft("");
+      } catch (cause) {
+        setError(describeError(cause, "Could not send your answer."));
+      } finally {
+        setAnswering(false);
+      }
+    },
+    [
+      answerDraft,
+      conversationId,
+      organizationId,
+      pendingRunId,
+      projectId,
+      question,
+    ]
+  );
+  const updateAnswerDraft = useCallback(
+    (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+      setAnswerDraft(event.currentTarget.value);
+    },
+    []
+  );
 
   const updateDraft = useCallback(
     (event: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -1004,6 +1067,24 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       stopping={stoppingRunId === pendingRunId}
     />
   );
+  const questionForm =
+    question && answeredToolCallId !== question.toolCallId ? (
+      <form className="question-form" onSubmit={answerQuestion}>
+        <label htmlFor="question-answer">{question.question}</label>
+        <textarea
+          id="question-answer"
+          maxLength={DRAFT_LIMIT}
+          onChange={updateAnswerDraft}
+          value={answerDraft}
+        />
+        <button
+          disabled={answering || answerDraft.trim().length === 0}
+          type="submit"
+        >
+          {answering ? "Sending…" : "Send answer"}
+        </button>
+      </form>
+    ) : null;
   const emptyConversation =
     messages.length === 0 && Object.keys(timeline.runs).length === 0;
   const heading =
@@ -1093,6 +1174,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
                 onRetry={retry}
                 onStarter={selectStarter}
                 pending={working}
+                questionForm={questionForm}
                 starters={promptStarters}
                 timeline={timeline}
               />
@@ -1150,6 +1232,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
  */
 function ConversationPane({
   composer,
+  questionForm,
   empty,
   live,
   messages,
@@ -1161,6 +1244,7 @@ function ConversationPane({
   timeline,
 }: {
   composer: React.ReactNode;
+  questionForm: React.ReactNode;
   empty: boolean;
   live: boolean;
   messages: ConversationMessage[];
@@ -1186,6 +1270,7 @@ function ConversationPane({
         pending={pending}
         starters={starters}
       >
+        {questionForm}
         {composer}
       </EmptyState>
     );
@@ -1201,7 +1286,10 @@ function ConversationPane({
         pending={pending}
         timeline={timeline}
       />
-      <div className="composer-dock">{composer}</div>
+      <div className="composer-dock">
+        {questionForm}
+        {composer}
+      </div>
     </>
   );
 }

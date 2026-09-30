@@ -21,7 +21,11 @@ import {
   ConversationTurnAcceptedSchema,
   type PromptAttachment,
 } from "@reasonateai/contracts/execution";
-import { ConversationTranscriptSchema } from "@reasonateai/contracts/execution-protocol";
+import {
+  ConversationTranscriptSchema,
+  RunAnswerAcceptedSchema,
+  RunAnswerRequestSchema,
+} from "@reasonateai/contracts/execution-protocol";
 import {
   type OrganizationId,
   OrganizationIdSchema,
@@ -54,6 +58,8 @@ export const CONVERSATION_TURNS_PATH =
   "/v1/build-sessions/:buildSessionId/turns";
 export const RUN_CANCELLATION_PATH =
   "/v1/build-sessions/:buildSessionId/runs/:runId/cancel";
+export const RUN_ANSWER_PATH =
+  "/v1/build-sessions/:buildSessionId/runs/:runId/answers";
 
 /**
  * The subset of a Hono `Context` these handlers use. Declaring it structurally
@@ -541,6 +547,85 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
           created: allocation.created,
           sandbox: allocation.sandbox,
         },
+        202
+      );
+    },
+
+    /** Records an authorized answer for the exact suspended tool call. */
+    answerRun: async (c: HandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+      const principal = await deps.resolvePrincipal({
+        cookieHeader: c.req.header("cookie"),
+      });
+      if (!principal) {
+        return apiErrorResponse({
+          code: "unauthenticated",
+          message: "A valid browser session is required.",
+          requestId: rid,
+        });
+      }
+      const organizationId = OrganizationIdSchema.safeParse(
+        c.req.query("organizationId")
+      );
+      const projectId = ProjectIdSchema.safeParse(c.req.query("projectId"));
+      const buildSessionId = BuildSessionIdSchema.safeParse(
+        c.req.param("buildSessionId")
+      );
+      const runId = RunIdSchema.safeParse(c.req.param("runId"));
+      const body = RunAnswerRequestSchema.safeParse(await c.req.json());
+      if (
+        !(
+          organizationId.success &&
+          projectId.success &&
+          buildSessionId.success &&
+          runId.success &&
+          body.success
+        )
+      ) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message:
+            "A valid answer, question, run, conversation, and project scope are required.",
+          requestId: rid,
+        });
+      }
+      const scope = {
+        organizationId: organizationId.data,
+        projectId: projectId.data,
+      };
+      const decision = await authorizeProjectAction({
+        action: "agent:run",
+        deps,
+        ...scope,
+        principal,
+      });
+      if (!decision.allowed) {
+        return apiErrorResponse({
+          code: "forbidden",
+          message: "You are not authorized to answer this question.",
+          requestId: rid,
+        });
+      }
+      const result = await deps.store().answerRunQuestion({
+        ...body.data,
+        buildSessionId: buildSessionId.data,
+        requestedByUserId: principal.userId,
+        runId: runId.data,
+        scope,
+      });
+      if (result === "conflict") {
+        return apiErrorResponse({
+          code: "conflict",
+          message: "This question is no longer waiting for an answer.",
+          requestId: rid,
+        });
+      }
+      return c.json(
+        RunAnswerAcceptedSchema.parse({
+          accepted: true,
+          runId: runId.data,
+          toolCallId: body.data.toolCallId,
+        }),
         202
       );
     },
