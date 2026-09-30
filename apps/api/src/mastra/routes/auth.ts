@@ -3,12 +3,14 @@ import { mintCsrfToken } from "@reasonateai/auth/csrf";
 import { safeRedirectPath } from "@reasonateai/auth/redirect";
 import { sessionCookie, sessionState } from "@reasonateai/auth/session-policy";
 import {
+  AccountProfileSchema,
   CSRF_COOKIE,
   MagicLinkAcceptedSchema,
   MagicLinkRequestSchema,
   SESSION_COOKIE,
   SessionViewSchema,
   SignedOutSchema,
+  UpdateAccountProfileRequestSchema,
 } from "@reasonateai/contracts/auth";
 import {
   type AuditAction,
@@ -45,6 +47,7 @@ import type { HandlerContext } from "./build-sessions";
 export const MAGIC_LINKS_PATH = "/v1/auth/magic-links";
 export const AUTH_CALLBACK_PATH = "/v1/auth/callback";
 export const AUTH_SESSION_PATH = "/v1/auth/session";
+export const AUTH_PROFILE_PATH = "/v1/auth/profile";
 
 /**
  * How long a sign-in link lives. It is a bearer credential delivered over
@@ -138,17 +141,27 @@ function magicLinkUrl(publicOrigin: string, token: string): string {
   return `${origin}${AUTH_CALLBACK_PATH}?token=${encodeURIComponent(token)}`;
 }
 
+/** The separators an address uses where a person would write a space. */
+const LOCAL_PART_SEPARATORS = /[._-]+/;
+
 /**
  * A first sign-in has no organization to name, and the caller has told us
- * exactly one thing about themselves: their address. The domain after the `@`
- * is therefore the tenant's name, and an address with no domain part — which
- * the request schema rejects, but a stored address is re-read here — falls back
- * to the generic name. An owner renames the organization afterwards.
+ * exactly one thing about themselves: their address. The first segment of the
+ * local part is therefore what the workspace is called — "Mohan's workspace" is
+ * a name a person recognizes and can change, where a mail domain is neither
+ * theirs nor a name at all, and where the rest of the local part is often an
+ * opaque suffix rather than another word. An address with no local part falls
+ * back to the generic name, and an owner renames the workspace afterwards.
  */
 function firstOrganizationName(email: string): string {
   const separator = email.lastIndexOf("@");
-  const domain = separator === -1 ? "" : email.slice(separator + 1).trim();
-  return domain.length > 0 ? domain : "My organization";
+  const local = (separator === -1 ? email : email.slice(0, separator)).trim();
+  const [given = ""] = local.split(LOCAL_PART_SEPARATORS);
+  const readable = given.trim();
+  if (readable.length === 0) {
+    return "My workspace";
+  }
+  return `${readable[0]?.toUpperCase()}${readable.slice(1)}'s workspace`;
 }
 
 /**
@@ -329,6 +342,30 @@ export function createAuthHandlers(deps: AuthRouteDeps) {
 
       return response;
     },
+    readProfile: async (c: HandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+      const store = deps.store();
+      const principal = await resolveSessionPrincipal({
+        cookieHeader: c.req.header("cookie"),
+        sessions: store.sessions,
+      });
+      if (!principal) {
+        return unauthenticatedResponse(rid);
+      }
+      const profile = await store.users.getProfile({
+        userId: principal.userId,
+      });
+      if (!profile) {
+        return apiErrorResponse({
+          code: "not_found",
+          message: "The account profile could not be found.",
+          requestId: rid,
+        });
+      }
+      const response = c.json(AccountProfileSchema.parse(profile), 200);
+      response.headers.set("Cache-Control", "no-store");
+      return response;
+    },
 
     /**
      * The caller's own session. It reports the session's clocks and the
@@ -485,6 +522,42 @@ export function createAuthHandlers(deps: AuthRouteDeps) {
           secure: deps.secureCookies,
         })
       );
+      response.headers.set("Cache-Control", "no-store");
+      return response;
+    },
+    updateProfile: async (c: HandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+      const store = deps.store();
+      const principal = await resolveSessionPrincipal({
+        cookieHeader: c.req.header("cookie"),
+        sessions: store.sessions,
+      });
+      if (!principal) {
+        return unauthenticatedResponse(rid);
+      }
+      const body = UpdateAccountProfileRequestSchema.safeParse(
+        await readJsonBody(c.req)
+      );
+      if (!body.success) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message: "A display name of at most 80 characters is required.",
+          requestId: rid,
+        });
+      }
+      const displayName = body.data.displayName.trim();
+      const profile = await store.users.setDisplayName({
+        displayName: displayName.length > 0 ? displayName : null,
+        userId: principal.userId,
+      });
+      if (!profile) {
+        return apiErrorResponse({
+          code: "not_found",
+          message: "The account profile could not be found.",
+          requestId: rid,
+        });
+      }
+      const response = c.json(AccountProfileSchema.parse(profile), 200);
       response.headers.set("Cache-Control", "no-store");
       return response;
     },

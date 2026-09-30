@@ -576,6 +576,16 @@ describe("controller events to run events", () => {
       expect(envelope?.payload).toEqual({
         buildSessionId: scope.buildSessionId,
         ...item.payload,
+        ...(item.event.type === "message_end"
+          ? {
+              snapshot: expect.objectContaining({
+                finished: true,
+                messageId: item.event.message.id,
+                parts: expect.any(Array),
+                version: 1,
+              }),
+            }
+          : {}),
       });
       expect(envelope?.runId).toBe(runId);
       expect(envelope?.organizationId).toBe(scope.organizationId);

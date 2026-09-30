@@ -1,6 +1,7 @@
 import type { AgentControllerEvent } from "@mastra/core/agent-controller";
 import type { BuildSessionId } from "@reasonateai/contracts/execution";
 import type {
+  MessageSnapshot,
   RunEventEnvelope,
   RunEventType,
 } from "@reasonateai/contracts/execution-protocol";
@@ -43,6 +44,7 @@ export interface Ledger {
    * store decides sequence.
    */
   appendControllerEvent: (input: {
+    controllerRunId?: string;
     event: AgentControllerEvent;
     identity: RunIdentity;
     occurredAt: Date;
@@ -66,7 +68,12 @@ export function createLedger(input: { store: ProjectStateStore }): Ledger {
   const { store } = input;
 
   return {
-    appendControllerEvent: async ({ event, identity, occurredAt }) => {
+    appendControllerEvent: async ({
+      controllerRunId,
+      event,
+      identity,
+      occurredAt,
+    }) => {
       const envelope = toRunEventEnvelope({
         event,
         occurredAt,
@@ -82,6 +89,7 @@ export function createLedger(input: { store: ProjectStateStore }): Ledger {
       }
 
       return await store.appendRunEvent({
+        ...(controllerRunId === undefined ? {} : { controllerRunId }),
         payload: envelope.payload,
         runId: identity.runId,
         scope: tenantScopeOf(identity),
@@ -138,9 +146,8 @@ export interface RunVerdict {
  *
  * A session emits its events faster than a round trip to PostgreSQL, and the
  * ledger is ordered, so the appends are chained rather than issued in parallel:
- * one writer, in emission order. A failed append is reported and dropped — it
- * cannot be retried without inventing an order the ledger never had — and the
- * terminal transition the worker appends afterwards still records the outcome.
+ * one writer, in emission order. A failed append is logged and retained as a
+ * drain failure so the worker cannot report success with an incomplete ledger.
  */
 export class RunEventAppender {
   #chain: Promise<void> = Promise.resolve();
@@ -150,6 +157,8 @@ export class RunEventAppender {
   readonly #logger: Logger;
   #pending = 0;
   #verdict: RunVerdict | undefined;
+  #failure: Error | undefined;
+  readonly #snapshots = new Map<string, { at: number; shape: string }>();
 
   constructor(input: {
     fields: LogFields;
@@ -163,7 +172,12 @@ export class RunEventAppender {
     this.#logger = input.logger;
   }
 
-  push(event: AgentControllerEvent, occurredAt: Date): void {
+  push(
+    event: AgentControllerEvent,
+    occurredAt: Date,
+    controllerRunId?: string
+  ): void {
+    const captured = structuredClone(event);
     this.#pending += 1;
     if (this.#pending === BACKLOG_WARNING) {
       this.#logger.warn("run.ledger.backlog", {
@@ -176,7 +190,8 @@ export class RunEventAppender {
       this.#pending -= 1;
       try {
         const recorded = await this.#ledger.appendControllerEvent({
-          event,
+          ...(controllerRunId === undefined ? {} : { controllerRunId }),
+          event: captured,
           identity: this.#identity,
           occurredAt,
         });
@@ -184,6 +199,9 @@ export class RunEventAppender {
           this.#record(recorded);
         }
       } catch (error) {
+        this.#failure ??= new Error("Could not persist the run transcript", {
+          cause: error,
+        });
         this.#logger.error("run.ledger.append.failed", {
           ...this.#fields,
           controllerEvent: event.type,
@@ -195,6 +213,50 @@ export class RunEventAppender {
 
   async drain(): Promise<void> {
     await this.#chain;
+    if (this.#failure) {
+      throw this.#failure;
+    }
+  }
+
+  /** Persist boundaries immediately and growing text at most once a second. */
+  pushSnapshot(snapshot: MessageSnapshot, at: Date, force = false): void {
+    const shape = snapshot.parts
+      .map(
+        (part) =>
+          `${part.index}:${part.type}:${part.type === "tool" ? part.toolCallId : (part.endedAt ?? "open")}`
+      )
+      .join("|");
+    const previous = this.#snapshots.get(snapshot.messageId);
+    if (
+      !(force || snapshot.finished) &&
+      previous?.shape === shape &&
+      at.getTime() - previous.at < 1000
+    ) {
+      return;
+    }
+    this.#snapshots.set(snapshot.messageId, { at: at.getTime(), shape });
+    this.#chain = this.#chain.then(async () => {
+      try {
+        await this.#ledger.appendTransition({
+          identity: this.#identity,
+          payload: {
+            kind: "message_snapshot",
+            messageId: snapshot.messageId,
+            role: "assistant",
+            snapshot,
+          },
+          type: "agent.progress",
+        });
+      } catch (error) {
+        this.#failure ??= new Error("Could not persist the run transcript", {
+          cause: error,
+        });
+        this.#logger.error("run.transcript.append.failed", {
+          ...this.#fields,
+          failure: describeFailure(error).message,
+        });
+      }
+    });
   }
 
   /**

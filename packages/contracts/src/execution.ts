@@ -87,7 +87,54 @@ export const BuildSessionSchema = z.strictObject({
   userSessionId: SessionIdSchema,
 });
 export type BuildSession = z.infer<typeof BuildSessionSchema>;
+
+/** An attachment accepted with a user turn and forwarded to the run worker. */
+export const PromptAttachmentSchema = z
+  .strictObject({
+    data: z
+      .string()
+      .min(1)
+      .max(6_000_000)
+      .regex(/^data:[^;,]+;base64,[A-Za-z0-9+/]+=*$/),
+    filename: z.string().min(1).max(255),
+    mediaType: z.string().min(1).max(128),
+  })
+  .superRefine((attachment, context) => {
+    const dataMediaType = attachment.data.slice(
+      5,
+      attachment.data.indexOf(";")
+    );
+    if (dataMediaType !== attachment.mediaType) {
+      context.addIssue({
+        code: "custom",
+        message: "Attachment media type does not match its data.",
+      });
+    }
+    if (estimatePromptAttachmentBytes(attachment.data) > 4 * 1024 * 1024) {
+      context.addIssue({
+        code: "custom",
+        message: "Each attachment must be 4 MB or smaller.",
+      });
+    }
+  });
+export type PromptAttachment = z.infer<typeof PromptAttachmentSchema>;
+
+/** Safe attachment details shown in durable conversation history. */
+export const ConversationAttachmentSchema = z.strictObject({
+  filename: z.string().min(1).max(255),
+  mediaType: z.string().min(1).max(128),
+  sizeBytes: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(4 * 1024 * 1024),
+});
+export type ConversationAttachment = z.infer<
+  typeof ConversationAttachmentSchema
+>;
+
 export const AllocateBuildSessionRequestSchema = z.strictObject({
+  attachments: z.array(PromptAttachmentSchema).max(5).optional(),
   idempotencyKey: z.string().min(1).max(128),
   /**
    * The opening message of the conversation. A build session is the project's
@@ -96,7 +143,7 @@ export const AllocateBuildSessionRequestSchema = z.strictObject({
    * as the user's own words. Omitted means the session is allocated without an
    * opening turn, which leaves its run on the default dispatch directive.
    */
-  message: z.string().min(1).max(20_000).optional(),
+  message: z.string().max(20_000).optional(),
   organizationId: OrganizationIdSchema,
   projectId: ProjectIdSchema,
   userSessionId: SessionIdSchema,
@@ -156,9 +203,29 @@ export type ConversationMessageRole = z.infer<
  * internal parts are reduced to the text a person is meant to read.
  */
 export const ConversationMessageSchema = z.strictObject({
+  attachments: z.array(ConversationAttachmentSchema).max(5).optional(),
   createdAt: IsoDateTimeSchema,
   id: z.string().min(1).max(256),
+  /**
+   * What the model reasoned before writing this message, when it produced any.
+   *
+   * It is the only honest source for "how the answer was reached": the message's
+   * own text is what a person reads, and the reasoning is what they open when
+   * they want to see the work behind it.
+   */
+  reasoning: z.string().max(1_000_000).nullable(),
   role: ConversationMessageRoleSchema,
+  runId: RunIdSchema.optional(),
+  /**
+   * The agent-platform message this row came from, when it came from one.
+   *
+   * The history's own id is the ledger event that recorded the message, and a
+   * client holding live events knows the same message by its platform id. This
+   * is what lets the two be recognized as one message, so a streamed message
+   * and the committed one that replaces it occupy the same place in the
+   * conversation rather than appearing twice.
+   */
+  sourceId: z.string().min(1).max(256).nullable(),
   text: z.string().max(1_000_000),
 });
 export type ConversationMessage = z.infer<typeof ConversationMessageSchema>;
@@ -189,9 +256,43 @@ export const ConversationListSchema = z.strictObject({
 });
 
 /** A turn the user submits into an existing conversation. */
-export const AppendConversationTurnRequestSchema = z.strictObject({
-  message: z.string().min(1).max(20_000),
-});
+export const AppendConversationTurnRequestSchema = z
+  .strictObject({
+    attachments: z.array(PromptAttachmentSchema).max(5).optional(),
+    message: z.string().max(20_000),
+  })
+  .superRefine((request, context) => {
+    const hasMessage = request.message.trim().length > 0;
+    const hasAttachments = (request.attachments?.length ?? 0) > 0;
+    if (!(hasMessage || hasAttachments)) {
+      context.addIssue({
+        code: "custom",
+        message: "A message or attachment is required.",
+      });
+    }
+    const totalBytes = (request.attachments ?? []).reduce(
+      (total, attachment) =>
+        total + estimatePromptAttachmentBytes(attachment.data),
+      0
+    );
+    if (totalBytes > 12 * 1024 * 1024) {
+      context.addIssue({
+        code: "custom",
+        message: "Attachments exceed the total size limit.",
+      });
+    }
+  });
+
+function estimatePromptAttachmentBytes(data: string): number {
+  const encoded = data.slice(data.indexOf(",") + 1);
+  let padding = 0;
+  if (encoded.endsWith("==")) {
+    padding = 2;
+  } else if (encoded.endsWith("=")) {
+    padding = 1;
+  }
+  return Math.floor((encoded.length * 3) / 4) - padding;
+}
 export type AppendConversationTurnRequest = z.infer<
   typeof AppendConversationTurnRequestSchema
 >;

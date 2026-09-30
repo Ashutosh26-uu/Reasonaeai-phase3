@@ -1,5 +1,7 @@
 import type { AgentControllerEvent } from "@mastra/core/agent-controller";
 import type { RequestContext } from "@mastra/core/request-context";
+import { PostgresStore } from "@mastra/pg";
+import type { PromptAttachment } from "@reasonateai/contracts/execution";
 import { createReasonateCtoRuntime } from "@reasonateai/cto-runtime";
 import {
   buildSandboxEnvironment,
@@ -20,12 +22,26 @@ import {
 
 export interface RunSession {
   abortRun: () => void;
+  resumeToolCall: (input: {
+    requestContext?: RequestContext;
+    resumeData: string;
+    toolCallId: string;
+  }) => Promise<void>;
+  run: { getRunId: () => string | null };
   sendMessage: (input: {
     content: string;
+    files?: Pick<PromptAttachment, "data" | "filename" | "mediaType">[];
     requestContext: RequestContext;
     untilIdle?: boolean;
   }) => Promise<void>;
   subscribe: (listener: (event: AgentControllerEvent) => void) => () => void;
+  suspensions: {
+    register: (input: {
+      runId: string;
+      toolCallId: string;
+      toolName: string;
+    }) => void;
+  };
 }
 
 export interface RunController {
@@ -33,6 +49,7 @@ export interface RunController {
     requestContext: RequestContext;
     resourceId: string;
     scope: string;
+    threadId: string;
   }) => Promise<RunSession>;
   init: () => Promise<void>;
 }
@@ -55,12 +72,18 @@ export type RuntimeFactory = () => RunRuntime;
  * simply "drive a fresh session".
  */
 export function createCtoRuntimeFactory(input: {
+  databaseUrl: string;
   model: string;
 }): RuntimeFactory {
+  const storage = new PostgresStore({
+    connectionString: input.databaseUrl,
+    id: "reasonate-worker-storage",
+  });
   return () =>
     createReasonateCtoRuntime({
       ...buildSandboxEnvironment,
       model: input.model,
+      storage,
       workspace: reasonateBuildWorkspace,
       workspaceRoot: SANDBOX_WORKING_DIRECTORY,
     });

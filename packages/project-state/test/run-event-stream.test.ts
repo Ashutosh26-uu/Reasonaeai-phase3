@@ -23,12 +23,15 @@ const describeWithRedis = redisUrl ? describe : describe.skip;
  * repository shares one Redis, so a raw count races with whoever else connects
  * or disconnects; comparing identities isolates this subscription's connection.
  */
-async function clientIds(client: RedisClientType): Promise<Set<string>> {
+async function clientIds(
+  client: RedisClientType,
+  topic: string
+): Promise<Set<string>> {
   const listing = await client.sendCommand<string>(["CLIENT", "LIST"]);
   return new Set(
     listing
       .split("\n")
-      .filter((line) => line.length > 0)
+      .filter((line) => line.split(" ").includes(`name=${topic}`))
       .map((line) => {
         const [id] = line.split(" ").filter((field) => field.startsWith("id="));
         return id ?? line;
@@ -79,7 +82,7 @@ describeWithRedis("run event stream", () => {
     const published = envelope(1, "first");
     await publisher.publish(runEventTopic(runId), published);
 
-    const baseline = await clientIds(reader);
+    const baseline = await clientIds(reader, runEventTopic(runId));
 
     const firstAbort = new AbortController();
     const secondAbort = new AbortController();
@@ -100,7 +103,9 @@ describeWithRedis("run event stream", () => {
     // Two callers, one connection: the second shares the first's subscription,
     // so exactly one connection appeared and it is the one to watch from here.
     const opened = new Set(
-      [...(await clientIds(reader))].filter((id) => !baseline.has(id))
+      [...(await clientIds(reader, runEventTopic(runId)))].filter(
+        (id) => !baseline.has(id)
+      )
     );
     expect(opened.size).toBe(1);
 
@@ -110,9 +115,11 @@ describeWithRedis("run event stream", () => {
       value: undefined,
     });
     // The other caller still needs the subscription, so its connection stays.
-    expect([...(await clientIds(reader))].some((id) => opened.has(id))).toBe(
-      true
-    );
+    expect(
+      [...(await clientIds(reader, runEventTopic(runId)))].some((id) =>
+        opened.has(id)
+      )
+    ).toBe(true);
 
     secondAbort.abort();
     await expect(second.next()).resolves.toEqual({
@@ -125,7 +132,9 @@ describeWithRedis("run event stream", () => {
     await vi.waitFor(
       async () => {
         expect(
-          [...(await clientIds(reader))].some((id) => opened.has(id))
+          [...(await clientIds(reader, runEventTopic(runId)))].some((id) =>
+            opened.has(id)
+          )
         ).toBe(false);
       },
       { timeout: 5000 }

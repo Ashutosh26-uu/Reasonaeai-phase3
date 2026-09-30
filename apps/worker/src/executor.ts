@@ -1,6 +1,7 @@
 import type { RequestContext } from "@mastra/core/request-context";
 import type { WorkspaceSandbox } from "@mastra/core/workspace";
 import type { RunEventType } from "@reasonateai/contracts/execution-protocol";
+import { RunLiveEventMapper } from "@reasonateai/cto-runtime/run-live-events";
 import type { RunScope } from "@reasonateai/cto-runtime/run-scope";
 import type {
   ProjectStateStore,
@@ -20,7 +21,9 @@ import {
 import { describeFailure, type FailureDescription } from "./failure.js";
 import { LeaseKeeper } from "./lease.js";
 import { type Ledger, RunEventAppender } from "./ledger.js";
+import type { LiveEventPublisher } from "./live-events.js";
 import type { LogFields, Logger } from "./logger.js";
+import { prepareRecoveredSandbox } from "./recovery.js";
 import {
   candidateScope,
   createRunRequestContext,
@@ -30,7 +33,7 @@ import { runDirective } from "./run-directive.js";
 import type { RunSession, RuntimeFactory } from "./runtime.js";
 import type { StopSignal } from "./stop-signal.js";
 import { settleWithin } from "./wait.js";
-import { workspaceVolumeName } from "./workspace.js";
+import { releaseBuildSandbox, workspaceVolumeName } from "./workspace.js";
 
 /**
  * One run, from lease to ledger.
@@ -62,6 +65,8 @@ export interface RunExecutorDeps {
   checkpoints: CheckpointStore;
   config: RunExecutionConfig;
   ledger: Ledger;
+  /** The run's live view: text as the model produces it. */
+  live: LiveEventPublisher;
   logger: Logger;
   resolveSandbox: (input: {
     requestContext: RequestContext;
@@ -78,7 +83,7 @@ const TERMINAL_EVENT: Record<RunFinishStatus, RunEventType> = {
   succeeded: "run.completed",
 };
 
-type StopCause = "lease-lost" | "shutdown";
+type StopCause = "lease-lost" | "shutdown" | "user";
 
 type DriveResult =
   | { kind: "completed" }
@@ -158,15 +163,34 @@ export class RunExecutor {
         requestContext,
         resourceId: scope.projectId,
         scope: scope.buildSessionId,
+        threadId: scope.buildSessionId,
       });
+
+      const recovery =
+        candidate.pendingToolCallId && candidate.pendingMastraRunId
+          ? {
+              mastraRunId: candidate.pendingMastraRunId,
+              toolCallId: candidate.pendingToolCallId,
+            }
+          : undefined;
+      if (recovery) {
+        session.suspensions.register({
+          runId: recovery.mastraRunId,
+          toolCallId: recovery.toolCallId,
+          toolName: "ask_user",
+        });
+        await prepareRecoveredSandbox(scope);
+      }
 
       sandbox = await this.#deps.resolveSandbox({ requestContext, scope });
       await sandbox.start?.();
-      const restored = await restoreLatestCheckpoint({
-        checkpoints: this.#deps.checkpoints,
-        sandbox: checkpointSandboxFor(sandbox),
-        scope,
-      });
+      const restored = recovery
+        ? undefined
+        : await restoreLatestCheckpoint({
+            checkpoints: this.#deps.checkpoints,
+            sandbox: checkpointSandboxFor(sandbox),
+            scope,
+          });
       logger.info("run.workspace.ready", {
         ...fields,
         restoredCheckpointId: restored?.checkpointId ?? null,
@@ -175,10 +199,13 @@ export class RunExecutor {
       driven = await this.#drive({
         fields,
         lease,
+        message: candidate.userMessage,
         requestContext,
+        ...(recovery === undefined ? {} : { resume: recovery }),
         scope,
         session,
         stopSignal,
+        userAttachments: candidate.userAttachments,
       });
     } catch (error) {
       driven = { kind: "failed", reason: describeFailure(error).message };
@@ -197,10 +224,14 @@ export class RunExecutor {
    * Drives the session: subscribe, send the run's directive, and stop the step
    * the moment the lease is lost or the process is told to shut down.
    */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: lease, cancellation, event persistence, and suspension must share one run lifecycle
   async #drive(input: {
     fields: LogFields;
     lease: { expiresAt: Date; leaseId: string };
+    message: string | null;
+    userAttachments: RunnableRun["userAttachments"];
     requestContext: RequestContext;
+    resume?: { toolCallId: string };
     scope: RunScope;
     session: RunSession;
     stopSignal: StopSignal;
@@ -209,6 +240,7 @@ export class RunExecutor {
     const { fields, scope } = input;
 
     let failure: FailureDescription | undefined;
+    let pendingQuestion: string | undefined = input.resume?.toolCallId;
     let stop: StopRequest | undefined;
     let settleStop: ((request: StopRequest) => void) | undefined;
     const stopRequested = new Promise<StopRequest>((resolve) => {
@@ -219,10 +251,13 @@ export class RunExecutor {
         return;
       }
       stop = { cause, reason };
-      logger.warn(
-        cause === "lease-lost" ? "run.lease.lost.stop" : "run.shutdown.stop",
-        { ...fields, reason }
-      );
+      let event = "run.shutdown.stop";
+      if (cause === "lease-lost") {
+        event = "run.lease.lost.stop";
+      } else if (cause === "user") {
+        event = "run.cancel.requested";
+      }
+      logger.warn(event, { ...fields, reason });
       input.session.abortRun();
       settleStop?.({ cause, reason });
     };
@@ -230,6 +265,26 @@ export class RunExecutor {
     const unsubscribeStop = input.stopSignal.subscribe((reason) =>
       requestStop("shutdown", reason)
     );
+    let cancellationPoll: NodeJS.Timeout | undefined;
+    let cancellationCheckInFlight = false;
+    const checkCancellation = async () => {
+      if (stop !== undefined || cancellationCheckInFlight) {
+        return;
+      }
+      cancellationCheckInFlight = true;
+      try {
+        if (await store.isRunCancellationRequested(scope.runId)) {
+          requestStop("user", "the user stopped this run");
+        }
+      } catch (error) {
+        logger.warn("run.cancel.poll.failed", {
+          ...fields,
+          failure: describeFailure(error).message,
+        });
+      } finally {
+        cancellationCheckInFlight = false;
+      }
+    };
     const keeper = new LeaseKeeper({
       expiresAt: input.lease.expiresAt,
       fields,
@@ -248,31 +303,117 @@ export class RunExecutor {
       ledger,
       logger,
     });
+    // The same controller events feed both views: the ledger records what the
+    // run did, and the live channel carries the text it is writing now.
+    const live = new RunLiveEventMapper({ scope });
     const unsubscribeEvents = input.session.subscribe((event) => {
-      appends.push(event, new Date());
+      const at = new Date();
+      const controllerRunId =
+        event.type === "tool_suspended" && event.toolName === "ask_user"
+          ? (input.session.run.getRunId() ?? undefined)
+          : undefined;
+      if (event.type === "tool_suspended" && event.toolName === "ask_user") {
+        pendingQuestion = event.toolCallId;
+      }
+      if (
+        event.type !== "message_start" &&
+        event.type !== "message_update" &&
+        event.type !== "message_end"
+      ) {
+        appends.push(event, at, controllerRunId);
+      }
+      const delta = live.map(event, at);
+      if (delta !== undefined) {
+        if (delta.kind === "message.snapshot") {
+          appends.pushSnapshot(delta.snapshot, at);
+        }
+        this.#deps.live.publish(delta);
+      }
     });
 
     // The directive goes out before the lease keeper is useful, but the send is
     // not awaited here: a stop request has to be able to win the race.
-    const sending = input.session
-      .sendMessage({
-        content: runDirective({
-          buildSessionId: scope.buildSessionId,
-          runId: scope.runId,
-        }),
-        requestContext: input.requestContext,
-        untilIdle: true,
-      })
-      .then(
-        () => undefined,
-        (error: unknown) => {
-          failure = describeFailure(error);
-        }
-      );
+    await checkCancellation();
+    cancellationPoll = setInterval(() => {
+      checkCancellation().catch((error: unknown) => {
+        logger.error("run.cancel.poll.crashed", {
+          ...fields,
+          failure: describeFailure(error).message,
+        });
+      });
+    }, 500);
+    const sending =
+      stop === undefined && input.resume === undefined
+        ? input.session
+            .sendMessage({
+              content:
+                input.message ??
+                runDirective({
+                  buildSessionId: scope.buildSessionId,
+                  runId: scope.runId,
+                }),
+              ...(input.userAttachments.length > 0
+                ? { files: input.userAttachments }
+                : {}),
+              requestContext: input.requestContext,
+              untilIdle: true,
+            })
+            .then(
+              () => undefined,
+              (error: unknown) => {
+                failure = describeFailure(error);
+              }
+            )
+        : Promise.resolve();
 
     keeper.start();
     try {
       await Promise.race([sending, stopRequested]);
+      if (pendingQuestion) {
+        for (const snapshot of live.snapshots()) {
+          appends.pushSnapshot(snapshot, new Date(), true);
+        }
+      }
+      await appends.drain();
+      while (stop === undefined && failure === undefined && pendingQuestion) {
+        const toolCallId = pendingQuestion;
+        logger.info("run.question.waiting", { ...fields, toolCallId });
+        let answer: string | undefined;
+        while (stop === undefined && answer === undefined) {
+          // biome-ignore lint/performance/noAwaitInLoops: the worker must wait for this answer before resuming the controller
+          await Promise.race([
+            new Promise<void>((resolve) => setTimeout(resolve, 500)),
+            stopRequested,
+          ]);
+          if (stop === undefined) {
+            answer = await store.takeRunAnswer({
+              runId: scope.runId,
+              scope,
+              toolCallId,
+            });
+          }
+        }
+        if (stop !== undefined || answer === undefined) {
+          break;
+        }
+        pendingQuestion = undefined;
+        logger.info("run.question.resuming", { ...fields, toolCallId });
+        const resuming = input.session.resumeToolCall({
+          requestContext: input.requestContext,
+          resumeData: answer,
+          toolCallId,
+        });
+        await Promise.race([resuming, stopRequested]);
+        if (stop === undefined) {
+          await resuming;
+          if (pendingQuestion) {
+            for (const snapshot of live.snapshots()) {
+              appends.pushSnapshot(snapshot, new Date(), true);
+            }
+          }
+          await appends.drain();
+        }
+      }
       if (stop !== undefined) {
         const settled = await settleWithin(sending, config.stopGraceMs);
         if (!settled) {
@@ -285,9 +426,16 @@ export class RunExecutor {
         }
       }
     } finally {
+      clearInterval(cancellationPoll);
       await keeper.stop();
       unsubscribeStop();
       unsubscribeEvents();
+      for (const frame of live.finish()) {
+        if (frame.kind === "message.snapshot") {
+          appends.pushSnapshot(frame.snapshot, new Date());
+        }
+        this.#deps.live.publish(frame);
+      }
       await appends.drain();
     }
 
@@ -318,6 +466,12 @@ export class RunExecutor {
         kind: "stopped",
         leaseLost: false,
         reason: verdict.reason ?? "the run's controller aborted it",
+      };
+    }
+    if (verdict?.type !== "run.completed") {
+      return {
+        kind: "failed",
+        reason: "the controller stopped without completing the run",
       };
     }
     return { kind: "completed" };
@@ -477,6 +631,10 @@ export class RunExecutor {
         ...fields,
         failure: describeFailure(error).message,
       });
+    } finally {
+      // The workspace caches by build session. A follow-up turn must resolve a
+      // fresh instance after this container is destroyed.
+      releaseBuildSandbox(scope);
     }
 
     if (written === undefined) {

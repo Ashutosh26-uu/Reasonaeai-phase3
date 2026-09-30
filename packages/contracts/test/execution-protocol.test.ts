@@ -3,8 +3,10 @@ import {
   isReplayableSequence,
   RunCommandEnvelopeSchema,
   RunEventEnvelopeSchema,
+  RunLiveEventSchema,
   runCommandTopic,
   runEventTopic,
+  runLiveTopic,
 } from "../src/execution-protocol.js";
 
 const ids = {
@@ -107,5 +109,63 @@ describe("execution protocol contracts", () => {
       `reasonateai.run.events.${ids.runId}`
     );
     expect(runCommandTopic).toBe("reasonateai.run.commands");
+    expect(runLiveTopic(ids.runId)).toBe(`reasonateai.run.live.${ids.runId}`);
+  });
+
+  it("accepts a live delta for each streamed source and rejects a bare one", () => {
+    const message = RunLiveEventSchema.parse({
+      delta: "Checking the checkout route",
+      kind: "message.delta",
+      messageId: "msg-1",
+      mode: "append",
+      organizationId: ids.organizationId,
+      projectId: ids.projectId,
+      runId: ids.runId,
+      schemaVersion: 1,
+    });
+    expect(message.kind).toBe("message.delta");
+
+    const subagent = RunLiveEventSchema.parse({
+      agentType: "scout",
+      delta: "app/api/checkout/route.ts",
+      kind: "subagent.delta",
+      organizationId: ids.organizationId,
+      projectId: ids.projectId,
+      runId: ids.runId,
+      schemaVersion: 1,
+      toolCallId: "call-1",
+    });
+    expect(subagent.kind).toBe("subagent.delta");
+  });
+
+  it("rejects a live delta that carries no text to append", () => {
+    expect(() =>
+      RunLiveEventSchema.parse({
+        delta: "",
+        kind: "message.delta",
+        messageId: "msg-1",
+        mode: "append",
+        organizationId: ids.organizationId,
+        projectId: ids.projectId,
+        runId: ids.runId,
+        schemaVersion: 1,
+      })
+    ).toThrow();
+  });
+
+  it("rejects a live delta that smuggles an unsequenced position", () => {
+    expect(() =>
+      RunLiveEventSchema.parse({
+        delta: "text",
+        kind: "message.delta",
+        messageId: "msg-1",
+        mode: "append",
+        organizationId: ids.organizationId,
+        projectId: ids.projectId,
+        runId: ids.runId,
+        schemaVersion: 1,
+        sequence: 7,
+      })
+    ).toThrow();
   });
 });

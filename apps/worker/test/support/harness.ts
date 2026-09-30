@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { AgentControllerEvent } from "@mastra/core/agent-controller";
-import type { BuildSessionId } from "@reasonateai/contracts/execution";
+import type {
+  BuildSessionId,
+  PromptAttachment,
+} from "@reasonateai/contracts/execution";
+import type { RunLiveEvent } from "@reasonateai/contracts/execution-protocol";
 import {
   type OrganizationId,
   OrganizationIdSchema,
@@ -27,6 +31,7 @@ import {
 import { Pool } from "pg";
 import { RunExecutor } from "../../src/executor.js";
 import { createLedger } from "../../src/ledger.js";
+import type { LiveEventPublisher } from "../../src/live-events.js";
 import { createLogger } from "../../src/logger.js";
 import { candidateScope } from "../../src/run-context.js";
 import type { RunRuntime, RunSession } from "../../src/runtime.js";
@@ -120,7 +125,9 @@ export async function createHarness(input: {
  * claims is the same kind of row a real dispatch produces.
  */
 export async function allocateRunFixture(
-  harness: Harness
+  harness: Harness,
+  message?: string,
+  attachments?: PromptAttachment[]
 ): Promise<RunFixture> {
   const organizationId = OrganizationIdSchema.parse(randomUUID());
   const projectId = ProjectIdSchema.parse(randomUUID());
@@ -137,7 +144,9 @@ export async function allocateRunFixture(
   harness.registerOrganization(organizationId);
 
   const allocation = await harness.store.allocateBuildSession({
+    ...(attachments === undefined ? {} : { attachments }),
     idempotencyKey: `worker-test-${randomUUID()}`,
+    ...(message === undefined ? {} : { message }),
     scope,
     userSessionId: SessionIdSchema.parse(randomUUID()),
   });
@@ -162,10 +171,37 @@ export async function allocateRunFixture(
   };
 }
 
+/** The live frames one executor published, captured instead of transported. */
+export interface RecordingLiveEvents {
+  frames: RunLiveEvent[];
+  publisher: LiveEventPublisher;
+}
+
+/**
+ * A publisher that keeps what it was handed.
+ *
+ * The transport itself is exercised against real Redis elsewhere; every other
+ * suite needs the frames the executor derived from controller events, not a
+ * second broker under test.
+ */
+export function recordingLiveEvents(): RecordingLiveEvents {
+  const frames: RunLiveEvent[] = [];
+  return {
+    frames,
+    publisher: {
+      close: async () => undefined,
+      publish: (event) => {
+        frames.push(event);
+      },
+    },
+  };
+}
+
 export function createExecutor(input: {
   harness: Harness;
   holder: string;
   leaseTtlMs?: number;
+  live?: LiveEventPublisher;
   renewIntervalMs?: number;
   runtime: RunRuntime;
   /** Overrides the store, so a suite can make one operation refuse. */
@@ -183,6 +219,7 @@ export function createExecutor(input: {
       stopGraceMs: 2000,
     },
     ledger: createLedger({ store }),
+    live: input.live ?? recordingLiveEvents().publisher,
     logger: input.harness.logger,
     resolveSandbox: async ({ requestContext }) =>
       await resolveBuildSandbox({ requestContext }),
@@ -235,6 +272,23 @@ export interface SessionScript {
  */
 export class ScriptedSession implements RunSession {
   aborted = false;
+  readonly run = { getRunId: () => this.#runId };
+  readonly suspensions = {
+    register: (input: {
+      runId: string;
+      toolCallId: string;
+      toolName: string;
+    }) => {
+      this.recoveredSuspension = input;
+    },
+  };
+  recoveredSuspension:
+    | { runId: string; toolCallId: string; toolName: string }
+    | undefined;
+  lastMessage: string | undefined;
+  lastResumeData: string | undefined;
+  lastResumedToolCallId: string | undefined;
+  lastFiles: SessionSendInput["files"];
   readonly events: AgentControllerEvent[];
   readonly started: Promise<void>;
   sendCalls = 0;
@@ -242,6 +296,7 @@ export class ScriptedSession implements RunSession {
   #fail: ((error: Error) => void) | undefined;
   #finish: (() => void) | undefined;
   readonly #listeners = new Set<(event: AgentControllerEvent) => void>();
+  readonly #runId = randomUUID();
   readonly #markStarted: () => void;
 
   constructor(script: SessionScript = {}) {
@@ -266,6 +321,8 @@ export class ScriptedSession implements RunSession {
 
   sendMessage = (input: SessionSendInput): Promise<void> => {
     this.sendCalls += 1;
+    this.lastMessage = input.content;
+    this.lastFiles = input.files;
     const { requestContext } = input;
     if (requestContext === undefined) {
       return Promise.reject(
@@ -285,6 +342,18 @@ export class ScriptedSession implements RunSession {
     }
     this.#markStarted();
 
+    return new Promise<void>((resolve, reject) => {
+      this.#finish = resolve;
+      this.#fail = reject;
+    });
+  };
+
+  resumeToolCall = (input: {
+    resumeData: string;
+    toolCallId: string;
+  }): Promise<void> => {
+    this.lastResumeData = input.resumeData;
+    this.lastResumedToolCallId = input.toolCallId;
     return new Promise<void>((resolve, reject) => {
       this.#finish = resolve;
       this.#fail = reject;

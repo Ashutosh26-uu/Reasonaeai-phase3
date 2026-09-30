@@ -1,9 +1,11 @@
 import { authorize } from "@reasonateai/auth/authorize";
 import {
   CreateProjectRequestSchema,
+  ProjectListSchema,
   ProjectViewSchema,
 } from "@reasonateai/contracts/auth";
 import type { UserPrincipal } from "@reasonateai/contracts/identity";
+import { OrganizationIdSchema } from "@reasonateai/contracts/identity";
 import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
 import {
   apiErrorResponse,
@@ -136,6 +138,58 @@ export function createProjectHandlers(deps: ProjectRouteDeps) {
       });
 
       return c.json(ProjectViewSchema.parse(created), 201);
+    },
+    list: async (c: HandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+      const principal = await deps.resolvePrincipal({
+        cookieHeader: c.req.header("cookie"),
+      });
+      if (!principal) {
+        return unauthenticatedResponse(rid);
+      }
+      const organizationId = OrganizationIdSchema.safeParse(
+        c.req.query("organizationId")
+      );
+      if (!organizationId.success) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message: "An organization identifier is required.",
+          requestId: rid,
+        });
+      }
+      const membership = await deps
+        .store()
+        .memberships.getOrganizationMembership({
+          organizationId: organizationId.data,
+          userId: principal.userId,
+        });
+      const decision = authorize({
+        action: "organization:read",
+        now: new Date().toISOString(),
+        organizationMembership: membership ?? null,
+        principal,
+        projectMembership: null,
+        resource: {
+          kind: "organization",
+          organizationId: organizationId.data,
+          projectId: null,
+          resourceId: null,
+        },
+      });
+      if (!decision.allowed) {
+        return apiErrorResponse({
+          code: "forbidden",
+          message: "You are not authorized to read this organization.",
+          requestId: rid,
+        });
+      }
+      const projects = await deps.store().listProjectsForUser({
+        includeAll:
+          membership?.role === "owner" || membership?.role === "admin",
+        organizationId: organizationId.data,
+        userId: principal.userId,
+      });
+      return c.json(ProjectListSchema.parse({ projects }), 200);
     },
   };
 }

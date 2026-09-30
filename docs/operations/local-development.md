@@ -64,8 +64,18 @@ docker rm reasonate-pg reasonate-redis
 
 ## Commands
 
+Start the web app, API, and worker together from the repository root. The
+command loads `apps/api/.env` when present, streams each service's logs in the
+terminal, and Ctrl+C stops all three processes. PostgreSQL and Redis must be
+running first.
+
+```powershell
+pnpm dev
+```
+
 | Command | Purpose |
 | --- | --- |
+| `pnpm dev` | Run the web app on port 3219, the API on port 4111, and the worker together |
 | `pnpm install --frozen-lockfile` | Install exactly what the lockfile pins |
 | `pnpm check` | Formatting and linting across the repository |
 | `pnpm fix` | Apply safe formatting and lint fixes |
@@ -90,13 +100,20 @@ pnpm --filter @reasonateai/api smoke:checkpoint
 
 | Variable | Used by | Effect when unset |
 | --- | --- | --- |
-| `DATABASE_URL` | `@reasonateai/project-state` tests | Tests skip |
-| `REDIS_URL` | `@reasonateai/project-state` tests | Tests skip |
+| `DATABASE_URL` | `@reasonateai/project-state` tests, `apps/api`, `apps/worker` | Tests skip; the API and worker cannot start |
+| `REDIS_URL` | `@reasonateai/project-state`, `apps/api`, `apps/worker` | Tests skip; the API keeps its last-computed rate-limit decisions and cannot fan out run events, and the worker logs `run.live.disabled` and executes runs without publishing live deltas |
 | `TURSO_DATABASE_URL` | `apps/api` storage | Falls back to a local SQLite file |
 | `TURSO_AUTH_TOKEN` | `apps/api` storage | No auth token |
 | `DEEPSEEK_API_KEY` | Model router | Required before a real run can execute |
+| `REASONATE_PUBLIC_ORIGIN` | `apps/api` | The origin a sign-in link points back at; defaults to the dev server's own address |
+| `REASONATE_ALLOWED_ORIGINS` | `apps/api` | Origins allowed to make state-changing browser requests; a mismatched origin is refused |
+| `SESSION_SECRET` | `apps/api` | Signing key for the CSRF pair; identity routes refuse to run without it |
 
 Never commit a `.env` file. `.env` and `.env.*` are ignored, with `.env.example` as the documented template.
+
+### Live streaming needs a current worker
+
+Model text reaches a browser as live deltas published by the **worker** that claims the run, onto a bounded `reasonateai.run.live.<runId>` topic. A worker built before that publisher existed still executes runs correctly, but its runs show only durable events and tool activity — no streamed text. After pulling a change to the worker, restart it; `tsx src/main.ts` loads its source once and does not watch for changes.
 
 ---
 
@@ -149,6 +166,12 @@ Formatting and linting are owned by Ultracite and Biome. Do not add ESLint, Pret
 ---
 
 ## Troubleshooting
+
+### Pending-question schema recovery
+
+Schema version 4 adds `runs.pending_tool_call_id`, `pending_mastra_run_id`, `pending_answer`, and `pending_answered_by`, and widens the one-active-run project index to include `awaiting_approval`. The migration is additive except for replacing that index, and `store.migrate()` applies it under the existing advisory lock. A deployment should migrate before starting the updated API and worker. A replacement worker needs the same Mastra storage and the retained named Docker workspace volume to resume a suspended question; it removes only the abandoned container before remounting that volume.
+
+If this release must be rolled back, first stop new run admission and let live questions resolve or cancel them while the updated worker is still running. Confirm there are no `awaiting_approval` rows, then stop workers and restore the previous application artifact. The added columns can remain unused; they do not need to be dropped to restore the old application. Only after pending runs are cleared should an operator replace `runs_one_active_project_idx` with the previous `runs_one_running_project_idx` (`where status = 'running'`). Preserve the database and sandbox volumes if a pending worker crashed; do not delete them as a rollback shortcut.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |

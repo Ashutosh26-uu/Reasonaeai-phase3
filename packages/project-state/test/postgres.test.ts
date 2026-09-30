@@ -78,9 +78,10 @@ describeWithDatabase("project state store", () => {
     }
   });
 
-  it("allocates once per idempotency key and reuses the active session on reconnect", async () => {
+  it("replays one key and creates separate project conversations for new keys", async () => {
     const first = await store.allocateBuildSession({
       idempotencyKey: "replay-key-0001",
+      message: "Build a task tracker",
       scope,
       userSessionId,
     });
@@ -89,7 +90,7 @@ describeWithDatabase("project state store", () => {
       scope,
       userSessionId,
     });
-    const reconnect = await store.allocateBuildSession({
+    const second = await store.allocateBuildSession({
       idempotencyKey: "replay-key-0002",
       scope,
       userSessionId,
@@ -106,11 +107,72 @@ describeWithDatabase("project state store", () => {
       first.buildSession.buildSessionId
     );
 
-    expect(reconnect.created).toBe(false);
-    expect(reconnect.buildSession.buildSessionId).toBe(
+    expect(second.created).toBe(true);
+    expect(second.buildSession.buildSessionId).not.toBe(
       first.buildSession.buildSessionId
     );
-    expect(reconnect.buildSession.runId).toBe(first.buildSession.runId);
+    const conversations = await store.listConversations(scope);
+    expect(conversations.map((item) => item.buildSessionId)).toContain(
+      first.buildSession.buildSessionId
+    );
+    expect(conversations.map((item) => item.buildSessionId)).toContain(
+      second.buildSession.buildSessionId
+    );
+    expect(
+      (
+        await store.listConversationMessages({
+          buildSessionId: first.buildSession.buildSessionId,
+          scope,
+        })
+      )[0]?.text
+    ).toBe("Build a task tracker");
+    expect(
+      (await store.listRunnableRuns({ limit: 100 })).find(
+        (item) => item.runId === first.buildSession.runId
+      )?.userMessage
+    ).toBe("Build a task tracker");
+  });
+
+  it("stores follow-up turns idempotently and rejects overlapping runs", async () => {
+    const allocated = await store.allocateBuildSession({
+      idempotencyKey: "turn-key-0001",
+      message: "Start the app",
+      scope,
+      userSessionId,
+    });
+    const { buildSessionId } = allocated.buildSession;
+    await expect(
+      store.appendConversationTurn({
+        buildSessionId,
+        idempotencyKey: "turn-key-0002",
+        message: "Add search",
+        scope,
+      })
+    ).rejects.toThrow("already has a run");
+    await store.setRunStatus({
+      runId: allocated.buildSession.runId,
+      scope,
+      status: "completed",
+    });
+    const first = await store.appendConversationTurn({
+      buildSessionId,
+      idempotencyKey: "turn-key-0002",
+      message: "Add search",
+      scope,
+    });
+    const replay = await store.appendConversationTurn({
+      buildSessionId,
+      idempotencyKey: "turn-key-0002",
+      message: "Add search",
+      scope,
+    });
+    expect(first.created).toBe(true);
+    expect(replay).toEqual({ created: false, runId: first.runId });
+    expect(
+      (await store.listConversationMessages({ buildSessionId, scope })).map(
+        (item) => item.text
+      )
+    ).toEqual(["Start the app", "Add search"]);
   });
 
   it("refuses to resolve another tenant's build session", async () => {

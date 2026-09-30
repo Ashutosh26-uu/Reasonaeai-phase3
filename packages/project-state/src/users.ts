@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { AccountProfile } from "@reasonateai/contracts/auth";
 import { type UserId, UserIdSchema } from "@reasonateai/contracts/identity";
 import type { Pool } from "pg";
 
@@ -18,6 +19,13 @@ export interface UserRepository {
   claimByEmail: (input: {
     email: string;
   }) => Promise<{ created: boolean; userId: UserId }>;
+  getProfile: (input: {
+    userId: UserId;
+  }) => Promise<AccountProfile | undefined>;
+  setDisplayName: (input: {
+    displayName: string | null;
+    userId: UserId;
+  }) => Promise<AccountProfile | undefined>;
 }
 
 const INSERT_USER_SQL = `
@@ -35,6 +43,10 @@ returning user_id
  */
 const SELECT_USER_BY_EMAIL_SQL = `
 select user_id from users where lower(primary_email) = lower($1)
+`;
+
+const SELECT_PROFILE_SQL = `
+select user_id, primary_email, display_name from users where user_id = $1
 `;
 
 export function createUserRepository(pool: Pool): UserRepository {
@@ -68,6 +80,42 @@ export function createUserRepository(pool: Pool): UserRepository {
       return {
         created: false,
         userId: UserIdSchema.parse(existingRow.user_id),
+      };
+    },
+    getProfile: async ({ userId }) => {
+      const result = await pool.query<{
+        display_name: string | null;
+        primary_email: string | null;
+        user_id: string;
+      }>(SELECT_PROFILE_SQL, [userId]);
+      const [row] = result.rows;
+      if (!row) {
+        return;
+      }
+      return {
+        displayName: row.display_name,
+        email: row.primary_email,
+        userId: UserIdSchema.parse(row.user_id),
+      };
+    },
+    setDisplayName: async ({ displayName, userId }) => {
+      const result = await pool.query<{
+        display_name: string | null;
+        primary_email: string | null;
+        user_id: string;
+      }>(
+        `update users set display_name = $2 where user_id = $1
+         returning user_id, primary_email, display_name`,
+        [userId, displayName]
+      );
+      const [row] = result.rows;
+      if (!row) {
+        return;
+      }
+      return {
+        displayName: row.display_name,
+        email: row.primary_email,
+        userId: UserIdSchema.parse(row.user_id),
       };
     },
   };

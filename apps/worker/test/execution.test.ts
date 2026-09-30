@@ -1,7 +1,19 @@
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import type { AgentControllerEvent } from "@mastra/core/agent-controller";
+import type { PromptAttachment } from "@reasonateai/contracts/execution";
 import type { RunEventEnvelope } from "@reasonateai/contracts/execution-protocol";
-import type { RunId } from "@reasonateai/contracts/identity";
+import { type RunId, UserIdSchema } from "@reasonateai/contracts/identity";
 import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { createStopSignal } from "../src/stop-signal.js";
 import {
   allocateRunFixture,
@@ -10,6 +22,7 @@ import {
   createHarness,
   type Harness,
   type RunFixture,
+  recordingLiveEvents,
   removeRunArtifacts,
   scriptedRuntime,
   volumeCount,
@@ -73,6 +86,24 @@ async function ledger(
   });
 }
 
+/**
+ * An assistant message as the controller streams it: the same id and role with
+ * the text it has produced so far, updated in place.
+ */
+function streamed(id: string, text: string): AgentControllerMessage {
+  return {
+    content: { format: 2, parts: [{ text, type: "text" }] },
+    createdAt: new Date(),
+    id,
+    role: "assistant",
+  };
+}
+
+type AgentControllerMessage = Extract<
+  AgentControllerEvent,
+  { type: "message_update" }
+>["message"];
+
 describeWithDatabase("run execution", () => {
   let harness: Harness;
   const volumes: string[] = [];
@@ -92,11 +123,259 @@ describeWithDatabase("run execution", () => {
     await harness.dispose();
   });
 
-  async function fixture(): Promise<RunFixture> {
-    const allocated = await allocateRunFixture(harness);
+  async function fixture(
+    message?: string,
+    attachments?: PromptAttachment[]
+  ): Promise<RunFixture> {
+    const allocated = await allocateRunFixture(harness, message, attachments);
     volumes.push(allocated.volume);
     return allocated;
   }
+
+  it("forwards durable user attachments into the Mastra session", async () => {
+    const attachment = {
+      data: "data:image/png;base64,aGVsbG8=",
+      filename: "wireframe.png",
+      mediaType: "image/png",
+    };
+    const scripted = scriptedRuntime();
+    const executor = createExecutor({
+      harness,
+      holder: "worker-attachments",
+      runtime: scripted.runtime,
+    });
+    const allocated = await fixture("Inspect this screen", [attachment]);
+
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+    expect(session.lastFiles).toEqual([attachment]);
+    session.complete([{ reason: "complete", type: "agent_end" }]);
+
+    expect(await attempt).toBe("succeeded");
+  });
+
+  it("keeps a suspended ask_user run leased, then resumes the same session with the answer", async () => {
+    const scripted = scriptedRuntime({
+      events: [
+        {
+          message: streamed("partial-answer", "I need one detail."),
+          type: "message_update",
+        },
+      ],
+    });
+    const executor = createExecutor({
+      harness,
+      holder: "worker-question",
+      runtime: scripted.runtime,
+    });
+    const allocated = await fixture("Choose a region");
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+    session.complete([
+      {
+        args: { question: "Which region?" },
+        resumeSchema: "string",
+        suspendPayload: { question: "Which region?" },
+        toolCallId: "ask-1",
+        toolName: "ask_user",
+        type: "tool_suspended",
+      },
+      { reason: "suspended", type: "agent_end" },
+    ]);
+    await vi.waitFor(async () => {
+      expect(await runStatus(harness, allocated)).toBe("awaiting_approval");
+    });
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeDefined();
+    expect(await containerCount(allocated.volume)).toBe(1);
+    expect(
+      (
+        await harness.store.listConversationMessages({
+          buildSessionId: allocated.buildSessionId,
+          scope: allocated.scope,
+        })
+      ).some((message) => message.text === "I need one detail.")
+    ).toBe(true);
+    const runnables = await harness.store.listRunnableRuns({ limit: 64 });
+    expect(
+      runnables.some((run) => run.runId === allocated.candidate.runId)
+    ).toBe(false);
+    expect(
+      await harness.store.answerRunQuestion({
+        answer: "Europe",
+        buildSessionId: allocated.buildSessionId,
+        requestedByUserId: UserIdSchema.parse(randomUUID()),
+        runId: allocated.candidate.runId,
+        scope: allocated.scope,
+        toolCallId: "ask-1",
+      })
+    ).toBe("accepted");
+    await vi.waitFor(
+      () => {
+        expect(session.lastResumeData).toBe("Europe");
+      },
+      { timeout: 3000 }
+    );
+    expect(session.lastResumedToolCallId).toBe("ask-1");
+    session.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await attempt).toBe("succeeded");
+    expect(await runStatus(harness, allocated)).toBe("completed");
+    expect(session.sendCalls).toBe(1);
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeUndefined();
+  });
+
+  it("reclaims an expired suspended run from its durable controller identity", async () => {
+    const allocated = await fixture("Ask for the region");
+    const oldLease = await harness.store.beginRun({
+      holder: "expired-worker",
+      runId: allocated.candidate.runId,
+      ttlMs: 100,
+    });
+    expect(oldLease).toBeDefined();
+    await harness.store.appendRunEvent({
+      controllerRunId: "stored-controller-run",
+      payload: {
+        kind: "tool_suspended",
+        toolCallId: "ask-after-restart",
+        toolName: "ask_user",
+      },
+      runId: allocated.candidate.runId,
+      scope: allocated.scope,
+      type: "approval.requested",
+    });
+    execFileSync("docker", ["volume", "create", allocated.volume]);
+    await new Promise<void>((resolve) => setTimeout(resolve, 200));
+    const candidate = (
+      await harness.store.listRunnableRuns({ limit: 64 })
+    ).find((item) => item.runId === allocated.candidate.runId);
+    expect(candidate?.pendingToolCallId).toBe("ask-after-restart");
+    expect(candidate?.pendingMastraRunId).toBe("stored-controller-run");
+    if (!candidate) {
+      throw new Error("The suspended run was not offered for recovery.");
+    }
+    const scripted = scriptedRuntime();
+    const executor = createExecutor({
+      harness,
+      holder: "recovery-worker",
+      runtime: scripted.runtime,
+    });
+    const attempt = executor.execute(candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await vi.waitFor(() => {
+      expect(session.recoveredSuspension).toEqual({
+        runId: "stored-controller-run",
+        toolCallId: "ask-after-restart",
+        toolName: "ask_user",
+      });
+    });
+    expect(
+      await harness.store.answerRunQuestion({
+        answer: "Europe",
+        buildSessionId: allocated.buildSessionId,
+        requestedByUserId: UserIdSchema.parse(randomUUID()),
+        runId: allocated.candidate.runId,
+        scope: allocated.scope,
+        toolCallId: "ask-after-restart",
+      })
+    ).toBe("accepted");
+    await vi.waitFor(
+      () => {
+        expect(session.lastResumeData).toBe("Europe");
+      },
+      { timeout: 3000 }
+    );
+    session.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await attempt).toBe("succeeded");
+    expect(session.sendCalls).toBe(0);
+  });
+
+  it("publishes the text its agent streams as live deltas, and the ledger keeps the message", async () => {
+    const scripted = scriptedRuntime({
+      events: [
+        {
+          message: streamed("m-live", "Reading the router "),
+          type: "message_update",
+        },
+        {
+          message: streamed("m-live", "Reading the router of the app."),
+          type: "message_update",
+        },
+        {
+          message: streamed("m-live", "Reading the router of the app."),
+          type: "message_end",
+        },
+        { reason: "complete", type: "agent_end" },
+      ],
+    });
+    const live = recordingLiveEvents();
+    const executor = createExecutor({
+      harness,
+      holder: "worker-live",
+      live: live.publisher,
+      runtime: scripted.runtime,
+    });
+    const allocated = await fixture("Trace the router");
+
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+    session.complete([{ reason: "complete", type: "agent_end" }]);
+
+    expect(await attempt).toBe("succeeded");
+
+    // Two updates, one delta each: the second carries only what it added, and
+    // the end of the message repeats nothing.
+    expect(live.frames).toMatchObject([
+      {
+        kind: "message.snapshot",
+        snapshot: {
+          finished: false,
+          parts: [{ text: "Reading the router " }],
+          revision: 1,
+        },
+      },
+      {
+        kind: "message.snapshot",
+        snapshot: {
+          finished: false,
+          parts: [{ text: "Reading the router of the app." }],
+          revision: 2,
+        },
+      },
+      {
+        kind: "message.snapshot",
+        snapshot: {
+          finished: true,
+          parts: [{ text: "Reading the router of the app." }],
+          revision: 3,
+        },
+      },
+    ]);
+
+    // The durable record still holds the completed message once, which is what
+    // a client that missed every delta reads.
+    const events = await ledger(harness, allocated);
+    expect(
+      events.filter((event) => event.payload.kind === "message_snapshot")
+    ).toHaveLength(2);
+  });
+
+  it("sends the user's saved prompt to the CTO", async () => {
+    const scripted = scriptedRuntime();
+    const executor = createExecutor({
+      harness,
+      holder: "worker-prompt",
+      runtime: scripted.runtime,
+    });
+    const allocated = await fixture("Build a calendar with reminders");
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+    expect(session.lastMessage).toBe("Build a calendar with reminders");
+    session.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await attempt).toBe("succeeded");
+  });
 
   it("drives a claimed run, appends the ledger, and leaves no container or volume", async () => {
     const scripted = scriptedRuntime({
@@ -159,6 +438,48 @@ describeWithDatabase("run execution", () => {
     });
     expect(latest?.checkpointId).toBe(checkpointId);
 
+    expect(await containerCount(allocated.volume)).toBe(0);
+    expect(await volumeCount(allocated.volume)).toBe(0);
+  });
+
+  it("starts a fresh sandbox and restores the checkpoint for a follow-up turn", async () => {
+    const allocated = await fixture("Create the first version");
+    const first = scriptedRuntime();
+    const firstAttempt = createExecutor({
+      harness,
+      holder: "worker-follow-up-first",
+      runtime: first.runtime,
+    }).execute(allocated.candidate, createStopSignal());
+    const firstSession = await first.waitForSession();
+    await firstSession.started;
+    firstSession.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await firstAttempt).toBe("succeeded");
+
+    const turn = await harness.store.appendConversationTurn({
+      buildSessionId: allocated.buildSessionId,
+      idempotencyKey: randomUUID(),
+      message: "Continue the same project",
+      scope: allocated.scope,
+    });
+    const candidate = (
+      await harness.store.listRunnableRuns({ limit: 32 })
+    ).find((run) => run.runId === turn.runId);
+    expect(candidate).toBeDefined();
+    if (candidate === undefined) {
+      return;
+    }
+
+    const second = scriptedRuntime();
+    const secondAttempt = createExecutor({
+      harness,
+      holder: "worker-follow-up-second",
+      runtime: second.runtime,
+    }).execute(candidate, createStopSignal());
+    const secondSession = await second.waitForSession();
+    await secondSession.started;
+    expect(secondSession.lastMessage).toBe("Continue the same project");
+    secondSession.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await secondAttempt).toBe("succeeded");
     expect(await containerCount(allocated.volume)).toBe(0);
     expect(await volumeCount(allocated.volume)).toBe(0);
   });
@@ -408,5 +729,34 @@ describeWithDatabase("run execution", () => {
 
     expect(await containerCount(allocated.volume)).toBe(0);
     expect(await volumeCount(allocated.volume)).toBe(0);
+  });
+
+  it("aborts an active Mastra run after a durable user cancellation request", async () => {
+    const scripted = scriptedRuntime();
+    const executor = createExecutor({
+      harness,
+      holder: "worker-user-cancel",
+      runtime: scripted.runtime,
+    });
+    const allocated = await fixture();
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+
+    expect(
+      await harness.store.requestRunCancellation({
+        buildSessionId: allocated.candidate.buildSessionId,
+        requestedByUserId: UserIdSchema.parse(randomUUID()),
+        runId: allocated.candidate.runId,
+        scope: allocated.scope,
+      })
+    ).toBe(true);
+    expect(await attempt).toBe("cancelled");
+    expect(session.aborted).toBe(true);
+    expect(await runStatus(harness, allocated)).toBe("cancelled");
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeUndefined();
+    expect((await ledger(harness, allocated)).at(-1)?.type).toBe(
+      "run.cancelled"
+    );
   });
 });

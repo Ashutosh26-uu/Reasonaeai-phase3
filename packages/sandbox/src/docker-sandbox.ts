@@ -1,4 +1,5 @@
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import { rmSync } from "node:fs";
 import {
   readFile as fsReadFile,
   writeFile as fsWriteFile,
@@ -20,10 +21,62 @@ import type {
 import {
   RunCommandRequestSchema,
   SandboxConfigSchema,
+  SandboxContainerPortSchema,
+  SandboxPortBindingSchema,
 } from "@reasonateai/contracts/sandbox";
 import type { z } from "zod";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Publishes each declared container port on an ephemeral host port bound to
+ * loopback. Docker chooses the host port (`:0`), and the address is written out
+ * rather than left off: a `-p <port>:<port>` without an address publishes the
+ * port on every interface of the host.
+ */
+function publishedPortFlags(ports: readonly number[]): string[] {
+  const flags: string[] = [];
+  for (const port of new Set(ports)) {
+    flags.push("-p", `127.0.0.1:0:${SandboxContainerPortSchema.parse(port)}`);
+  }
+  return flags;
+}
+
+/**
+ * `docker port` prints one `host:port` line for the published container port.
+ * The binding is validated against the contract rather than trusted, so a
+ * provider that published on a routable address fails loudly here instead of
+ * handing a caller a URL that is reachable from the network.
+ */
+function parsePublishedHostPort(
+  output: string,
+  containerPort: number,
+  sandboxId: SandboxId
+): number {
+  const line = output
+    .split("\n")
+    .map((candidate) => candidate.trim())
+    .find((candidate) => candidate.length > 0);
+  if (line === undefined) {
+    throw new Error(
+      `Docker reported no host binding for container port ${containerPort} of sandbox ${sandboxId}.`
+    );
+  }
+
+  const separator = line.lastIndexOf(":");
+  const binding = SandboxPortBindingSchema.safeParse({
+    containerPort,
+    host: separator === -1 ? line : line.slice(0, separator),
+    hostPort: separator === -1 ? Number.NaN : Number(line.slice(separator + 1)),
+  });
+  if (!binding.success) {
+    throw new Error(
+      `Docker bound container port ${containerPort} of sandbox ${sandboxId} to ${line}, which is not a host port on the loopback interface.`
+    );
+  }
+
+  return binding.data.hostPort;
+}
 
 export class DockerSandbox implements ISandbox {
   readonly id: SandboxId;
@@ -61,6 +114,10 @@ export class DockerSandbox implements ISandbox {
       "--pids-limit=256",
       "--label",
       `reasonate.sandbox.id=${this.config.id}`,
+      // A published port exists from the moment the container is created or not
+      // at all, so the declaration is honoured here, at the only point Docker
+      // will accept it.
+      ...publishedPortFlags(this.config.ports),
       "-w",
       this.config.workdir,
       "-v",
@@ -99,6 +156,47 @@ export class DockerSandbox implements ISandbox {
       status: this.status,
       stoppedAt: this.stoppedAt,
     });
+
+  /**
+   * Reads back the host port Docker assigned to a declared container port. The
+   * host port is Docker's to choose, so it is looked up rather than derived, and
+   * the binding is validated as loopback-only before it is handed out.
+   */
+  readonly exposePort = async (containerPort: number): Promise<number> => {
+    if (this.status !== "running") {
+      throw new Error(
+        `Cannot publish a port on sandbox in status: ${this.status}`
+      );
+    }
+
+    const port = SandboxContainerPortSchema.parse(containerPort);
+    if (!this.config.ports.includes(port)) {
+      throw new Error(
+        `Container port ${port} was not declared when sandbox ${this.id} was created; a port cannot be published on an existing container.`
+      );
+    }
+
+    const { stdout } = await execFileAsync("docker", [
+      "port",
+      this.containerName,
+      `${port}/tcp`,
+    ]);
+
+    return parsePublishedHostPort(stdout, port, this.id);
+  };
+
+  /** The first declared port is the sandbox's address from the host. */
+  readonly baseUrl = async (): Promise<string> => {
+    const [firstPort] = this.config.ports;
+    if (firstPort === undefined) {
+      throw new Error(
+        `Sandbox ${this.id} publishes no port, so it has no host address.`
+      );
+    }
+
+    const hostPort = await this.exposePort(firstPort);
+    return `http://127.0.0.1:${hostPort}`;
+  };
 
   private readonly extractExecError = (
     error: unknown,
@@ -234,6 +332,29 @@ export class DockerSandbox implements ISandbox {
 
   readonly destroy = async (): Promise<void> => {
     await this.cleanup();
+    this.status = "destroyed";
+    this.stoppedAt = new Date().toISOString();
+  };
+
+  /**
+   * The teardown a process-exit handler can finish: the container and its
+   * workspace directory are removed by synchronous calls, because an exit
+   * handler has no event loop left to await in and on Windows a child process
+   * spawned there is killed along with its parent.
+   */
+  readonly destroySync = (): void => {
+    try {
+      spawnSync("docker", ["rm", "-f", "-v", this.containerName], {
+        stdio: "ignore",
+      });
+    } catch {
+      // Best effort: the process is going down either way.
+    }
+    try {
+      rmSync(this.hostWorkspaceDir, { force: true, recursive: true });
+    } catch {
+      // Best effort, as above.
+    }
     this.status = "destroyed";
     this.stoppedAt = new Date().toISOString();
   };

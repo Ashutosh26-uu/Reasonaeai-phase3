@@ -17,7 +17,7 @@ Frontend, backend, database, infrastructure, accessibility, security, and releas
 
 ## Build-session boundary
 
-The first authorized browser request will create or resume a tenant-scoped build session. Its authenticated session, organization, project, run, Mastra controller thread, sandbox, evidence, checkpoint, and deployment records must remain correlated.
+An authorized browser request creates a tenant-scoped build session for a project conversation. Reusing its idempotency key resumes that conversation; a new key starts another conversation in the same project. Follow-up turns create runs under the selected conversation. Its authenticated session, organization, project, run, Mastra thread, sandbox, evidence, checkpoint, and deployment records remain correlated.
 
 The current workspace adapter derives one stable Docker sandbox identity from the verified organization, project, and build-session identifiers. The CTO and its authorized workers share that project workspace. A malformed or incomplete scope fails closed.
 
@@ -40,7 +40,7 @@ Generated application code never receives the host Docker socket.
 
 ## Model
 
-The current development model-router identifier is `deepseek/deepseek-flash`, pinned in `src/mastra/model.ts`. It is DeepSeek's moving alias for the latest V4 Flash model. Live provider credentials and production routing remain outside the active foundation phase.
+The current development model-router identifier is `deepseek/deepseek-flash`, pinned in `src/mastra/model.ts`. A local worker uses `DEEPSEEK_API_KEY` from its process environment. Production routing still needs deployment configuration.
 
 DeepSeek serves that alias in thinking mode, which requires the `reasoning_content` field to be replayed on every assistant message of a subsequent request. `@ai-sdk/deepseek` only guarantees that field for model ids containing `deepseek-v4`, so on this alias a request whose assistant message carried no reasoning was rejected with `The reasoning_content in the thinking mode must be passed back to the API`. `@reasonateai/cto-runtime` closes the gap with a `deepseek-reasoning-echo` provider-history compatibility rule, which adds a reasoning part to an assistant message that has none. The rule is scoped to DeepSeek models, leaves reasoning the model did produce untouched, and rewrites only the outbound prompt.
 
@@ -49,6 +49,29 @@ DeepSeek serves that alias in thinking mode, which requires the `reasoning_conte
 The CTO's prompt is composed per run, not stored as one string: the base role and policy from `@reasonateai/cto-runtime/src/prompts.ts`, then an `<env>` block naming the model, the date, the verified run identity, and the resources the sandbox enforces, then the project's own instruction files when it has any. Composition is cached per run scope, so the prompt prefix does not change between steps of one run.
 
 Two things are deliberately absent. Tool definitions are not restated: the provider receives them as schemas beside the prompt, so a second copy in prose would only drift. And sandbox facts are not probed from the host — `nproc` and `/proc/meminfo` inside the container describe the host machine, so the block reports the enforced cgroup quota (one CPU, 2 GiB) instead of the 12 CPUs and 7.6 GiB a probe would claim.
+
+## Local browser run
+
+Keep `apps/api/.env` out of Git. It supplies the API and worker with the same
+database, Redis, and model credentials. The local example is
+`apps/api/.env.example`; generate fresh values for both secrets rather than
+copying empty placeholders. Start PostgreSQL and Redis, then build workspace
+packages and apply the schema before starting the API or worker:
+
+```sh
+pnpm --filter "@reasonateai/api^..." build
+cd apps/api
+node --env-file=.env --input-type=module -e "import { createProjectStateStore } from '@reasonateai/project-state/postgres'; const store = createProjectStateStore({ connectionString: process.env.DATABASE_URL }); try { await store.migrate(); console.log('Migration complete'); } finally { await store.close(); }"
+cd ../..
+pnpm --filter @reasonateai/api dev -- --env .env
+```
+
+In another terminal, build the worker and run it from `apps/worker` with
+`node --env-file=../api/.env dist/main.js`. Start the web app on port 3219.
+Sign in with a development email address; the API terminal prints the one-use
+link because no email provider is configured. Use the link in the browser,
+then create a project and send a message. The production API rejects this
+development sender; it needs a real email adapter before deployment.
 
 ## Commands
 
@@ -79,6 +102,10 @@ The harness streams the run instead of awaiting a final answer, so the work the 
 
 Sign-in is email magic link. No email provider is configured in this environment, so the sender in `src/mastra/adapters/magic-link-sender.ts` prints the link to stdout, announces itself as the development sender, and refuses to run outside development. A real provider replaces it behind the same `MagicLinkSender` contract.
 
+## Conversation routes
+
+The authenticated API provides `GET /v1/projects?organizationId=...`, `GET /v1/projects/:projectId/conversations?organizationId=...`, `GET /v1/build-sessions/:buildSessionId/messages?organizationId=...&projectId=...`, and `POST /v1/build-sessions/:buildSessionId/turns?organizationId=...&projectId=...`. The turn request body is `{ "message": "..." }` and requires an `Idempotency-Key` header. `POST /v1/build-sessions` accepts an optional opening `message`. All reads require project membership; writes require `agent:run`.
+
 ## Current boundary
 
-This change establishes the branded agent harness and typed lifecycle contracts. Authenticated build-session allocation, durable project state, browser verification, controlled network brokerage, preview routing, and the production deployment provider are still tracked as in progress or future work in `.context/PHASE.md`; they are not represented here as completed behavior.
+The product routes support real conversation creation, history, turns, and run events. Browser verification, controlled network brokerage, preview routing, approval decisions, and the production deployment provider remain separate work.

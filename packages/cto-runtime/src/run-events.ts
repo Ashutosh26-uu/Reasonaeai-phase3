@@ -11,6 +11,8 @@ import type {
   ProjectId,
   RunId,
 } from "@reasonateai/contracts/identity";
+import { messageText } from "./message-parts.js";
+import { snapshotMessage } from "./run-live-events.js";
 
 /**
  * The tenant and build-session scope one run belongs to. Every mapped envelope
@@ -41,20 +43,6 @@ export interface RunEventMappingInput {
  * replaces it with the committed sequence.
  */
 export const UNASSIGNED_SEQUENCE = 0;
-
-type MessageEndEvent = Extract<AgentControllerEvent, { type: "message_end" }>;
-type MessagePart = MessageEndEvent["message"]["content"]["parts"][number];
-
-/** The text an assistant or user message carries, concatenated in order. */
-function textOf(parts: readonly MessagePart[]): string {
-  let text = "";
-  for (const part of parts) {
-    if (part.type === "text") {
-      text += part.text;
-    }
-  }
-  return text;
-}
 
 /**
  * Reads a message off a failure without dumping its stack. The controller's
@@ -124,16 +112,35 @@ function draftOf(
     // The assistant's and the user's own text. Only the end of a message is
     // durable: the start and every update carry the same live message object
     // while it streams, and a ledger entry per delta would record one message
-    // many times. A message with no text has nothing to record.
+    // many times. A message with no text has nothing to record. Where the
+    // message belongs in a reader's order is derived from the work around it,
+    // because the controller does not report a start for every message.
+    //
+    // The model's reasoning travels with the message rather than inside its
+    // text parts, and it is the only honest source for "how it was reached", so
+    // it is recorded alongside the text when the model produced any.
     case "message_end": {
-      const text = textOf(event.message.content.parts);
-      if (text.length === 0) {
+      const text = messageText(event.message);
+      const snapshot = snapshotMessage(
+        event.message,
+        event.message.createdAt,
+        undefined,
+        true
+      );
+      if (snapshot.parts.length === 0) {
         return;
       }
+      const reasoning = snapshot.parts
+        .flatMap((part) => (part.type === "reasoning" ? [part.text] : []))
+        .join("\n\n");
       return {
         payload: {
           kind: event.type,
           messageId: event.message.id,
+          snapshot,
+          ...(typeof reasoning === "string" && reasoning.trim().length > 0
+            ? { reasoning: reasoning.trim() }
+            : {}),
           role: event.message.role,
           text,
         },

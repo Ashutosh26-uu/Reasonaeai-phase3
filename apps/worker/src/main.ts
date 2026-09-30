@@ -7,6 +7,10 @@ import { readWorkerConfig, type WorkerConfig } from "./config.js";
 import { RunExecutor } from "./executor.js";
 import { describeFailure } from "./failure.js";
 import { createLedger } from "./ledger.js";
+import {
+  createLiveEventPublisher,
+  type LiveEventPublisher,
+} from "./live-events.js";
 import { createLogger, type Logger } from "./logger.js";
 import { createCtoRuntimeFactory } from "./runtime.js";
 import { createStopSignal, type StopSignal } from "./stop-signal.js";
@@ -34,6 +38,7 @@ import { resolveBuildSandbox } from "./workspace.js";
  */
 function installShutdown(input: {
   config: WorkerConfig;
+  live: LiveEventPublisher;
   logger: Logger;
   stopSignal: StopSignal;
   store: ProjectStateStore;
@@ -58,6 +63,16 @@ function installShutdown(input: {
         graceMs: input.config.shutdownGraceMs,
         reason:
           "the run in flight did not finish before the grace window closed",
+      });
+    }
+
+    try {
+      // After the run has settled, so the deltas it produced are the ones
+      // written rather than abandoned with the queue.
+      await input.live.close();
+    } catch (error) {
+      input.logger.error("worker.shutdown.live.failed", {
+        failure: describeFailure(error).message,
       });
     }
 
@@ -101,6 +116,10 @@ function main(): void {
     ...(config.redisUrl === undefined ? {} : { redisUrl: config.redisUrl }),
   });
   const stopSignal = createStopSignal();
+  const live = createLiveEventPublisher({
+    logger,
+    redisUrl: config.redisUrl,
+  });
   const executor = new RunExecutor({
     checkpoints: createGitCheckpointStore({ root: config.checkpointRoot }),
     config: {
@@ -110,15 +129,19 @@ function main(): void {
       stopGraceMs: config.stopGraceMs,
     },
     ledger: createLedger({ store }),
+    live,
     logger,
     resolveSandbox: async ({ requestContext }) =>
       await resolveBuildSandbox({ requestContext }),
-    runtime: createCtoRuntimeFactory({ model: config.model }),
+    runtime: createCtoRuntimeFactory({
+      databaseUrl: config.databaseUrl,
+      model: config.model,
+    }),
     store,
   });
   const worker = new RunWorker({ config, executor, logger, stopSignal, store });
 
-  installShutdown({ config, logger, stopSignal, store, worker });
+  installShutdown({ config, live, logger, stopSignal, store, worker });
 
   logger.info("worker.started", {
     checkpointRoot: config.checkpointRoot,

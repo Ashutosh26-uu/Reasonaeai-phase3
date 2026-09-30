@@ -6,6 +6,12 @@ restores the project's workspace from its latest Git checkpoint, drives the run
 through the ReasonateAI CTO runtime, appends every durable event to the run's
 ledger, snapshots the workspace, and ends the run.
 
+The worker uses PostgreSQL-backed Mastra storage for its controller and memory.
+The controller binds the thread to the build-session identifier and uses the
+project as its memory resource, so a later run resumes the same conversation.
+Each run receives the user message persisted with its run row; only a run
+allocated without a message receives the default dispatch directive.
+
 It is not a public surface. It receives no browser traffic and holds no user
 session; the run row it claims is its whole authority, and the sandbox it starts
 has no network.
@@ -20,6 +26,11 @@ pnpm --filter @reasonateai/worker test           # real PostgreSQL, Redis, and D
 
 `start` requires a build (`pnpm --filter @reasonateai/worker build`); `test` and
 the package's `pretest` build the workspace dependencies it imports.
+
+For the local API setup, load the ignored `apps/api/.env` into the worker
+process as well: from `apps/worker`, run
+`node --env-file=../api/.env dist/main.js` after building. This supplies the
+same PostgreSQL connection and `DEEPSEEK_API_KEY` to both processes.
 
 The worker does **not** apply migrations. Schema changes are a separately
 observable deployment step, so the database must already carry

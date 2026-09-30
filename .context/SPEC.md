@@ -116,6 +116,14 @@ Agents, workers, and sandboxes are workload principals, not users. They receive 
 
 Passkeys, MFA, recovery codes, enterprise SSO, domain verification, and SCIM are approved product direction but are sequenced in [`FUTURE.md`](./FUTURE.md) unless promoted into the active phase.
 
+### Account and workspace settings
+
+- Users can edit their account display name; the verified sign-in email remains managed by the identity flow.
+- Appearance offers System, Light, and Dark themes, saved as a browser-local preference.
+- Workspace settings show the member's role, project count, current enforced plan, and metered usage against that plan's entitlements. Until billing assigns plans, the documented default plan is authoritative and the interface must identify billing and plan changes as unavailable.
+- Workspace renaming is available only to owners and admins and is authorized centrally and audited. Other workspace settings are read-only unless a corresponding authorized save operation exists.
+- Security settings show the current session's idle and absolute expiry and allow that session to be revoked. Device/session management and stronger authentication controls remain deferred until their server contracts exist.
+
 ## Secrets
 
 - Secrets are encrypted at rest through a managed key system in production.
@@ -129,7 +137,7 @@ Passkeys, MFA, recovery codes, enterprise SSO, domain verification, and SCIM are
 
 ReasonateAI uses Mastra as the agent platform. Each project build session has one run-scoped ReasonateAI CTO with the complete approved tool, skill, workspace, browser, command, debugging, verification, and deployment surface. The CTO preserves lifecycle context and may perform work directly. It delegates only when specialization or parallelism improves delivery, using a small worker vocabulary: a read-only scout, a full-capability coder, an evidence-driven debugger that can diagnose and repair, and ephemeral custom agents whose system instructions are authored by the CTO for one bounded objective. Frontend, backend, database, infrastructure, accessibility, security, and release engineering are task objectives, not permanent agent identities.
 
-The first authorized web request creates or resumes a build session and binds its organization, project, run, shared sandbox workspace, conversation thread, approvals, budget, and eventual deployment records. All authorized agents in that build session operate on the same project workspace; tool concurrency and file mutation remain controlled. A reconnect resolves the same durable session and workspace rather than silently creating a disconnected project.
+An authorized project can contain multiple build sessions, each representing one CTO conversation. The first request for a conversation binds its organization, project, run, sandbox identity, conversation thread, approvals, budget, and eventual deployment records. A repeat request with the same idempotency key reconnects to that conversation; a new key starts a separate one. Later user turns create new runs in the same conversation. Project checkpoints preserve the source workspace across conversations, while at most one run mutates a project's workspace at a time.
 
 Agents do not coordinate by unrecorded direct chat. They exchange typed, authorized project-state records, task results, artifacts, and audit events. The CTO remains the integration and completion authority, validates every delegated result, and obtains required user approval before destructive external effects, secret use, material scope changes, or public exposure.
 
@@ -140,6 +148,10 @@ The public API is the authenticated control plane. It owns browser sessions, org
 The execution plane is private. A worker fleet consumes authorized commands, obtains a scoped run lease, restores the project workspace, runs or resumes the CTO, persists state and evidence, and acknowledges work only after durable state is committed. Workers do not receive browser traffic or user cookies. Mastra's API and worker artifacts may be built from the same `apps/api/src/mastra` composition root, but `packages/cto-runtime` remains the sole owner of agent policy and behavior. The composition root registers no raw public agent or controller endpoint; authenticated custom product routes invoke the runtime through company-owned authorization and request-context adapters.
 
 PostgreSQL is authoritative for commands, idempotency keys, build sessions, runs, leases, approval state, checkpoints, artifact metadata, deployments, audit records, and a monotonically sequenced event ledger. Each transaction writes an outbox record before a relay publishes it. Redis Streams is the distributed command and live-event transport, never the only record of a command or user-visible transition. Browser reconnect uses the durable event ledger and `Last-Event-ID`, then joins the live SSE stream.
+
+The event stream carries two channels of different authority. The durable channel is the ledger: sequenced, replayable, and the only record of what a run did. The live channel carries versioned, bounded snapshots of ordered assistant text, explicit reasoning, and tool references on a separate topic that expires with the run, with no sequence or `id` on its frames. A snapshot revision replaces an earlier revision of that message; it never advances the durable ledger cursor. Periodic durable snapshots and a final snapshot preserve partial output through suspension or worker failure. History pages replay events across every run in the selected conversation, ordered by run creation and per-run sequence, and remain tenant/project scoped.
+
+The workspace URL includes both selected resource identifiers as query parameters: `/?projectId=<id>&conversationId=<build-session-id>`. Selecting a project without a conversation opens a blank conversation pane; prior conversations open only when selected or when their URL is loaded. Browser back/forward restores the prior selection.
 
 Mastra `AgentController` session state is process-local and therefore non-authoritative. ReasonateAI reconstructs a controller session from the durable build-session, run, approval, and thread binding after restart; no correctness, authorization, or recovery decision depends on an in-memory controller session.
 

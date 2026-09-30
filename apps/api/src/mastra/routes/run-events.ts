@@ -4,6 +4,7 @@ import { BuildSessionIdSchema } from "@reasonateai/contracts/execution";
 import {
   isReplayableSequence,
   type RunEventEnvelope,
+  type RunLiveEvent,
 } from "@reasonateai/contracts/execution-protocol";
 import {
   OrganizationIdSchema,
@@ -55,6 +56,19 @@ const DENIAL_BY_REASON: Record<string, ApiErrorCode> = {
  */
 export function formatServerSentEvent(event: RunEventEnvelope): string {
   return `id: ${event.sequence}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+}
+
+/**
+ * Serializes one live delta as an SSE frame with no `id`.
+ *
+ * The absence is the contract: `id` is what a browser replays as
+ * `Last-Event-ID`, and a delta has no position in the ledger, so numbering one
+ * would move a reconnecting client's cursor to a place the durable record never
+ * reached and make it skip events it never saw. The event name is the frame's
+ * own kind, so a client switches on what the frame is rather than on a guess.
+ */
+export function formatServerSentLiveEvent(event: RunLiveEvent): string {
+  return `event: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
 export interface RunEventRouteDeps {
@@ -213,6 +227,9 @@ export function createRunEventHandlers(deps: RunEventRouteDeps) {
             lastSent = event.sequence;
           };
 
+          const emitLive = (event: RunLiveEvent) => {
+            write(formatServerSentLiveEvent(event));
+          };
           const readLedger = async () => {
             // Paging is cursor-dependent: each page resumes after the previous
             // page's last sequence, so the reads cannot overlap.
@@ -261,6 +278,13 @@ export function createRunEventHandlers(deps: RunEventRouteDeps) {
                 // The listener attached after these events flowed, so the
                 // transport cannot hand them over; the ledger can.
                 enqueue(readLedger);
+              },
+              onLive: (event) => {
+                // Deliberately not chained behind durable writes: a delta is
+                // the newest text and means nothing next to the messages around
+                // it, so waiting behind a backfill would show a reader old text
+                // describing what it is already reading.
+                emitLive(event);
               },
               organizationId,
               projectId,

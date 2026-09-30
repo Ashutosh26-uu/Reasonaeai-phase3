@@ -1,0 +1,262 @@
+/*
+ * First-run setup.
+ *
+ * The same surfaces as the workspace: the pane's gray, controls raised one step
+ * above it, squared corners — 6px on a control, 8-10px on a panel. The only
+ * motion is the single 200ms entrance a step makes when it arrives.
+ */
+
+.onboarding {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 40px 24px;
+  overflow-y: auto;
+  background: var(--surface);
+}
+
+.onb-inner {
+  width: min(100%, 560px);
+}
+
+.onb-hero {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 22px;
+}
+
+.onb-progress {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  color: var(--ink-4);
+}
+
+.onb-title {
+  margin: 0 0 8px;
+  font-size: 21px;
+  font-weight: 550;
+  letter-spacing: -0.02em;
+}
+
+.onb-lede {
+  max-width: 58ch;
+  margin: 0 0 22px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--ink-3);
+}
+
+.onb-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* One arrival per step change: the step that was just mounted fades up. */
+.onb-step {
+  animation: onb-step-in 200ms ease-out;
+}
+
+.onb-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.onb-label {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.onb-input {
+  height: 38px;
+  padding: 0 11px;
+  font-size: 13.5px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.onb-input::placeholder {
+  color: var(--ink-4);
+}
+
+.onb-input:disabled {
+  color: var(--ink-3);
+}
+
+.onb-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 232px;
+  padding: 0;
+  margin: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.onb-project {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 13.5px;
+  color: var(--ink-2);
+  text-align: left;
+  cursor: pointer;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.onb-project:hover {
+  color: var(--ink);
+  background: var(--raised-hover);
+}
+
+.onb-project[data-active] {
+  color: var(--ink);
+  background: var(--raised-hover);
+  border-color: var(--line-strong);
+}
+
+.onb-project-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.onb-loop {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+  counter-reset: onb-loop;
+}
+
+.onb-loop li {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 10px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  counter-increment: onb-loop;
+}
+
+.onb-loop li::before {
+  font-family: "Cascadia Mono", ui-monospace, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.8;
+  color: var(--ink-4);
+  content: counter(onb-loop);
+}
+
+.onb-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.onb-primary {
+  height: 38px;
+  padding: 0 16px;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--surface);
+  cursor: pointer;
+  background: var(--ink);
+  border: 0;
+  border-radius: 6px;
+}
+
+.onb-primary:disabled {
+  color: var(--ink-4);
+  cursor: default;
+  background: var(--line);
+}
+
+.onb-skip {
+  padding: 6px 4px;
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--ink-3);
+  cursor: pointer;
+  background: none;
+  border: 0;
+}
+
+.onb-skip:hover {
+  color: var(--ink);
+}
+
+.onb-skip:disabled {
+  cursor: default;
+}
+
+.onb-banner {
+  padding: 9px 11px;
+  margin-bottom: 16px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.onb-banner.is-error {
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+.onb-figure {
+  display: flex;
+  justify-content: center;
+  margin: 0;
+}
+
+/* The grid is sized in `ch` and `lh` by the component, so it follows the font
+   down to the narrowest window without ever overflowing its column. */
+.onb-ascii {
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  font-family: "Cascadia Mono", ui-monospace, Consolas, monospace;
+  font-size: clamp(8px, 2.1vw, 12px);
+  line-height: 1.05;
+  color: var(--ink-3);
+  white-space: pre;
+}
+
+@keyframes onb-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .onboarding {
+    align-items: flex-start;
+    padding: 28px 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onb-step {
+    animation: none;
+  }
+}

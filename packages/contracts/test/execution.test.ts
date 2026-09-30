@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AllocateBuildSessionRequestSchema,
+  AppendConversationTurnRequestSchema,
   BuildSessionAllocationSchema,
   BuildSessionSchema,
   canAdvanceProductLifecycle,
@@ -20,6 +21,32 @@ const ids = {
 const now = "2026-09-19T12:00:00.000Z";
 
 describe("product execution contracts", () => {
+  it("accepts bounded, typed file attachments and rejects empty or oversized turns", () => {
+    const attachment = {
+      data: "data:image/png;base64,aGVsbG8=",
+      filename: "wireframe.png",
+      mediaType: "image/png",
+    };
+    expect(
+      AppendConversationTurnRequestSchema.parse({
+        attachments: [attachment],
+        message: "",
+      })
+    ).toMatchObject({ attachments: [attachment] });
+    expect(() =>
+      AppendConversationTurnRequestSchema.parse({
+        attachments: [],
+        message: " ",
+      })
+    ).toThrow();
+    expect(() =>
+      AppendConversationTurnRequestSchema.parse({
+        attachments: [{ ...attachment, mediaType: "image/jpeg" }],
+        message: "Inspect this",
+      })
+    ).toThrow();
+  });
+
   it("binds a web build session to identity, tenant, project, run, and sandbox state", () => {
     expect(
       BuildSessionSchema.parse({

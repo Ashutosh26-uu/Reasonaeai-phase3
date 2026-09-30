@@ -5,6 +5,8 @@ import {
   CreateOrganizationResponseSchema,
   type OrganizationSummary,
   OrganizationSummarySchema,
+  type ProjectSummary,
+  ProjectSummarySchema,
   type ProjectView,
   ProjectViewSchema,
 } from "@reasonateai/contracts/auth";
@@ -13,6 +15,13 @@ import {
   type BuildSessionId,
   BuildSessionIdSchema,
   BuildSessionSchema,
+  type ConversationAttachment,
+  type ConversationMessage,
+  ConversationMessageSchema,
+  type ConversationSummary,
+  ConversationSummarySchema,
+  type PromptAttachment,
+  PromptAttachmentSchema,
   type SandboxEnvironment,
   type SandboxEnvironmentId,
   SandboxEnvironmentIdSchema,
@@ -79,6 +88,13 @@ export interface BuildSessionAllocation {
   sandbox: SandboxEnvironment;
 }
 
+export class ConversationBusyError extends Error {
+  constructor() {
+    super("This conversation already has a run in progress.");
+    this.name = "ConversationBusyError";
+  }
+}
+
 export interface OutboxRecord {
   outboxId: string;
   payload: RunEventEnvelope;
@@ -131,9 +147,13 @@ export interface DeploymentRecord {
 export interface RunnableRun {
   buildSessionId: BuildSessionId;
   organizationId: OrganizationId;
+  pendingMastraRunId: string | null;
+  pendingToolCallId: string | null;
   projectId: ProjectId;
   runId: RunId;
   sandboxEnvironmentId: SandboxEnvironmentId;
+  userAttachments: PromptAttachment[];
+  userMessage: string | null;
   workspaceUri: string;
 }
 
@@ -160,14 +180,6 @@ export interface RunLeaseGrant {
   expiresAt: Date;
   leaseId: string;
 }
-
-const ACTIVE_BUILD_SESSION_STATUSES = [
-  "provisioning",
-  "ready",
-  "running",
-  "awaiting_approval",
-  "blocked",
-] as const;
 
 /**
  * The statuses a run cannot leave. A terminal run is never claimed, and the
@@ -232,6 +244,17 @@ function asIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
 }
 
+function estimateDataUrlBytes(data: string): number {
+  const encoded = data.slice(data.indexOf(",") + 1);
+  let padding = 0;
+  if (encoded.endsWith("==")) {
+    padding = 2;
+  } else if (encoded.endsWith("=")) {
+    padding = 1;
+  }
+  return Math.floor((encoded.length * 3) / 4) - padding;
+}
+
 function toBuildSession(row: Record<string, unknown>): BuildSession {
   return BuildSessionSchema.parse({
     buildSessionId: row.build_session_id,
@@ -264,11 +287,29 @@ function toSandboxEnvironment(
 
 export interface ProjectStateStore {
   allocateBuildSession: (input: {
+    attachments?: PromptAttachment[];
     idempotencyKey: string;
+    message?: string;
     scope: TenantScope;
     userSessionId: SessionId;
   }) => Promise<BuildSessionAllocation>;
+  answerRunQuestion: (input: {
+    answer: string;
+    buildSessionId: BuildSessionId;
+    requestedByUserId: UserId;
+    runId: RunId;
+    scope: TenantScope;
+    toolCallId: string;
+  }) => Promise<"accepted" | "replayed" | "conflict">;
+  appendConversationTurn: (input: {
+    attachments?: PromptAttachment[];
+    buildSessionId: BuildSessionId;
+    idempotencyKey: string;
+    message: string;
+    scope: TenantScope;
+  }) => Promise<{ runId: RunId; created: boolean }>;
   appendRunEvent: (input: {
+    controllerRunId?: string;
     payload: Record<string, unknown>;
     runId: RunId;
     scope: TenantScope;
@@ -349,7 +390,20 @@ export interface ProjectStateStore {
     projectId: ProjectId;
     runId: RunId;
   }) => Promise<RunRecord | undefined>;
+  /** Reads the durable cancellation request while a worker holds the run. */
+  isRunCancellationRequested: (runId: RunId) => Promise<boolean>;
   listArtifacts: (scope: TenantScope) => Promise<ArtifactRecord[]>;
+  listConversationEvents: (input: {
+    buildSessionId: BuildSessionId;
+    scope: TenantScope;
+    after: number;
+    limit: number;
+  }) => Promise<RunEventEnvelope[]>;
+  listConversationMessages: (input: {
+    buildSessionId: BuildSessionId;
+    scope: TenantScope;
+  }) => Promise<ConversationMessage[]>;
+  listConversations: (scope: TenantScope) => Promise<ConversationSummary[]>;
   /**
    * The caller's own organizations, for the session view. Membership is
    * resolved from the caller's identifier and nowhere else, so a caller cannot
@@ -359,6 +413,11 @@ export interface ProjectStateStore {
     userId: UserId;
   }) => Promise<OrganizationSummary[]>;
   listPendingOutbox: (limit: number) => Promise<OutboxRecord[]>;
+  listProjectsForUser: (input: {
+    includeAll: boolean;
+    organizationId: OrganizationId;
+    userId: UserId;
+  }) => Promise<ProjectSummary[]>;
   listRunEvents: (input: {
     afterSequence: number;
     limit: number;
@@ -399,6 +458,19 @@ export interface ProjectStateStore {
     scope: TenantScope;
   }) => Promise<boolean>;
   /**
+   * Renames an organization and records the audit event that describes it, in
+   * one transaction, so a rename nothing recorded cannot exist.
+   *
+   * Returns false when the organization does not exist, which is a refusal
+   * rather than an error: the caller was authorized for an organization that is
+   * gone, and there is nothing to report but that it did not happen.
+   */
+  renameOrganization: (input: {
+    audit: AuditEvent;
+    name: string;
+    organizationId: OrganizationId;
+  }) => Promise<boolean>;
+  /**
    * Extends the lease the caller still holds, and only that one: the row must
    * still carry this holder and this lease id and must not have lapsed. A lease
    * that expired mid-run reports `false` instead of being silently revived, and
@@ -410,12 +482,24 @@ export interface ProjectStateStore {
     leaseId: string;
     ttlMs: number;
   }) => Promise<boolean>;
+  /** Records an authorized cancellation request for a non-terminal run. */
+  requestRunCancellation: (input: {
+    runId: RunId;
+    scope: TenantScope;
+    buildSessionId: BuildSessionId;
+    requestedByUserId: UserId;
+  }) => Promise<boolean>;
   sessions: SessionRepository;
   setRunStatus: (input: {
     runId: RunId;
     scope: TenantScope;
     status: RunStatus;
   }) => Promise<boolean>;
+  takeRunAnswer: (input: {
+    runId: RunId;
+    scope: TenantScope;
+    toolCallId: string;
+  }) => Promise<string | undefined>;
   usage: UsageRepository;
   users: UserRepository;
 }
@@ -601,11 +685,19 @@ export function createProjectStateStore(config: {
   const usage = createUsageRepository(pool, { withTransaction });
 
   async function allocateBuildSession(input: {
+    attachments?: PromptAttachment[];
     idempotencyKey: string;
+    message?: string;
     scope: TenantScope;
     userSessionId: SessionId;
   }): Promise<BuildSessionAllocation> {
     return await withTransaction(async (client) => {
+      // Serialize conversation creation and idempotency replay in one project.
+      await client.query(
+        `select project_id from projects
+          where organization_id = $1 and project_id = $2 for update`,
+        [input.scope.organizationId, input.scope.projectId]
+      );
       const replayed = await client.query<{ build_session_id: string }>(
         `select build_session_id from idempotency_records
           where organization_id = $1 and scope = $2 and idempotency_key = $3`,
@@ -622,41 +714,6 @@ export function createProjectStateStore(config: {
           client,
           input.scope,
           replayedRow.build_session_id,
-          false
-        );
-      }
-
-      const active = await client.query<{ build_session_id: string }>(
-        `select build_session_id from build_sessions
-          where organization_id = $1
-            and project_id = $2
-            and status = any($3::text[])
-          limit 1`,
-        [
-          input.scope.organizationId,
-          input.scope.projectId,
-          [...ACTIVE_BUILD_SESSION_STATUSES],
-        ]
-      );
-
-      const [activeRow] = active.rows;
-      if (activeRow) {
-        await client.query(
-          `insert into idempotency_records
-             (organization_id, scope, idempotency_key, build_session_id)
-           values ($1, $2, $3, $4)
-           on conflict do nothing`,
-          [
-            input.scope.organizationId,
-            "build-session.allocate",
-            input.idempotencyKey,
-            activeRow.build_session_id,
-          ]
-        );
-        return await requireAllocation(
-          client,
-          input.scope,
-          activeRow.build_session_id,
           false
         );
       }
@@ -698,13 +755,15 @@ export function createProjectStateStore(config: {
 
       await client.query(
         `insert into runs
-           (run_id, organization_id, project_id, build_session_id, status)
-         values ($1, $2, $3, $4, 'queued')`,
+           (run_id, organization_id, project_id, build_session_id, status, user_message, user_attachments)
+         values ($1, $2, $3, $4, 'queued', $5, $6::jsonb)`,
         [
           runId,
           input.scope.organizationId,
           input.scope.projectId,
           buildSessionId,
+          input.message ?? null,
+          JSON.stringify(input.attachments ?? []),
         ]
       );
 
@@ -731,15 +790,388 @@ export function createProjectStateStore(config: {
     });
   }
 
+  async function appendConversationTurn(input: {
+    attachments?: PromptAttachment[];
+    buildSessionId: BuildSessionId;
+    idempotencyKey: string;
+    message: string;
+    scope: TenantScope;
+  }): Promise<{ runId: RunId; created: boolean }> {
+    return await withTransaction(async (client) => {
+      const session = await client.query<{ build_session_id: string }>(
+        `select build_session_id from build_sessions
+          where build_session_id = $1 and organization_id = $2 and project_id = $3
+          for update`,
+        [
+          input.buildSessionId,
+          input.scope.organizationId,
+          input.scope.projectId,
+        ]
+      );
+      if (session.rowCount !== 1) {
+        throw new Error("Conversation not found in this project.");
+      }
+
+      const replay = await client.query<{ run_id: string }>(
+        `select run_id from conversation_turn_keys
+          where organization_id = $1 and project_id = $2
+            and build_session_id = $3 and idempotency_key = $4`,
+        [
+          input.scope.organizationId,
+          input.scope.projectId,
+          input.buildSessionId,
+          input.idempotencyKey,
+        ]
+      );
+      if (replay.rows[0]) {
+        return {
+          created: false,
+          runId: RunIdSchema.parse(replay.rows[0].run_id),
+        };
+      }
+
+      const active = await client.query(
+        `select 1 from runs where build_session_id = $1
+          and organization_id = $2 and project_id = $3
+          and status in ('queued', 'running', 'awaiting_approval') limit 1`,
+        [
+          input.buildSessionId,
+          input.scope.organizationId,
+          input.scope.projectId,
+        ]
+      );
+      if (active.rowCount !== 0) {
+        throw new ConversationBusyError();
+      }
+
+      const runId = RunIdSchema.parse(randomUUID());
+      await client.query(
+        `insert into runs
+           (run_id, organization_id, project_id, build_session_id, status, user_message, user_attachments)
+         values ($1, $2, $3, $4, 'queued', $5, $6::jsonb)`,
+        [
+          runId,
+          input.scope.organizationId,
+          input.scope.projectId,
+          input.buildSessionId,
+          input.message,
+          JSON.stringify(input.attachments ?? []),
+        ]
+      );
+      await client.query(
+        `update build_sessions set run_id = $2, status = 'ready', updated_at = now()
+          where build_session_id = $1`,
+        [input.buildSessionId, runId]
+      );
+      await client.query(
+        `insert into conversation_turn_keys
+           (organization_id, project_id, build_session_id, idempotency_key, run_id)
+         values ($1, $2, $3, $4, $5)`,
+        [
+          input.scope.organizationId,
+          input.scope.projectId,
+          input.buildSessionId,
+          input.idempotencyKey,
+          runId,
+        ]
+      );
+      await insertRunEvent(client, {
+        payload: { buildSessionId: input.buildSessionId },
+        runId,
+        scope: input.scope,
+        type: "run.queued",
+      });
+      return { created: true, runId };
+    });
+  }
+
+  async function listConversations(
+    scope: TenantScope
+  ): Promise<ConversationSummary[]> {
+    const result = await pool.query(
+      `select bs.build_session_id, bs.created_at, bs.updated_at, bs.status,
+              bs.run_id, r.status as run_status,
+              (select left(trim(first_run.user_message), 120)
+                 from runs first_run
+                where first_run.build_session_id = bs.build_session_id
+                  and first_run.user_message is not null
+                order by first_run.created_at, first_run.run_id limit 1) as title
+         from build_sessions bs
+         join runs r on r.run_id = bs.run_id
+        where bs.organization_id = $1 and bs.project_id = $2
+        order by bs.updated_at desc, bs.build_session_id desc`,
+      [scope.organizationId, scope.projectId]
+    );
+    return result.rows.map((row) =>
+      ConversationSummarySchema.parse({
+        buildSessionId: row.build_session_id,
+        createdAt: asIso(row.created_at as Date),
+        latestRunId: row.run_id,
+        pendingRunId:
+          row.run_status === "queued" ||
+          row.run_status === "running" ||
+          row.run_status === "awaiting_approval"
+            ? row.run_id
+            : null,
+        status: row.status,
+        title: row.title ?? null,
+        updatedAt: asIso(row.updated_at as Date),
+      })
+    );
+  }
+
+  async function listConversationMessages(input: {
+    buildSessionId: BuildSessionId;
+    scope: TenantScope;
+  }): Promise<ConversationMessage[]> {
+    // `source_id` is the agent platform's own message id, which is what lets a
+    // client place the message it already holds where the work around it
+    // happened: the ledger records when a message ended, and a step's text is
+    // written before the tool calls it announces.
+    const result = await pool.query(
+      `select id, role, text, created_at, source_id, reasoning, run_id, user_attachments from (
+         select r.run_id::text as id, 'user'::text as role,
+                r.user_message as text, r.created_at, null::text as source_id,
+                null::text as reasoning, 0 as position, r.run_id,
+                r.user_attachments
+           from runs r
+          where r.build_session_id = $1 and r.organization_id = $2
+            and r.project_id = $3 and r.user_message is not null
+         union all
+         select e.event_id::text, 'assistant'::text,
+                case when e.payload ? 'snapshot' then coalesce((
+                  select string_agg(part->>'text', E'\\n\\n' order by ord)
+                  from jsonb_array_elements(e.payload->'snapshot'->'parts') with ordinality as parts(part, ord)
+                  where part->>'type' = 'text'), '') else e.payload->>'text' end,
+                e.occurred_at, e.payload->>'messageId',
+                case when e.payload ? 'snapshot' then (
+                  select string_agg(part->>'text', E'\\n\\n' order by ord)
+                  from jsonb_array_elements(e.payload->'snapshot'->'parts') with ordinality as parts(part, ord)
+                  where part->>'type' = 'reasoning') else e.payload->>'reasoning' end,
+                1, e.run_id, null::jsonb
+           from (
+             select distinct on (e.run_id, e.payload->>'messageId') e.*
+             from run_events e join runs r on r.run_id = e.run_id
+             where r.build_session_id = $1 and r.organization_id = $2
+               and r.project_id = $3 and e.organization_id = $2 and e.project_id = $3
+               and e.payload->>'kind' in ('message_end', 'message_snapshot')
+               and e.payload->>'role' = 'assistant'
+             order by e.run_id, e.payload->>'messageId', e.sequence desc
+           ) e
+       ) messages order by created_at, position, id`,
+      [input.buildSessionId, input.scope.organizationId, input.scope.projectId]
+    );
+    return result.rows.map((row) =>
+      ConversationMessageSchema.parse({
+        attachments: PromptAttachmentSchema.array()
+          .parse(row.user_attachments ?? [])
+          .map(
+            (attachment): ConversationAttachment => ({
+              filename: attachment.filename,
+              mediaType: attachment.mediaType,
+              sizeBytes: estimateDataUrlBytes(attachment.data),
+            })
+          ),
+        createdAt: asIso(row.created_at as Date),
+        id: row.id,
+        reasoning: (row.reasoning as string | null) ?? null,
+        role: row.role,
+        runId: row.run_id,
+        sourceId: (row.source_id as string | null) ?? null,
+        text: row.text,
+      })
+    );
+  }
+
   async function appendRunEvent(input: {
+    controllerRunId?: string;
     payload: Record<string, unknown>;
     runId: RunId;
     scope: TenantScope;
     type: RunEventType;
   }): Promise<RunEventEnvelope> {
-    return await withTransaction(
-      async (client) => await insertRunEvent(client, input)
+    return await withTransaction(async (client) => {
+      if (
+        input.type === "approval.requested" &&
+        input.payload.kind === "tool_suspended" &&
+        input.payload.toolName === "ask_user"
+      ) {
+        if (
+          typeof input.payload.toolCallId !== "string" ||
+          !input.controllerRunId
+        ) {
+          throw new Error(
+            "A suspended question requires its controller run identity."
+          );
+        }
+        const updated = await client.query(
+          `update runs set status = 'awaiting_approval',
+             pending_tool_call_id = $4, pending_mastra_run_id = $5,
+             pending_answer = null,
+             pending_answered_by = null, updated_at = now()
+           where run_id = $1 and organization_id = $2 and project_id = $3
+             and status = 'running'`,
+          [
+            input.runId,
+            input.scope.organizationId,
+            input.scope.projectId,
+            input.payload.toolCallId,
+            input.controllerRunId,
+          ]
+        );
+        if (updated.rowCount !== 1) {
+          throw new Error("The run cannot be suspended for this question.");
+        }
+      }
+      return await insertRunEvent(client, input);
+    });
+  }
+
+  async function answerRunQuestion(input: {
+    answer: string;
+    buildSessionId: BuildSessionId;
+    requestedByUserId: UserId;
+    runId: RunId;
+    scope: TenantScope;
+    toolCallId: string;
+  }): Promise<"accepted" | "replayed" | "conflict"> {
+    return await withTransaction(async (client) => {
+      const result = await client.query<{
+        pending_answer: string | null;
+        pending_tool_call_id: string | null;
+        status: RunStatus;
+      }>(
+        `select status, pending_tool_call_id, pending_answer from runs
+          where run_id = $1 and organization_id = $2 and project_id = $3
+            and build_session_id = $4 for update`,
+        [
+          input.runId,
+          input.scope.organizationId,
+          input.scope.projectId,
+          input.buildSessionId,
+        ]
+      );
+      const [run] = result.rows;
+      if (
+        run?.status !== "awaiting_approval" ||
+        run.pending_tool_call_id !== input.toolCallId
+      ) {
+        return "conflict";
+      }
+      if (run.pending_answer !== null) {
+        return run.pending_answer === input.answer ? "replayed" : "conflict";
+      }
+      await client.query(
+        `update runs set pending_answer = $2, pending_answered_by = $3,
+           updated_at = now() where run_id = $1`,
+        [input.runId, input.answer, input.requestedByUserId]
+      );
+      await insertRunEvent(client, {
+        payload: {
+          kind: "answer_submitted",
+          requestedByUserId: input.requestedByUserId,
+          toolCallId: input.toolCallId,
+        },
+        runId: input.runId,
+        scope: input.scope,
+        type: "approval.resolved",
+      });
+      return "accepted";
+    });
+  }
+
+  async function takeRunAnswer(input: {
+    runId: RunId;
+    scope: TenantScope;
+    toolCallId: string;
+  }): Promise<string | undefined> {
+    return await withTransaction(async (client) => {
+      const values = [
+        input.runId,
+        input.scope.organizationId,
+        input.scope.projectId,
+        input.toolCallId,
+      ];
+      const result = await client.query<{ pending_answer: string }>(
+        `select pending_answer from runs
+          where run_id = $1 and organization_id = $2 and project_id = $3
+            and status = 'awaiting_approval' and pending_tool_call_id = $4
+            and pending_answer is not null and cancellation_requested_at is null
+          for update`,
+        values
+      );
+      const answer = result.rows[0]?.pending_answer;
+      if (answer === undefined) {
+        return;
+      }
+      await client.query(
+        `update runs set status = 'running', pending_tool_call_id = null,
+         pending_answer = null, pending_answered_by = null,
+         pending_mastra_run_id = null, updated_at = now()
+         where run_id = $1`,
+        [input.runId]
+      );
+      return answer;
+    });
+  }
+
+  async function requestRunCancellation(input: {
+    runId: RunId;
+    scope: TenantScope;
+    buildSessionId: BuildSessionId;
+    requestedByUserId: UserId;
+  }): Promise<boolean> {
+    return await withTransaction(async (client) => {
+      const result = await client.query<{
+        cancellation_requested_at: Date | null;
+        status: RunStatus;
+      }>(
+        `select cancellation_requested_at, status from runs
+          where run_id = $1 and organization_id = $2 and project_id = $3
+            and build_session_id = $4
+          for update`,
+        [
+          input.runId,
+          input.scope.organizationId,
+          input.scope.projectId,
+          input.buildSessionId,
+        ]
+      );
+      const [run] = result.rows;
+      if (
+        !run ||
+        run.status === "completed" ||
+        run.status === "failed" ||
+        run.status === "cancelled"
+      ) {
+        return false;
+      }
+      if (run.cancellation_requested_at !== null) {
+        return true;
+      }
+
+      await client.query(
+        `update runs set cancellation_requested_at = now(), updated_at = now()
+          where run_id = $1`,
+        [input.runId]
+      );
+      await insertRunEvent(client, {
+        payload: { requestedByUserId: input.requestedByUserId },
+        runId: input.runId,
+        scope: input.scope,
+        type: "run.cancel.requested",
+      });
+      return true;
+    });
+  }
+
+  async function isRunCancellationRequested(runId: RunId): Promise<boolean> {
+    const result = await pool.query(
+      `select cancellation_requested_at is not null as requested
+         from runs where run_id = $1`,
+      [runId]
     );
+    return result.rows[0]?.requested === true;
   }
 
   /**
@@ -769,7 +1201,11 @@ export function createProjectStateStore(config: {
               r.project_id,
               r.build_session_id,
               bs.sandbox_environment_id,
-              se.workspace_uri
+              se.workspace_uri,
+              r.user_message,
+              r.user_attachments,
+              r.pending_tool_call_id,
+              r.pending_mastra_run_id
          from runs r
          join build_sessions bs
            on bs.build_session_id = r.build_session_id
@@ -780,6 +1216,8 @@ export function createProjectStateStore(config: {
           and se.organization_id = r.organization_id
           and se.project_id = r.project_id
         where r.status <> all($2::text[])
+          and (r.status <> 'awaiting_approval'
+            or (r.pending_tool_call_id is not null and r.pending_mastra_run_id is not null))
           and not exists (
             select 1
               from run_leases lease
@@ -794,11 +1232,18 @@ export function createProjectStateStore(config: {
     return result.rows.map((row) => ({
       buildSessionId: BuildSessionIdSchema.parse(row.build_session_id),
       organizationId: OrganizationIdSchema.parse(row.organization_id),
+      pendingMastraRunId: row.pending_mastra_run_id ?? null,
+      pendingToolCallId: row.pending_tool_call_id ?? null,
       projectId: ProjectIdSchema.parse(row.project_id),
       runId: RunIdSchema.parse(row.run_id),
       sandboxEnvironmentId: SandboxEnvironmentIdSchema.parse(
         row.sandbox_environment_id
       ),
+      userAttachments: PromptAttachmentSchema.array().parse(
+        row.user_attachments ?? []
+      ),
+      userMessage:
+        typeof row.user_message === "string" ? row.user_message : null,
       workspaceUri: SandboxEnvironmentSchema.shape.workspaceUri.parse(
         row.workspace_uri
       ),
@@ -861,8 +1306,31 @@ export function createProjectStateStore(config: {
     runId: RunId;
     ttlMs: number;
   }): Promise<RunLeaseGrant | undefined> {
-    const result = await pool.query<{ expires_at: Date; lease_id: string }>(
-      `with claimed as (
+    return await withTransaction(async (client) => {
+      const project = await client.query<{
+        organization_id: string;
+        project_id: string;
+      }>(
+        `select p.organization_id, p.project_id from runs r
+           join projects p on p.organization_id = r.organization_id
+            and p.project_id = r.project_id
+          where r.run_id = $1 for update of p`,
+        [input.runId]
+      );
+      const [projectRow] = project.rows;
+      if (!projectRow) {
+        return;
+      }
+      const competing = await client.query(
+        `select 1 from runs where organization_id = $1 and project_id = $2
+          and run_id <> $3 and status in ('running', 'awaiting_approval') limit 1`,
+        [projectRow.organization_id, projectRow.project_id, input.runId]
+      );
+      if (competing.rowCount !== 0) {
+        return;
+      }
+      const result = await client.query<{ expires_at: Date; lease_id: string }>(
+        `with claimed as (
          insert into run_leases (run_id, lease_id, holder, expires_at)
          select r.run_id, $2::uuid, $3::text,
                 now() + make_interval(secs => $4::double precision)
@@ -878,26 +1346,39 @@ export function createProjectStateStore(config: {
          returning lease_id, expires_at
        )
        update runs
-          set status = 'running', updated_at = now()
+          set status = case when runs.status = 'awaiting_approval'
+            then 'awaiting_approval' else 'running' end, updated_at = now()
          from claimed
         where runs.run_id = $1::uuid
           and runs.status <> all($5::text[])
        returning claimed.lease_id, claimed.expires_at`,
-      [
-        input.runId,
-        randomUUID(),
-        input.holder,
-        input.ttlMs / 1000,
-        [...TERMINAL_RUN_STATUSES],
-      ]
-    );
+        [
+          input.runId,
+          randomUUID(),
+          input.holder,
+          input.ttlMs / 1000,
+          [...TERMINAL_RUN_STATUSES],
+        ]
+      );
 
-    const [row] = result.rows;
-    if (!row) {
-      return undefined;
-    }
+      const [row] = result.rows;
+      if (!row) {
+        return;
+      }
 
-    return { expiresAt: row.expires_at, leaseId: row.lease_id };
+      await client.query(
+        `update build_sessions bs set status = 'running', updated_at = now()
+         from runs r where r.run_id = $1 and bs.build_session_id = r.build_session_id`,
+        [input.runId]
+      );
+      await client.query(
+        `update sandbox_environments se set status = 'running', updated_at = now()
+         from runs r where r.run_id = $1 and se.build_session_id = r.build_session_id`,
+        [input.runId]
+      );
+
+      return { expiresAt: row.expires_at, leaseId: row.lease_id };
+    });
   }
 
   /**
@@ -971,12 +1452,33 @@ export function createProjectStateStore(config: {
         [input.runId, status, [...TERMINAL_RUN_STATUSES]]
       );
 
-      const current = await client.query<{ status: string }>(
-        "select status from runs where run_id = $1",
-        [input.runId]
+      const current = await client.query<{
+        build_session_id: string;
+        status: string;
+      }>("select build_session_id, status from runs where run_id = $1", [
+        input.runId,
+      ]);
+      const [finished] = current.rows;
+      if (finished?.status !== status) {
+        return false;
+      }
+      await client.query(
+        `update build_sessions
+            set status = $2, updated_at = now()
+          where build_session_id = $1 and run_id = $3`,
+        [
+          finished.build_session_id,
+          status === "completed" ? "ready" : "blocked",
+          input.runId,
+        ]
       );
-
-      return current.rows[0]?.status === status;
+      await client.query(
+        `update sandbox_environments
+            set status = 'destroyed', updated_at = now()
+          where build_session_id = $1`,
+        [finished.build_session_id]
+      );
+      return true;
     });
   }
 
@@ -1017,6 +1519,29 @@ export function createProjectStateStore(config: {
         name: input.name,
         organizationId,
       });
+    });
+  }
+
+  /**
+   * The rename and its audit row commit together, so a rename that nothing
+   * recorded cannot exist, and a rename of an organization that is gone reports
+   * that it did not happen rather than inventing a success.
+   */
+  async function renameOrganization(input: {
+    audit: AuditEvent;
+    name: string;
+    organizationId: OrganizationId;
+  }): Promise<boolean> {
+    return await withTransaction(async (client) => {
+      const updated = await client.query(
+        "update organizations set name = $2 where organization_id = $1",
+        [input.organizationId, input.name]
+      );
+      if (updated.rowCount !== 1) {
+        return false;
+      }
+      await recordWith(client, input.audit);
+      return true;
     });
   }
 
@@ -1160,6 +1685,40 @@ export function createProjectStateStore(config: {
     );
 
     return result.rowCount === 1;
+  }
+
+  async function listConversationEvents(input: {
+    buildSessionId: BuildSessionId;
+    scope: TenantScope;
+    after: number;
+    limit: number;
+  }): Promise<RunEventEnvelope[]> {
+    const result = await pool.query(
+      `select e.* from run_events e join runs r on r.run_id = e.run_id
+       and r.organization_id = e.organization_id and r.project_id = e.project_id
+       where r.build_session_id = $1 and e.organization_id = $2 and e.project_id = $3
+       order by r.created_at, r.run_id, e.sequence limit $4 offset $5`,
+      [
+        input.buildSessionId,
+        input.scope.organizationId,
+        input.scope.projectId,
+        Math.min(input.limit, 500),
+        input.after,
+      ]
+    );
+    return result.rows.map((row) =>
+      RunEventEnvelopeSchema.parse({
+        eventId: row.event_id,
+        occurredAt: asIso(row.occurred_at as Date),
+        organizationId: row.organization_id,
+        payload: row.payload,
+        projectId: row.project_id,
+        runId: row.run_id,
+        schemaVersion: 1,
+        sequence: Number(row.sequence),
+        type: row.type,
+      })
+    );
   }
 
   async function listRunEvents(input: {
@@ -1371,6 +1930,33 @@ export function createProjectStateStore(config: {
     );
   }
 
+  async function listProjectsForUser(input: {
+    includeAll: boolean;
+    organizationId: OrganizationId;
+    userId: UserId;
+  }): Promise<ProjectSummary[]> {
+    const result = await pool.query(
+      `select p.organization_id, p.project_id, p.name
+         from projects p
+        where p.organization_id = $1
+          and ($3::boolean or exists (
+            select 1 from project_memberships m
+             where m.organization_id = p.organization_id
+               and m.project_id = p.project_id
+               and m.user_id = $2 and m.status = 'active'
+          ))
+        order by p.created_at desc, p.project_id desc`,
+      [input.organizationId, input.userId, input.includeAll]
+    );
+    return result.rows.map((row) =>
+      ProjectSummarySchema.parse({
+        name: row.name,
+        organizationId: row.organization_id,
+        projectId: row.project_id,
+      })
+    );
+  }
+
   async function recordDeployment(input: {
     deploymentId: string;
     exposure: string;
@@ -1431,6 +2017,8 @@ export function createProjectStateStore(config: {
 
   return {
     allocateBuildSession,
+    answerRunQuestion,
+    appendConversationTurn,
     appendRunEvent,
     audit,
     beginRun,
@@ -1444,9 +2032,14 @@ export function createProjectStateStore(config: {
     finishRun,
     getBuildSession,
     getRun,
+    isRunCancellationRequested,
     listArtifacts,
+    listConversationEvents,
+    listConversationMessages,
+    listConversations,
     listOrganizationMemberships,
     listPendingOutbox,
+    listProjectsForUser,
     listRunEvents,
     listRunnableRuns,
     magicLinks,
@@ -1498,9 +2091,12 @@ export function createProjectStateStore(config: {
     recordArtifact,
     recordDeployment,
     releaseRunLease,
+    renameOrganization,
     renewRunLease,
+    requestRunCancellation,
     sessions,
     setRunStatus,
+    takeRunAnswer,
     usage,
     users,
   };

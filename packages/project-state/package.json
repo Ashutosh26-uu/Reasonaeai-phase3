@@ -20,6 +20,10 @@
       "types": "./src/run-event-stream.ts",
       "import": "./dist/run-event-stream.js"
     },
+    "./run-live-stream": {
+      "types": "./src/run-live-stream.ts",
+      "import": "./dist/run-live-stream.js"
+    },
     "./schema": {
       "types": "./src/schema.ts",
       "import": "./dist/schema.js"
@@ -32,7 +36,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "ultracite check .",
-    "test": "vitest run",
+    "test": "vitest run --fileParallelism=false",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
