@@ -93,6 +93,7 @@ The model policy in `.context/SPEC.md` is binding: paid frontier-model APIs are 
 - Verified the live path at the real surface: the worker publishes deltas for the runs it claims (observed on the run's live topic), the API delivers them through its own default subscriptions (integration test over real Redis, with no injected transport), and a delta published onto a followed run's topic renders in the browser as streamed text with the caret beneath the live activity outline. The whole journey ran against real PostgreSQL, Redis, Docker, and a live open-weight model.
 - Verified the workspace in a browser against the running API, worker, PostgreSQL, and Redis: sign-in by single-use link, organization and project creation, a run whose tool calls and results appear as they happen, and the committed report rendered as markdown.
 - Added account, appearance, workspace, plan/usage, and security settings. Display-name and workspace-name saves are authorized server writes; workspace rename is audited. The API now applies project-state migrations once before handling the first product request, keeping build-time imports database-free. Browser verification against PostgreSQL confirmed profile edits, workspace rename and restoration, the enforced Free plan's actual usage/limits, theme switching and restoration, and current-session expiry details. Billing changes, editable sign-in email, device/session management, and stronger authentication controls remain unavailable until their server contracts are implemented.
+- Merged [PR #11](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/11) on September 30. Project conversations, CTO execution and streaming, account settings, project navigation, and the `ask_user` answer path are on `main`. The authenticated browser verified continuation after a forced worker restart; the frozen install, check, typecheck, PostgreSQL/Redis/Docker tests (17/17 tasks), and build (10/10 tasks) passed on the merged head's PR branch.
 
 ### Known defects
 
@@ -128,7 +129,7 @@ The model policy in `.context/SPEC.md` is binding: paid frontier-model APIs are 
 - Select and implement the production object-storage and deployment adapters for the API/worker/Redis/PostgreSQL topology.
 - Finalize the launch authentication architecture and provider decision from current official documentation and security evidence.
 
-### Open pull requests — snapshot 2026-09-30
+### Open pull requests — snapshot after PR #11 merged on 2026-09-30
 
 These changes are present on PR branches and are not integrated into `main`. “CLEAN” and “DIRTY” report GitHub's mergeability only; they do not mean review, CI, or the phase exit criteria have passed.
 
@@ -136,33 +137,34 @@ These changes are present on PR branches and are not integrated into `main`. “
 | --- | --- | --- |
 | [#8](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/8) | Open, DIRTY | Preview, evidence, checkpoint, and deployment control flows across API, project state, runtime, sandbox, and web. Resolve conflicts and reconcile its deployment scope with #14. |
 | [#9](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/9) | Open, CLEAN | Replaceable ASR, TTS, and vision adapters and sensory gateway. |
-| [#10](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/10) | Open, draft | Two web theme studies; presentation work only, not an MVP capability. |
-| [#11](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/11) | Open, CLEAN | Mohana's substantial project conversations and CTO execution/streaming, account settings, and project navigation feature. September 30 frozen install, lint, typecheck, full PostgreSQL/Redis/Docker tests (17/17 tasks), build (10/10 tasks), and authenticated browser recovery after a forced worker crash passed. GitHub has no CI checks or review; the separate grant/plan approval paths remain in progress. |
-| [#12](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/12) | Open, CLEAN | Voice capture and wireframe intake surfaces, with replaceable interfaces and mock adapters. |
-| [#13](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/13) | Open, CLEAN | Ordered schema migration ledger with checksums. |
+| [#10](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/10) | Open, draft, DIRTY | Two web theme studies; presentation work only, not an MVP capability. The root page now conflicts with the merged product UI. |
+| [#12](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/12) | Open, DIRTY | Voice capture and wireframe intake surfaces, with replaceable interfaces and mock adapters. Reconcile its voice UI with the merged composer and #9's gateway. |
+| [#13](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/13) | Open, DIRTY | Ordered schema migration ledger with checksums. Reconcile migration changes and run real PostgreSQL checks. |
 | [#14](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/14) | Open, CLEAN | Immutable release and rollback contract; its provider is a local test memory provider, not production deployment. |
-| [#15](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/15) | Open, DIRTY | PostgreSQL-backed conversation/thread storage and authorized conversation APIs. Resolve conflicts; run the real PostgreSQL, Redis, and Docker CI gates. |
-| [#16](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/16) | Open, CLEAN | Reconnecting CTO conversation stream client and event-driven chat UI. |
+| [#15](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/15) | Open, DIRTY | Move Mastra conversations and threads from process-local storage to PostgreSQL. Its conversation APIs overlap `main`; reconcile them rather than installing a second route set. Run the real PostgreSQL, Redis, and Docker gates. |
+| [#16](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/16) | Open, DIRTY | Reconnecting CTO stream client and chat UI. Compare against the merged live stream and transcript; carry forward only missing behavior. |
 
-PRs #11 and #15 both touch conversation/session execution and persistence; integrate them with #16 as one reviewed user path. PR #8 and #14 also overlap deployment scope. Keep all listed work in progress until it is reviewed, integrated, and verified against the relevant phase criteria.
+PR #11 is the baseline for conversation work. PRs #15 and #16 need integration against it, not parallel replacement of its routes and UI. PRs #8 and #14 overlap deployment scope; #9 and #12 overlap sensory intake. Keep the eight open PRs in progress until they are reconciled and verified against the relevant phase criteria. GitHub currently reports conflicts on #8, #10, #12, #13, #15, and #16; #9 and #14 are mergeable but still need review and verification.
+
+### Ready to assign
+
+- **Approval completion:** implement authorized `request_access` and `submit_plan` decisions, audit records, browser states, and worker continuation through the existing conversation/run contract. This is a coherent next feature independent of the conflicting PRs.
+- **Migration integration:** have PR #13's owner resolve conflicts against `main`, prove checksum mismatch handling with real PostgreSQL, and update deployment/rollback notes. Do not start another migration system.
+- **Conversation durability:** have PR #15's owner retain the needed Mastra PostgreSQL storage work, reconcile duplicate conversation routes and schema with merged #11, and verify a process restart with real PostgreSQL/Redis/Docker. Have PR #16's owner compare its client behavior with merged #11 and submit only gaps.
+- **Release path:** reconcile #8's preview/evidence/deployment flow with #14's immutable release contract, then implement a real deployment adapter and an authorized staging smoke test. The memory provider alone is not a release.
+- **Sensory intake:** integrate #9's provider gateway with #12's voice/wireframe UI and the merged voice composer, keeping mock adapters visibly labeled until a real provider is configured.
 
 ### Next
 
-1. Finish and verify private-worker recovery, including the answer-consumption window and command acknowledgement after durable state is committed.
-2. Configure the documented Mastra worker split (`MASTRA_WORKERS`, shared storage, `RedisStreamsPubSub`) on the existing `apps/api/src/mastra` composition root.
-3. Select the web, authentication, ORM/database library, browser-test, sandbox, preview, object-storage, and deployment adapters through documented current-version evaluation.
-4. Implement organization creation and owner membership as one transaction, plus project creation, so membership provisioning is no longer a manual step.
-5. Implement secure session persistence wiring for sign-in, rotation, idle/absolute expiry, and logout behind HTTP.
-6. Add CSRF protection, redirect validation, identity-endpoint rate limits, and secure cookie configuration.
-7. Record safe audit events for sign-in, organization/project creation, session revocation, authorization denial, run dispatch, approval, and exposure changes.
-8. Add integration tests for session lifecycle, permission denial, and audit recording.
-9. Exercise one authenticated build session through sandbox allocation, CTO execution, preview creation, reconnect, and Git checkpoint recovery.
-10. Bind the first resource-read vertical slice to the authorization contract.
-11. Implement a real selected deployment adapter and verify an accepted checkpoint at its authorized URL. PR #14 supplies a provider-neutral contract and local memory provider; that does not satisfy live deployment verification.
-12. Meter real runs: record sandbox minutes, workspace bytes, and each run's tokens and spend through the usage store at run end, so the plan limits now enforced at admission are charged from what a run actually used.
-13. Add a build-session lookup by idempotency key to `@reasonateai/project-state`, so a replayed allocation releases its slot before allocating rather than refunding after, which removes the momentary over-count a concurrent replay can cause at a tight limit.
-14. Integrate and verify the PostgreSQL-backed Mastra conversation/thread storage proposed in PR #15. It remains open and currently has merge conflicts; after integration, verify restart recovery, tenant/project scope, migration coordination, and the real PostgreSQL/Redis/Docker paths. Confirm whether its OTel trace/token telemetry scope is included or remains a separate task.
-15. Integrate and verify the ordered checksum migration ledger in PR #13. It remains open; verify checksum mismatch and real PostgreSQL migration behavior on CI before treating this item as complete.
+1. Complete the approval paths and harden the private worker's answer-consumption and command-acknowledgement recovery windows.
+2. Reconcile and verify open PRs #13, #15, and #16 against the merged conversation baseline; keep only behavior absent from `main`.
+3. Reconcile PRs #8 and #14, implement a real selected deployment adapter, and verify an accepted checkpoint at its authorized staging URL.
+4. Integrate PRs #9 and #12 so voice and wireframe intake use one bounded, replaceable gateway.
+5. Fix the sandbox `edit` tool's path handling and verify it through a live Docker run.
+6. Persist the preview registry so a process restart can restore or intentionally retire previews.
+7. Meter real runs: record sandbox minutes, workspace bytes, and each run's tokens and spend through the usage store at run end.
+8. Add a build-session lookup by idempotency key so a replayed allocation releases its slot before allocating.
+9. Add reproducible PR CI gates and the affected preview, security, and staging checks before claiming the phase exit criteria.
 
 ### Blocked
 
