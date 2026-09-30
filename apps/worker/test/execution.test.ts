@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { AgentControllerEvent } from "@mastra/core/agent-controller";
 import type { PromptAttachment } from "@reasonateai/contracts/execution";
@@ -222,6 +223,71 @@ describeWithDatabase("run execution", () => {
     expect(await runStatus(harness, allocated)).toBe("completed");
     expect(session.sendCalls).toBe(1);
     expect(await leaseRow(harness, allocated.candidate.runId)).toBeUndefined();
+  });
+
+  it("reclaims an expired suspended run from its durable controller identity", async () => {
+    const allocated = await fixture("Ask for the region");
+    const oldLease = await harness.store.beginRun({
+      holder: "expired-worker",
+      runId: allocated.candidate.runId,
+      ttlMs: 100,
+    });
+    expect(oldLease).toBeDefined();
+    await harness.store.appendRunEvent({
+      controllerRunId: "stored-controller-run",
+      payload: {
+        kind: "tool_suspended",
+        toolCallId: "ask-after-restart",
+        toolName: "ask_user",
+      },
+      runId: allocated.candidate.runId,
+      scope: allocated.scope,
+      type: "approval.requested",
+    });
+    execFileSync("docker", ["volume", "create", allocated.volume]);
+    await new Promise<void>((resolve) => setTimeout(resolve, 200));
+    const candidate = (
+      await harness.store.listRunnableRuns({ limit: 64 })
+    ).find((item) => item.runId === allocated.candidate.runId);
+    expect(candidate?.pendingToolCallId).toBe("ask-after-restart");
+    expect(candidate?.pendingMastraRunId).toBe("stored-controller-run");
+    if (!candidate) {
+      throw new Error("The suspended run was not offered for recovery.");
+    }
+    const scripted = scriptedRuntime();
+    const executor = createExecutor({
+      harness,
+      holder: "recovery-worker",
+      runtime: scripted.runtime,
+    });
+    const attempt = executor.execute(candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await vi.waitFor(() => {
+      expect(session.recoveredSuspension).toEqual({
+        runId: "stored-controller-run",
+        toolCallId: "ask-after-restart",
+        toolName: "ask_user",
+      });
+    });
+    expect(
+      await harness.store.answerRunQuestion({
+        answer: "Europe",
+        buildSessionId: allocated.buildSessionId,
+        requestedByUserId: UserIdSchema.parse(randomUUID()),
+        runId: allocated.candidate.runId,
+        scope: allocated.scope,
+        toolCallId: "ask-after-restart",
+      })
+    ).toBe("accepted");
+    await vi.waitFor(
+      () => {
+        expect(session.lastResumeData).toBe("Europe");
+      },
+      { timeout: 3000 }
+    );
+    session.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await attempt).toBe("succeeded");
+    expect(session.sendCalls).toBe(0);
   });
 
   it("publishes the text its agent streams as live deltas, and the ledger keeps the message", async () => {

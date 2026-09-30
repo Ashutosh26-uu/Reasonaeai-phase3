@@ -169,7 +169,7 @@ Formatting and linting are owned by Ultracite and Biome. Do not add ESLint, Pret
 
 ### Pending-question schema recovery
 
-Schema version 4 adds `runs.pending_tool_call_id`, `pending_answer`, and `pending_answered_by`, and widens the one-active-run project index to include `awaiting_approval`. The migration is additive except for replacing that index, and `store.migrate()` applies it under the existing advisory lock. A deployment should migrate before starting the updated API and worker.
+Schema version 4 adds `runs.pending_tool_call_id`, `pending_mastra_run_id`, `pending_answer`, and `pending_answered_by`, and widens the one-active-run project index to include `awaiting_approval`. The migration is additive except for replacing that index, and `store.migrate()` applies it under the existing advisory lock. A deployment should migrate before starting the updated API and worker. A replacement worker needs the same Mastra storage and the retained named Docker workspace volume to resume a suspended question; it removes only the abandoned container before remounting that volume.
 
 If this release must be rolled back, first stop new run admission and let live questions resolve or cancel them while the updated worker is still running. Confirm there are no `awaiting_approval` rows, then stop workers and restore the previous application artifact. The added columns can remain unused; they do not need to be dropped to restore the old application. Only after pending runs are cleared should an operator replace `runs_one_active_project_idx` with the previous `runs_one_running_project_idx` (`where status = 'running'`). Preserve the database and sandbox volumes if a pending worker crashed; do not delete them as a rollback shortcut.
 

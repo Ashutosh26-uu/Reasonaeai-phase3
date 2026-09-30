@@ -27,6 +27,7 @@ export interface RunSession {
     resumeData: string;
     toolCallId: string;
   }) => Promise<void>;
+  run: { getRunId: () => string | null };
   sendMessage: (input: {
     content: string;
     files?: Pick<PromptAttachment, "data" | "filename" | "mediaType">[];
@@ -34,6 +35,13 @@ export interface RunSession {
     untilIdle?: boolean;
   }) => Promise<void>;
   subscribe: (listener: (event: AgentControllerEvent) => void) => () => void;
+  suspensions: {
+    register: (input: {
+      runId: string;
+      toolCallId: string;
+      toolName: string;
+    }) => void;
+  };
 }
 
 export interface RunController {

@@ -272,6 +272,19 @@ export interface SessionScript {
  */
 export class ScriptedSession implements RunSession {
   aborted = false;
+  readonly run = { getRunId: () => this.#runId };
+  readonly suspensions = {
+    register: (input: {
+      runId: string;
+      toolCallId: string;
+      toolName: string;
+    }) => {
+      this.recoveredSuspension = input;
+    },
+  };
+  recoveredSuspension:
+    | { runId: string; toolCallId: string; toolName: string }
+    | undefined;
   lastMessage: string | undefined;
   lastResumeData: string | undefined;
   lastResumedToolCallId: string | undefined;
@@ -283,6 +296,7 @@ export class ScriptedSession implements RunSession {
   #fail: ((error: Error) => void) | undefined;
   #finish: (() => void) | undefined;
   readonly #listeners = new Set<(event: AgentControllerEvent) => void>();
+  readonly #runId = randomUUID();
   readonly #markStarted: () => void;
 
   constructor(script: SessionScript = {}) {

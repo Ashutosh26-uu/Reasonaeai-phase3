@@ -118,6 +118,8 @@ describeWithDatabase("run dispatch", () => {
     expect(listed).toContainEqual({
       buildSessionId: allocation.buildSession.buildSessionId,
       organizationId: scope.organizationId,
+      pendingMastraRunId: null,
+      pendingToolCallId: null,
       projectId: scope.projectId,
       runId: allocation.buildSession.runId,
       sandboxEnvironmentId: allocation.sandbox.sandboxEnvironmentId,

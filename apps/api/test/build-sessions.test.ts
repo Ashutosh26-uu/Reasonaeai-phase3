@@ -371,6 +371,7 @@ describeWithDatabase("build session routes", () => {
     });
     expect(lease).toBeDefined();
     await store.appendRunEvent({
+      controllerRunId: "test-controller-run",
       payload: {
         kind: "tool_suspended",
         suspendPayload: { question: "Which region?" },

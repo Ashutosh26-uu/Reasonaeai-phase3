@@ -147,6 +147,8 @@ export interface DeploymentRecord {
 export interface RunnableRun {
   buildSessionId: BuildSessionId;
   organizationId: OrganizationId;
+  pendingMastraRunId: string | null;
+  pendingToolCallId: string | null;
   projectId: ProjectId;
   runId: RunId;
   sandboxEnvironmentId: SandboxEnvironmentId;
@@ -307,6 +309,7 @@ export interface ProjectStateStore {
     scope: TenantScope;
   }) => Promise<{ runId: RunId; created: boolean }>;
   appendRunEvent: (input: {
+    controllerRunId?: string;
     payload: Record<string, unknown>;
     runId: RunId;
     scope: TenantScope;
@@ -981,6 +984,7 @@ export function createProjectStateStore(config: {
   }
 
   async function appendRunEvent(input: {
+    controllerRunId?: string;
     payload: Record<string, unknown>;
     runId: RunId;
     scope: TenantScope;
@@ -990,12 +994,20 @@ export function createProjectStateStore(config: {
       if (
         input.type === "approval.requested" &&
         input.payload.kind === "tool_suspended" &&
-        input.payload.toolName === "ask_user" &&
-        typeof input.payload.toolCallId === "string"
+        input.payload.toolName === "ask_user"
       ) {
+        if (
+          typeof input.payload.toolCallId !== "string" ||
+          !input.controllerRunId
+        ) {
+          throw new Error(
+            "A suspended question requires its controller run identity."
+          );
+        }
         const updated = await client.query(
           `update runs set status = 'awaiting_approval',
-             pending_tool_call_id = $4, pending_answer = null,
+             pending_tool_call_id = $4, pending_mastra_run_id = $5,
+             pending_answer = null,
              pending_answered_by = null, updated_at = now()
            where run_id = $1 and organization_id = $2 and project_id = $3
              and status = 'running'`,
@@ -1004,6 +1016,7 @@ export function createProjectStateStore(config: {
             input.scope.organizationId,
             input.scope.projectId,
             input.payload.toolCallId,
+            input.controllerRunId,
           ]
         );
         if (updated.rowCount !== 1) {
@@ -1093,7 +1106,8 @@ export function createProjectStateStore(config: {
       }
       await client.query(
         `update runs set status = 'running', pending_tool_call_id = null,
-           pending_answer = null, pending_answered_by = null, updated_at = now()
+         pending_answer = null, pending_answered_by = null,
+         pending_mastra_run_id = null, updated_at = now()
          where run_id = $1`,
         [input.runId]
       );
@@ -1189,7 +1203,9 @@ export function createProjectStateStore(config: {
               bs.sandbox_environment_id,
               se.workspace_uri,
               r.user_message,
-              r.user_attachments
+              r.user_attachments,
+              r.pending_tool_call_id,
+              r.pending_mastra_run_id
          from runs r
          join build_sessions bs
            on bs.build_session_id = r.build_session_id
@@ -1200,7 +1216,8 @@ export function createProjectStateStore(config: {
           and se.organization_id = r.organization_id
           and se.project_id = r.project_id
         where r.status <> all($2::text[])
-          and r.status <> 'awaiting_approval'
+          and (r.status <> 'awaiting_approval'
+            or (r.pending_tool_call_id is not null and r.pending_mastra_run_id is not null))
           and not exists (
             select 1
               from run_leases lease
@@ -1215,6 +1232,8 @@ export function createProjectStateStore(config: {
     return result.rows.map((row) => ({
       buildSessionId: BuildSessionIdSchema.parse(row.build_session_id),
       organizationId: OrganizationIdSchema.parse(row.organization_id),
+      pendingMastraRunId: row.pending_mastra_run_id ?? null,
+      pendingToolCallId: row.pending_tool_call_id ?? null,
       projectId: ProjectIdSchema.parse(row.project_id),
       runId: RunIdSchema.parse(row.run_id),
       sandboxEnvironmentId: SandboxEnvironmentIdSchema.parse(
@@ -1318,7 +1337,6 @@ export function createProjectStateStore(config: {
            from runs r
           where r.run_id = $1::uuid
             and r.status <> all($5::text[])
-            and r.status <> 'awaiting_approval'
          on conflict (run_id) do update
             set lease_id = excluded.lease_id,
                 holder = excluded.holder,
@@ -1328,11 +1346,11 @@ export function createProjectStateStore(config: {
          returning lease_id, expires_at
        )
        update runs
-          set status = 'running', updated_at = now()
+          set status = case when runs.status = 'awaiting_approval'
+            then 'awaiting_approval' else 'running' end, updated_at = now()
          from claimed
         where runs.run_id = $1::uuid
           and runs.status <> all($5::text[])
-          and runs.status <> 'awaiting_approval'
        returning claimed.lease_id, claimed.expires_at`,
         [
           input.runId,

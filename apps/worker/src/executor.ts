@@ -23,6 +23,7 @@ import { LeaseKeeper } from "./lease.js";
 import { type Ledger, RunEventAppender } from "./ledger.js";
 import type { LiveEventPublisher } from "./live-events.js";
 import type { LogFields, Logger } from "./logger.js";
+import { prepareRecoveredSandbox } from "./recovery.js";
 import {
   candidateScope,
   createRunRequestContext,
@@ -165,13 +166,31 @@ export class RunExecutor {
         threadId: scope.buildSessionId,
       });
 
+      const recovery =
+        candidate.pendingToolCallId && candidate.pendingMastraRunId
+          ? {
+              mastraRunId: candidate.pendingMastraRunId,
+              toolCallId: candidate.pendingToolCallId,
+            }
+          : undefined;
+      if (recovery) {
+        session.suspensions.register({
+          runId: recovery.mastraRunId,
+          toolCallId: recovery.toolCallId,
+          toolName: "ask_user",
+        });
+        await prepareRecoveredSandbox(scope);
+      }
+
       sandbox = await this.#deps.resolveSandbox({ requestContext, scope });
       await sandbox.start?.();
-      const restored = await restoreLatestCheckpoint({
-        checkpoints: this.#deps.checkpoints,
-        sandbox: checkpointSandboxFor(sandbox),
-        scope,
-      });
+      const restored = recovery
+        ? undefined
+        : await restoreLatestCheckpoint({
+            checkpoints: this.#deps.checkpoints,
+            sandbox: checkpointSandboxFor(sandbox),
+            scope,
+          });
       logger.info("run.workspace.ready", {
         ...fields,
         restoredCheckpointId: restored?.checkpointId ?? null,
@@ -182,6 +201,7 @@ export class RunExecutor {
         lease,
         message: candidate.userMessage,
         requestContext,
+        ...(recovery === undefined ? {} : { resume: recovery }),
         scope,
         session,
         stopSignal,
@@ -211,6 +231,7 @@ export class RunExecutor {
     message: string | null;
     userAttachments: RunnableRun["userAttachments"];
     requestContext: RequestContext;
+    resume?: { toolCallId: string };
     scope: RunScope;
     session: RunSession;
     stopSignal: StopSignal;
@@ -219,7 +240,7 @@ export class RunExecutor {
     const { fields, scope } = input;
 
     let failure: FailureDescription | undefined;
-    let pendingQuestion: string | undefined;
+    let pendingQuestion: string | undefined = input.resume?.toolCallId;
     let stop: StopRequest | undefined;
     let settleStop: ((request: StopRequest) => void) | undefined;
     const stopRequested = new Promise<StopRequest>((resolve) => {
@@ -287,6 +308,10 @@ export class RunExecutor {
     const live = new RunLiveEventMapper({ scope });
     const unsubscribeEvents = input.session.subscribe((event) => {
       const at = new Date();
+      const controllerRunId =
+        event.type === "tool_suspended" && event.toolName === "ask_user"
+          ? (input.session.run.getRunId() ?? undefined)
+          : undefined;
       if (event.type === "tool_suspended" && event.toolName === "ask_user") {
         pendingQuestion = event.toolCallId;
       }
@@ -295,7 +320,7 @@ export class RunExecutor {
         event.type !== "message_update" &&
         event.type !== "message_end"
       ) {
-        appends.push(event, at);
+        appends.push(event, at, controllerRunId);
       }
       const delta = live.map(event, at);
       if (delta !== undefined) {
@@ -318,7 +343,7 @@ export class RunExecutor {
       });
     }, 500);
     const sending =
-      stop === undefined
+      stop === undefined && input.resume === undefined
         ? input.session
             .sendMessage({
               content:
