@@ -15,8 +15,10 @@ The development server currently serves no product page. `pnpm --filter @reasona
 
 ## Structure
 
-- `app/` contains only the required Next.js root document wrapper; screen layouts and routes await team review.
-- `components/ai-elements/` contains selected AI Elements source components for the later conversation surface.
+- `app/` contains the Next.js workspace page hosting the live CTO orchestrator conversation.
+- `components/cto-conversation/` contains the conversation stream container, subagent delegation badges, tool execution cards, task progress tree, and Smart Handoff approval prompts.
+- `components/ai-elements/` contains selected AI Elements source components for message rendering and transcript export.
+- `lib/` contains the reconnecting SSE stream client (`run-event-stream.ts`) and monotonic sequence reducer (`conversation-state.ts`).
 - `public/brand/reasonateai-icon.png` is the approved icon cropped directly from the selected image prototype with its alpha channel intact.
 - `packages/ui` owns shared design tokens and shadcn-compatible primitives. Both workspaces have `components.json` so the shadcn CLI can route shared primitives into the package.
 
@@ -30,4 +32,5 @@ The browser will call only company-owned `/v1` product routes with server-manage
 
 ## Current boundary
 
-This scaffold establishes the framework and component foundations. Sign-in, project selection, authorized event streaming, approvals, preview, evidence, and deployment controls depend on product API contracts and are not represented as working here.
+This workspace implements the live CTO conversation interface and reconnecting SSE stream client for authorized build sessions. Sign-in, organization/project management, and preview evidence flows integrate with their respective backend API endpoints.
+

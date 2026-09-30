@@ -102,6 +102,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@reasonateai/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@reasonateai/ui':
         specifier: workspace:*
         version: link:../../packages/ui
