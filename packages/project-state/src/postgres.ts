@@ -149,6 +149,7 @@ export interface RunnableRun {
   organizationId: OrganizationId;
   pendingMastraRunId: string | null;
   pendingToolCallId: string | null;
+  pendingToolName: string | null;
   projectId: ProjectId;
   runId: RunId;
   sandboxEnvironmentId: SandboxEnvironmentId;
@@ -994,7 +995,10 @@ export function createProjectStateStore(config: {
       if (
         input.type === "approval.requested" &&
         input.payload.kind === "tool_suspended" &&
-        input.payload.toolName === "ask_user"
+        typeof input.payload.toolName === "string" &&
+        ["ask_user", "request_access", "submit_plan"].includes(
+          input.payload.toolName
+        )
       ) {
         if (
           typeof input.payload.toolCallId !== "string" ||
@@ -1007,6 +1011,7 @@ export function createProjectStateStore(config: {
         const updated = await client.query(
           `update runs set status = 'awaiting_approval',
              pending_tool_call_id = $4, pending_mastra_run_id = $5,
+             pending_tool_name = $6,
              pending_answer = null,
              pending_answered_by = null, updated_at = now()
            where run_id = $1 and organization_id = $2 and project_id = $3
@@ -1017,6 +1022,7 @@ export function createProjectStateStore(config: {
             input.scope.projectId,
             input.payload.toolCallId,
             input.controllerRunId,
+            input.payload.toolName,
           ]
         );
         if (updated.rowCount !== 1) {
@@ -1205,7 +1211,8 @@ export function createProjectStateStore(config: {
               r.user_message,
               r.user_attachments,
               r.pending_tool_call_id,
-              r.pending_mastra_run_id
+              r.pending_mastra_run_id,
+              r.pending_tool_name
          from runs r
          join build_sessions bs
            on bs.build_session_id = r.build_session_id
@@ -1234,6 +1241,7 @@ export function createProjectStateStore(config: {
       organizationId: OrganizationIdSchema.parse(row.organization_id),
       pendingMastraRunId: row.pending_mastra_run_id ?? null,
       pendingToolCallId: row.pending_tool_call_id ?? null,
+      pendingToolName: row.pending_tool_name ?? null,
       projectId: ProjectIdSchema.parse(row.project_id),
       runId: RunIdSchema.parse(row.run_id),
       sandboxEnvironmentId: SandboxEnvironmentIdSchema.parse(
