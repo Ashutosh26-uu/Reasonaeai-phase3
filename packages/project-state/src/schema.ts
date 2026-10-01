@@ -62,6 +62,7 @@ alter table runs add column if not exists user_attachments jsonb not null defaul
 alter table runs add column if not exists cancellation_requested_at timestamptz;
 alter table runs add column if not exists pending_tool_call_id text;
 alter table runs add column if not exists pending_mastra_run_id text;
+alter table runs add column if not exists pending_tool_name text;
 alter table runs add column if not exists pending_answer text;
 alter table runs add column if not exists pending_answered_by uuid;
 create index if not exists runs_session_recent_idx

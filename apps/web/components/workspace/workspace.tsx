@@ -28,6 +28,7 @@ import {
   type CSSProperties,
   type Dispatch,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
   type PointerEvent as ReactPointerEvent,
   type SetStateAction,
   useCallback,
@@ -730,6 +731,49 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       question,
     ]
   );
+  const submitDecision = useCallback(
+    async (decision: "APPROVED" | "REJECTED") => {
+      if (
+        !(
+          question &&
+          pendingRunId &&
+          conversationId &&
+          organizationId &&
+          projectId
+        )
+      ) {
+        return;
+      }
+      setAnswering(true);
+      setError("");
+      try {
+        await request(
+          `/v1/build-sessions/${conversationId}/runs/${pendingRunId}/answers?${scopeQuery(organizationId, projectId)}`,
+          RunAnswerAcceptedSchema.parse,
+          {
+            body: JSON.stringify({
+              answer: JSON.stringify({ decision }),
+              toolCallId: question.toolCallId,
+            }),
+            method: "POST",
+          }
+        );
+        setAnsweredToolCallId(question.toolCallId);
+      } catch (cause) {
+        setError(describeError(cause, "Could not send your decision."));
+      } finally {
+        setAnswering(false);
+      }
+    },
+    [conversationId, organizationId, pendingRunId, projectId, question]
+  );
+  const submitDecisionApprove = useCallback(() => {
+    submitDecision("APPROVED").catch(() => undefined);
+  }, [submitDecision]);
+  const submitDecisionReject = useCallback(() => {
+    submitDecision("REJECTED").catch(() => undefined);
+  }, [submitDecision]);
+
   const updateAnswerDraft = useCallback(
     (event: React.ChangeEvent<HTMLTextAreaElement>) => {
       setAnswerDraft(event.currentTarget.value);
@@ -1067,24 +1111,97 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       stopping={stoppingRunId === pendingRunId}
     />
   );
-  const questionForm =
-    question && answeredToolCallId !== question.toolCallId ? (
-      <form className="question-form" onSubmit={answerQuestion}>
-        <label htmlFor="question-answer">{question.question}</label>
-        <textarea
-          id="question-answer"
-          maxLength={DRAFT_LIMIT}
-          onChange={updateAnswerDraft}
-          value={answerDraft}
-        />
-        <button
-          disabled={answering || answerDraft.trim().length === 0}
-          type="submit"
-        >
-          {answering ? "Sending…" : "Send answer"}
-        </button>
-      </form>
-    ) : null;
+  let questionForm: ReactNode = null;
+  if (question && answeredToolCallId !== question.toolCallId) {
+    if (question.toolName === "request_access") {
+      const payload = question.suspendPayload as {
+        resource?: string;
+        reason?: string;
+      };
+      questionForm = (
+        <div className="question-form approval-card">
+          <h4>Access Request</h4>
+          <p>
+            <strong>Resource:</strong> {payload.resource}
+          </p>
+          <p>
+            <strong>Reason:</strong> {payload.reason}
+          </p>
+          <div className="approval-actions">
+            <button
+              disabled={answering}
+              onClick={submitDecisionApprove}
+              type="button"
+            >
+              {answering ? "Sending…" : "Approve"}
+            </button>
+            <button
+              disabled={answering}
+              onClick={submitDecisionReject}
+              type="button"
+            >
+              {answering ? "Sending…" : "Reject"}
+            </button>
+          </div>
+        </div>
+      );
+    } else if (question.toolName === "submit_plan") {
+      const payload = question.suspendPayload as {
+        title?: string;
+        summary?: string;
+        steps?: string[];
+      };
+      questionForm = (
+        <div className="question-form approval-card">
+          <h4>Plan Review: {payload.title}</h4>
+          <p>
+            <strong>Summary:</strong> {payload.summary}
+          </p>
+          {payload.steps && (
+            <ul>
+              {payload.steps.map((step, idx) => (
+                <li key={idx}>{step}</li>
+              ))}
+            </ul>
+          )}
+          <div className="approval-actions">
+            <button
+              disabled={answering}
+              onClick={submitDecisionApprove}
+              type="button"
+            >
+              {answering ? "Sending…" : "Approve Plan"}
+            </button>
+            <button
+              disabled={answering}
+              onClick={submitDecisionReject}
+              type="button"
+            >
+              {answering ? "Sending…" : "Reject Plan"}
+            </button>
+          </div>
+        </div>
+      );
+    } else {
+      questionForm = (
+        <form className="question-form" onSubmit={answerQuestion}>
+          <label htmlFor="question-answer">{question.question}</label>
+          <textarea
+            id="question-answer"
+            maxLength={DRAFT_LIMIT}
+            onChange={updateAnswerDraft}
+            value={answerDraft}
+          />
+          <button
+            disabled={answering || answerDraft.trim().length === 0}
+            type="submit"
+          >
+            {answering ? "Sending…" : "Send answer"}
+          </button>
+        </form>
+      );
+    }
+  }
   const emptyConversation =
     messages.length === 0 && Object.keys(timeline.runs).length === 0;
   const heading =

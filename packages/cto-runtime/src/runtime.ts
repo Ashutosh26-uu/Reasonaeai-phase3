@@ -24,6 +24,7 @@ import {
   type RunResources,
 } from "./resources/handlers/index.js";
 import { readRunScope, sandboxIdFor } from "./run-scope.js";
+import { requestAccessTool, submitPlanTool } from "./tools/approvals.js";
 import { createWorkspaceEditTool } from "./tools/edit.js";
 import { ReadSnapshotStore } from "./tools/read-snapshots.js";
 import { createWorkspaceReadTool } from "./tools/workspace-read.js";
@@ -231,6 +232,8 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
         ? {}
         : { root: config.workspaceRoot }),
     }),
+    request_access: requestAccessTool,
+    submit_plan: submitPlanTool,
     write: createWorkspaceWriteTool({
       resolveFilesystem,
       resolveSnapshots,

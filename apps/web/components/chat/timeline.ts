@@ -26,20 +26,30 @@ function questionText(value: unknown): string | undefined {
   return typeof question === "string" ? question : undefined;
 }
 
+export interface PendingQuestion {
+  question: string;
+  suspendPayload: unknown;
+  toolCallId: string;
+  toolName: string;
+}
+
 export function pendingQuestion(
   timeline: Timeline,
   runId: string
-): { question: string; toolCallId: string } | undefined {
+): PendingQuestion | undefined {
   const events = Object.values(timeline.runs[runId]?.events ?? {}).sort(
     (a, b) => a.sequence - b.sequence
   );
-  let pending: { question: string; toolCallId: string } | undefined;
+  let pending: PendingQuestion | undefined;
   for (const event of events) {
     const { payload } = event;
     if (
       event.type === "approval.requested" &&
       payload.kind === "tool_suspended" &&
-      payload.toolName === "ask_user" &&
+      typeof payload.toolName === "string" &&
+      ["ask_user", "request_access", "submit_plan"].includes(
+        payload.toolName
+      ) &&
       typeof payload.toolCallId === "string"
     ) {
       pending = {
@@ -47,7 +57,9 @@ export function pendingQuestion(
           questionText(payload.suspendPayload) ??
           questionText(payload.args) ??
           "What would you like the CTO to do?",
+        suspendPayload: payload.suspendPayload,
         toolCallId: payload.toolCallId,
+        toolName: payload.toolName,
       };
     }
     if (
