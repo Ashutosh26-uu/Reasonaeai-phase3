@@ -11,7 +11,7 @@
  * The splitter is purely lexical — it doesn't know whether a section's path
  * actually exists. That's the patcher's job.
  */
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { isAbsolute, posix, relative, resolve, sep } from "node:path";
 
 import { applyEdits } from "./apply.js";
 import { resolveBlockEdits } from "./block.js";
@@ -37,6 +37,8 @@ const TOKENIZER = new Tokenizer();
 
 /** Line terminator accepted by every lexical pass in this module. */
 const LINE_BREAK_RE = /\r?\n/;
+
+const WINDOWS_DRIVE_RE = /^[a-zA-Z]:/;
 
 function unquoteHashlinePath(pathText: string): string {
   if (pathText.length < 2) {
@@ -133,16 +135,35 @@ function tryParseRecoveryHeader(line: string, cwd?: string): RawSection | null {
 function normalizeHashlinePath(rawPath: string, cwd?: string): string {
   const unquoted = stripApplyPatchPathNoise(
     unquoteHashlinePath(rawPath.trim())
-  );
-  if (!(cwd && isAbsolute(unquoted))) {
+  )
+    .replaceAll("\\", "/")
+    .replace(WINDOWS_DRIVE_RE, "");
+  if (!cwd) {
     return unquoted;
   }
-  const relativePath = relative(resolve(cwd), resolve(unquoted));
-  const normalizedRelative = relativePath.split(sep).join("/");
-  const isWithinCwd =
-    relativePath === "" ||
-    !(relativePath.startsWith("..") || isAbsolute(relativePath));
-  return isWithinCwd ? normalizedRelative || "." : unquoted;
+  const normalizedCwd = cwd.replaceAll("\\", "/");
+  if (isAbsolute(unquoted)) {
+    const relativePath = relative(resolve(cwd), resolve(unquoted));
+    const normalizedRelative = relativePath.split(sep).join("/");
+    const isWithinCwd =
+      relativePath === "" ||
+      !(relativePath.startsWith("..") || isAbsolute(relativePath));
+    if (isWithinCwd) {
+      return normalizedRelative || ".";
+    }
+    if (normalizedCwd !== "/") {
+      const reRooted = posix.resolve(normalizedCwd, `.${unquoted}`);
+      const relReRooted = posix.relative(normalizedCwd, reRooted);
+      if (
+        relReRooted === "" ||
+        (!relReRooted.startsWith("..") && !posix.isAbsolute(relReRooted))
+      ) {
+        return relReRooted || ".";
+      }
+    }
+    return unquoted;
+  }
+  return unquoted;
 }
 
 interface RawSection {

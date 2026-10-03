@@ -19,7 +19,7 @@
  */
 
 import { realpathSync } from "node:fs";
-import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, posix, relative, resolve, sep } from "node:path";
 
 import type { RequestContext } from "@mastra/core/request-context";
 import { createTool } from "@mastra/core/tools";
@@ -282,7 +282,9 @@ export async function applyEditRequest(
         ok: false,
       };
     }
-    const resolved = filesystem.canonicalPath(resolve(cwd, filePath));
+    const resolved = filesystem.canonicalPath(
+      options.filesystem ? filePath : resolve(cwd, filePath)
+    );
     if (!(await filesystem.exists(resolved))) {
       return { error: `File not found: ${resolved}`, ok: false };
     }
@@ -293,8 +295,11 @@ export async function applyEditRequest(
       const reason =
         edited.error ??
         "No changes made - the replacement didn't modify the file.";
+      const displayPath = options.filesystem
+        ? posix.relative(cwd, resolved) || "."
+        : relative(cwd, resolved);
       return {
-        error: `${reason} [${relative(cwd, resolved)}]`,
+        error: `${reason} [${displayPath}]`,
         ok: false,
       };
     }
@@ -306,9 +311,12 @@ export async function applyEditRequest(
       newContent.split(LINE_SPLIT_RE).map((_, index) => index + 1)
     );
     const fileName = basename(resolved);
+    const displayRelPath = options.filesystem
+      ? posix.relative(cwd, resolved) || fileName
+      : relative(cwd, resolved) || fileName;
     const output = createTwoFilesPatch(
-      `a/${fileName}`,
-      `b/${fileName}`,
+      `a/${displayRelPath}`,
+      `b/${displayRelPath}`,
       content,
       newContent,
       undefined,
