@@ -101,8 +101,7 @@ The model policy in `.context/SPEC.md` is binding: paid frontier-model APIs are 
 - **Workspace routing and responsive navigation are repaired locally.** Project and conversation identifiers appear in the URL; opening a project leaves the conversation unselected unless a deep link names one. On narrow screens the navigation overlays the workspace, and its larger transparent hamburger is at the top right.
 - **`ask_user` suspension and answers are repaired on this branch.** The worker persists partial narration, keeps the run `awaiting_approval` with its lease and sandbox, accepts an authorized answer through `POST /v1/build-sessions/:buildSessionId/runs/:runId/answers`, and resumes that exact Mastra tool call. The suspended Mastra run and tool-call identities are durable; after a worker crash, a new lease holder remounts the named workspace volume and resumes the parked question. PostgreSQL and Docker integration tests cover the wait, answer, and same-session continuation. On September 30 an authenticated browser run survived a forced worker-process kill and restart, accepted “Northern India,” and completed with the requested sentence. The `request_access` and `submit_plan` approval paths remain separate pending work.
 - The sandbox `edit` tool mangles every path it is given into `/workspace/<host-style path>` (for example `/workspace/C:\workspace\index.html`), so every edit fails with "File not found" while `write`, `read`, and `run_command` work. Observed during a live run, which worked around it with a scripted patch and reported it in its own summary. It is a `@reasonateai/cto-runtime` tool defect and is not yet fixed.
-- `request_access` and `submit_plan` approval requests remain visible but not actionable; their distinct grant and plan transitions still need authorized resolution paths.
-- The preview registry is process-local, so an API restart forgets every preview. The panel starts a new one when its preview is gone, and the service removes orphaned preview containers at boot, but a preview cannot yet survive a restart.
+- **Preview registry persistence and restart recovery are repaired locally.** Preview state persists in PostgreSQL (`previews` table with composite indices and tenant scoping), surviving API process crashes. On startup, `recover()` detects running preview containers, queries Docker loopback port mappings, probes HTTP responsiveness, reattaches sandbox handles via `DockerSandboxProvider.attach()`, and restores healthy previews into memory while intentionally retiring idle-expired or dead containers. Build-time and database-less test execution safely fall back to an in-memory repository.
 - The Free plan now allows 100 runs per period, 5 million tokens, 1,200 sandbox minutes, and $40 of metered inference spend per period. Project, concurrency, and request-rate limits remain independently enforced.
 
 ### Workspace surface
@@ -118,6 +117,7 @@ The model policy in `.context/SPEC.md` is binding: paid frontier-model APIs are 
 - Rebuilt the shell: a collapsible rail with an explicit arrow that remembers its state, a settings sheet, a floating return-to-newest control, larger type throughout, and motion that is disabled under `prefers-reduced-motion`.
 - Added first-run onboarding: a generated ASCII globe (48 deterministic frames from a committed generator script), the real create-organization and create-project writes, and a closing step that describes the product loop. It appears for an account with no organization.
 - Verified in a browser against the running API, worker, PostgreSQL, Redis, and Docker: the panel renders the generated app from its own sandbox, the Files tab reads the checkpoint, the outline rebuilds on reload, and the orphan sweep removes preview containers left by a previous process (seven removed on the first boot after the change, zero after).
+- Persisted the preview registry in PostgreSQL (`previews` table with composite indices, foreign keys, and tenant scoping) with cold restart recovery: `recover()` inspects active host containers, resolves loopback host ports via `docker port`, validates HTTP serving readiness, reattaches existing Docker sandboxes via `DockerSandboxProvider.attach()`, and restores live previews into memory. Dead containers and idle-expired previews (> 15 min) are retired in PostgreSQL and pruned from the Docker host without disturbing active recovered previews. Fallback to an in-memory store ensures clean build-time bundling.
 
 ### In progress
 
@@ -161,10 +161,9 @@ PR #11 is the baseline for conversation work. PRs #15 and #16 need integration a
 3. Reconcile PRs #8 and #14, implement a real selected deployment adapter, and verify an accepted checkpoint at its authorized staging URL.
 4. Integrate PRs #9 and #12 so voice and wireframe intake use one bounded, replaceable gateway.
 5. Fix the sandbox `edit` tool's path handling and verify it through a live Docker run.
-6. Persist the preview registry so a process restart can restore or intentionally retire previews.
-7. Meter real runs: record sandbox minutes, workspace bytes, and each run's tokens and spend through the usage store at run end.
-8. Add a build-session lookup by idempotency key so a replayed allocation releases its slot before allocating.
-9. Add reproducible PR CI gates and the affected preview, security, and staging checks before claiming the phase exit criteria.
+6. Meter real runs: record sandbox minutes, workspace bytes, and each run's tokens and spend through the usage store at run end.
+7. Add a build-session lookup by idempotency key so a replayed allocation releases its slot before allocating.
+8. Add reproducible PR CI gates and the affected preview, security, and staging checks before claiming the phase exit criteria.
 
 ### Blocked
 

@@ -13,6 +13,11 @@ import type {
   ISandboxProvider,
 } from "@reasonateai/contracts/sandbox";
 import {
+  createInMemoryPreviewRepository,
+  type PreviewRepository,
+  type StoredPreview,
+} from "@reasonateai/project-state/previews";
+import {
   type CheckpointStore,
   createGitCheckpointStore,
   restoreSandbox,
@@ -105,6 +110,15 @@ export interface PreviewStatusReport {
 export interface PreviewService {
   /** Stops the idle sweep and destroys every sandbox this service created. */
   readonly disposeAll: () => Promise<void>;
+  /**
+   * Recovers active previews from the persistent store across process restart,
+   * retires dead or expired containers, and removes true orphans.
+   */
+  readonly recover: () => Promise<{
+    orphansRemoved: number;
+    recovered: number;
+    retired: number;
+  }>;
   readonly start: (request: PreviewRequest) => Promise<PreviewView>;
   readonly status: (
     previewId: PreviewId
@@ -125,21 +139,31 @@ export interface PreviewServiceDeps {
    * the deployment's configured root, then to the same working directory the
    * execution plane uses.
    */
-  checkpointRoot?: string;
+  checkpointRoot?: string | undefined;
   /** Resolved lazily so a deployment without checkpoints starts normally. */
-  checkpoints?: () => CheckpointStore;
+  checkpoints?: (() => CheckpointStore) | undefined;
   /** The sandbox image every preview runs in. */
-  image?: string;
+  image?: string | undefined;
   /** The clock, injectable so the idle deadline can be observed directly. */
-  nowMs?: () => number;
+  nowMs?: (() => number) | undefined;
   /**
    * Called with how many containers a previous process left behind, so a
    * deployment can report what it cleaned rather than cleaning silently.
    */
-  onOrphansRemoved?: (count: number) => void;
-  provider?: () => ISandboxProvider;
+  onOrphansRemoved?: ((count: number) => void) | undefined;
+  /** Called when a live preview is recovered across process restart. */
+  onPreviewRecovered?:
+    | ((previewId: PreviewId, port: number) => void)
+    | undefined;
+  /** Called when a preview is retired or marked failed during recovery. */
+  onPreviewRetired?:
+    | ((previewId: PreviewId, reason: string) => void)
+    | undefined;
+  /** Persistent preview repository backing the registry. */
+  previewStore?: PreviewRepository | (() => PreviewRepository) | undefined;
+  provider?: (() => ISandboxProvider) | undefined;
   /** Where the process-exit teardown is registered; injectable for callers. */
-  registerExitHook?: (teardown: () => void) => void;
+  registerExitHook?: ((teardown: () => void) => void) | undefined;
 }
 
 /** The port a preview listens on inside its container. */
@@ -239,6 +263,23 @@ function describeFailure(error: unknown): string {
     : message;
 }
 
+function parsePublishedPortOutput(stdout: string): number | null {
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    const colonIndex = trimmed.lastIndexOf(":");
+    if (colonIndex !== -1) {
+      const port = Number.parseInt(trimmed.slice(colonIndex + 1), 10);
+      if (!Number.isNaN(port) && port > 0 && port <= 65_535) {
+        return port;
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * An HTTP answer of any status proves the app is listening; only a refused
  * connection says it is not. A stalled probe is inconclusive, so a preview is
@@ -290,11 +331,62 @@ export function createPreviewService(
   const byId = new Map<PreviewId, PreviewRecord>();
   const bySession = new Map<BuildSessionId, PreviewRecord>();
 
+  let previewStoreInstance: PreviewRepository | undefined;
+  const getPreviewStore = (): PreviewRepository => {
+    if (!previewStoreInstance) {
+      try {
+        previewStoreInstance =
+          typeof deps.previewStore === "function"
+            ? deps.previewStore()
+            : (deps.previewStore ?? createInMemoryPreviewRepository());
+      } catch {
+        previewStoreInstance = createInMemoryPreviewRepository();
+      }
+    }
+    return previewStoreInstance;
+  };
+
+  const attachSandbox = async (
+    stored: StoredPreview
+  ): Promise<ISandbox | undefined> => {
+    const prov = sandboxes();
+    if (
+      "attach" in prov &&
+      typeof (prov as { attach?: unknown }).attach === "function"
+    ) {
+      try {
+        const attached = await (
+          prov as {
+            attach: (config: unknown) => Promise<ISandbox | null>;
+          }
+        ).attach({
+          cpuLimit: PREVIEW_SANDBOX_CPU,
+          id: stored.sandboxId,
+          image,
+          memoryLimitMb: PREVIEW_SANDBOX_MEMORY_MB,
+          networkMode: "bridge",
+          ports: [PREVIEW_PORT],
+          projectId: stored.projectId,
+          runId: null,
+          timeoutMs: SANDBOX_COMMAND_TIMEOUT_MS,
+          workdir: PREVIEW_WORKDIR,
+        });
+        return attached ?? undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  };
+
   const live = (record: PreviewRecord): boolean =>
     byId.get(record.previewId) === record;
 
   const touched = (record: PreviewRecord): PreviewRecord => {
     record.lastUsedAtMs = nowMs();
+    getPreviewStore()
+      .touch(record.previewId)
+      .catch(() => undefined);
     return record;
   };
 
@@ -311,13 +403,17 @@ export function createPreviewService(
     const { sandbox } = record;
     record.sandbox = undefined;
     if (sandbox === undefined) {
-      return;
-    }
-    try {
-      await sandbox.destroy();
-    } catch {
-      // Teardown is best effort: the exit hook and Docker's own orphan cleanup
-      // are the backstops, and a sandbox that is already gone is not a failure.
+      const containerName = `${PREVIEW_CONTAINER_PREFIX}${record.previewId}`;
+      await execFileAsync("docker", ["rm", "-f", "-v", containerName]).catch(
+        () => undefined
+      );
+    } else {
+      try {
+        await sandbox.destroy();
+      } catch {
+        // Teardown is best effort: the exit hook and Docker's own orphan cleanup
+        // are the backstops, and a sandbox that is already gone is not a failure.
+      }
     }
   };
 
@@ -327,6 +423,13 @@ export function createPreviewService(
     record.detail = detail.slice(0, DETAIL_MAX_LENGTH);
     record.hostPort = null;
     await destroySandbox(record);
+    getPreviewStore()
+      .update(record.previewId, {
+        detail: record.detail,
+        hostPort: null,
+        status: "failed",
+      })
+      .catch(() => undefined);
   };
 
   const teardown = async (record: PreviewRecord): Promise<void> => {
@@ -337,6 +440,11 @@ export function createPreviewService(
       bySession.delete(record.buildSessionId);
     }
     await destroySandbox(record);
+    getPreviewStore()
+      .update(record.previewId, {
+        status: "stopped",
+      })
+      .catch(() => undefined);
   };
   /**
    * How to start what the checkpoint contains: a declared npm script first,
@@ -519,6 +627,9 @@ export function createPreviewService(
       }
       const hostPort = await sandbox.exposePort(PREVIEW_PORT);
       record.hostPort = hostPort;
+      getPreviewStore()
+        .update(record.previewId, { hostPort })
+        .catch(() => undefined);
 
       await restoreSandbox({
         checkpointId: latest.checkpointId,
@@ -562,6 +673,13 @@ export function createPreviewService(
       }
       record.status = "ready";
       record.detail = null;
+      getPreviewStore()
+        .update(record.previewId, {
+          detail: null,
+          hostPort: record.hostPort,
+          status: "ready",
+        })
+        .catch(() => undefined);
     } catch (error) {
       if (!live(record)) {
         return;
@@ -605,12 +723,166 @@ export function createPreviewService(
    * first preview of the process, and it never touches a run's sandbox — those
    * carry a different name.
    */
-  let swept = false;
-  const sweepOrphans = async (): Promise<void> => {
-    if (swept) {
-      return;
+  type RecoverItemResult =
+    | {
+        containerName: string;
+        hostPort: number | null;
+        outcome: "recovered";
+        previewId: PreviewId;
+        record: PreviewRecord;
+      }
+    | {
+        outcome: "retired";
+        previewId: PreviewId;
+        reason: "idle_expired" | "container_exited" | "probe_refused";
+      };
+
+  const recoverPreviewItem = async (
+    item: StoredPreview,
+    cutoff: number,
+    previewRepo: PreviewRepository
+  ): Promise<RecoverItemResult> => {
+    const { containerName, previewId } = item;
+
+    if (item.lastUsedAt.getTime() <= cutoff) {
+      await execFileAsync("docker", ["rm", "-f", "-v", containerName]).catch(
+        () => undefined
+      );
+      await previewRepo.update(previewId, {
+        detail: "Preview retired after idle expiration during service restart.",
+        status: "stopped",
+      });
+      return { outcome: "retired", previewId, reason: "idle_expired" };
     }
-    swept = true;
+
+    let isRunning = false;
+    try {
+      const inspectRes = await execFileAsync("docker", [
+        "inspect",
+        "--format",
+        "{{.State.Running}}",
+        containerName,
+      ]);
+      isRunning = inspectRes.stdout.trim() === "true";
+    } catch {
+      isRunning = false;
+    }
+
+    if (!isRunning) {
+      await execFileAsync("docker", ["rm", "-f", "-v", containerName]).catch(
+        () => undefined
+      );
+      await previewRepo.update(previewId, {
+        detail:
+          "The preview container exited while the service was restarting.",
+        status: "failed",
+      });
+      return { outcome: "retired", previewId, reason: "container_exited" };
+    }
+
+    let { hostPort } = item;
+    try {
+      const portRes = await execFileAsync("docker", [
+        "port",
+        containerName,
+        String(PREVIEW_PORT),
+      ]);
+      const discovered = parsePublishedPortOutput(portRes.stdout);
+      if (discovered !== null) {
+        hostPort = discovered;
+      }
+    } catch {
+      // Keep existing
+    }
+
+    const probe = await probePreview(hostPort);
+    if (probe !== "serving") {
+      await execFileAsync("docker", ["rm", "-f", "-v", containerName]).catch(
+        () => undefined
+      );
+      await previewRepo.update(previewId, {
+        detail:
+          "The preview stopped answering its published port during service restart.",
+        status: "failed",
+      });
+      return { outcome: "retired", previewId, reason: "probe_refused" };
+    }
+
+    const attached = await attachSandbox(item);
+    const record: PreviewRecord = {
+      buildSessionId: item.buildSessionId,
+      detail: null,
+      hostPort,
+      lastUsedAtMs: nowMs(),
+      organizationId: item.organizationId,
+      previewId,
+      projectId: item.projectId,
+      sandbox: attached,
+      status: "ready",
+    };
+
+    if (hostPort !== item.hostPort) {
+      await previewRepo.update(previewId, {
+        hostPort,
+        status: "ready",
+      });
+    }
+
+    return {
+      containerName,
+      hostPort,
+      outcome: "recovered",
+      previewId,
+      record,
+    };
+  };
+
+  /**
+   * Removes the preview containers a previous process left behind.
+   *
+   * A preview's registry does not survive a restart, so every container this
+   * process did not create is one nobody can address: it holds memory, serves
+   * nothing, and would only be found by looking. This runs once, before the
+   * first preview of the process, and it never touches a run's sandbox — those
+   * carry a different name.
+   */
+  const recover = async (): Promise<{
+    orphansRemoved: number;
+    recovered: number;
+    retired: number;
+  }> => {
+    const recoveredContainers = new Set<string>();
+    let recoveredCount = 0;
+    let retiredCount = 0;
+    let orphansRemovedCount = 0;
+
+    const previewRepo = getPreviewStore();
+    const cutoff = nowMs() - IDLE_TTL_MS;
+
+    try {
+      const active = await previewRepo.listActive();
+      const results = await Promise.all(
+        active.map((item) => recoverPreviewItem(item, cutoff, previewRepo))
+      );
+
+      for (const res of results) {
+        if (res.outcome === "retired") {
+          retiredCount += 1;
+          deps.onPreviewRetired?.(res.previewId, res.reason);
+        } else {
+          byId.set(res.previewId, res.record);
+          bySession.set(res.record.buildSessionId, res.record);
+          recoveredContainers.add(res.containerName);
+          recoveredCount += 1;
+          if (deps.onPreviewRecovered) {
+            deps.onPreviewRecovered(res.previewId, res.hostPort ?? 0);
+          }
+        }
+      }
+    } catch {
+      // Ignored
+    }
+
     try {
       const listed = await execFileAsync("docker", [
         "ps",
@@ -620,29 +892,77 @@ export function createPreviewService(
         "--format",
         "{{.Names}}",
       ]);
-      const orphans = listed.stdout
+      const allPreviewContainers = listed.stdout
         .split("\n")
-        .map((line: string) => line.trim())
-        .filter((name: string) => name.startsWith(PREVIEW_CONTAINER_PREFIX));
+        .map((l: string) => l.trim())
+        .filter((n: string) => n.startsWith(PREVIEW_CONTAINER_PREFIX));
+
+      const trueOrphans = allPreviewContainers.filter(
+        (name: string) => !recoveredContainers.has(name)
+      );
+
       await Promise.all(
-        orphans.map((name: string) =>
+        trueOrphans.map((name: string) =>
           execFileAsync("docker", ["rm", "-f", "-v", name]).catch(
             () => undefined
           )
         )
       );
-      if (orphans.length > 0) {
-        deps.onOrphansRemoved?.(orphans.length);
+      orphansRemovedCount = trueOrphans.length;
+      if (orphansRemovedCount > 0) {
+        deps.onOrphansRemoved?.(orphansRemovedCount);
       }
     } catch {
-      // Docker being unavailable is not this service's failure to report: the
-      // first preview will fail on its own terms and say so.
+      // Ignored
     }
+
+    return {
+      orphansRemoved: orphansRemovedCount,
+      recovered: recoveredCount,
+      retired: retiredCount,
+    };
+  };
+
+  let swept = false;
+  const sweepOrphans = async (): Promise<void> => {
+    if (swept) {
+      return;
+    }
+    swept = true;
+    await recover();
   };
 
   const start = async (request: PreviewRequest): Promise<PreviewView> => {
     await sweepOrphans();
-    const existing = bySession.get(request.buildSessionId);
+    let existing = bySession.get(request.buildSessionId);
+    if (existing === undefined) {
+      try {
+        const dbExisting = await getPreviewStore().getBySession(
+          request.buildSessionId
+        );
+        if (
+          dbExisting &&
+          (dbExisting.status === "ready" || dbExisting.status === "starting")
+        ) {
+          existing = {
+            buildSessionId: dbExisting.buildSessionId,
+            detail: dbExisting.detail,
+            hostPort: dbExisting.hostPort,
+            lastUsedAtMs: nowMs(),
+            organizationId: dbExisting.organizationId,
+            previewId: dbExisting.previewId,
+            projectId: dbExisting.projectId,
+            sandbox: await attachSandbox(dbExisting),
+            status: dbExisting.status,
+          };
+          byId.set(existing.previewId, existing);
+          bySession.set(existing.buildSessionId, existing);
+        }
+      } catch {
+        // Best effort
+      }
+    }
+
     if (existing !== undefined) {
       // A live preview is adopted: the panel retries a dropped request, and a
       // retry must not leave the first container running behind it.
@@ -653,6 +973,7 @@ export function createPreviewService(
     }
 
     const previewId = PreviewIdSchema.parse(randomUUID());
+    const containerName = `${PREVIEW_CONTAINER_PREFIX}${previewId}`;
     const record: PreviewRecord = {
       buildSessionId: request.buildSessionId,
       detail: null,
@@ -667,6 +988,18 @@ export function createPreviewService(
     byId.set(previewId, record);
     bySession.set(record.buildSessionId, record);
 
+    getPreviewStore()
+      .record({
+        buildSessionId: request.buildSessionId,
+        containerName,
+        organizationId: request.organizationId,
+        previewId,
+        projectId: request.projectId,
+        sandboxId: `preview-${previewId}`,
+        status: "starting",
+      })
+      .catch(() => undefined);
+
     // The caller gets the id and `starting` now; the container, the restore,
     // and the app all happen behind it, and a failure lands in `detail`.
     // `begin` reports its own failures, so there is nothing to await here.
@@ -678,9 +1011,31 @@ export function createPreviewService(
   const status = async (
     previewId: PreviewId
   ): Promise<PreviewStatusReport | undefined> => {
-    const record = byId.get(previewId);
+    let record = byId.get(previewId);
     if (record === undefined) {
-      return;
+      try {
+        const stored = await getPreviewStore().get(previewId);
+        if (stored) {
+          record = {
+            buildSessionId: stored.buildSessionId,
+            detail: stored.detail,
+            hostPort: stored.hostPort,
+            lastUsedAtMs: stored.lastUsedAt.getTime(),
+            organizationId: stored.organizationId,
+            previewId: stored.previewId,
+            projectId: stored.projectId,
+            sandbox: await attachSandbox(stored),
+            status: stored.status,
+          };
+          byId.set(previewId, record);
+          bySession.set(record.buildSessionId, record);
+        }
+      } catch {
+        // Ignore
+      }
+    }
+    if (record === undefined) {
+      return undefined;
     }
 
     touched(record);
@@ -695,9 +1050,29 @@ export function createPreviewService(
   const stop = async (
     previewId: PreviewId
   ): Promise<PreviewView | undefined> => {
-    const record = byId.get(previewId);
+    let record = byId.get(previewId);
     if (record === undefined) {
-      return;
+      try {
+        const stored = await getPreviewStore().get(previewId);
+        if (stored) {
+          record = {
+            buildSessionId: stored.buildSessionId,
+            detail: stored.detail,
+            hostPort: stored.hostPort,
+            lastUsedAtMs: stored.lastUsedAt.getTime(),
+            organizationId: stored.organizationId,
+            previewId: stored.previewId,
+            projectId: stored.projectId,
+            sandbox: await attachSandbox(stored),
+            status: stored.status,
+          };
+        }
+      } catch {
+        // Ignore
+      }
+    }
+    if (record === undefined) {
+      return undefined;
     }
 
     await teardown(record);
@@ -712,20 +1087,44 @@ export function createPreviewService(
    * request, and a proxied request counts as use so a preview being watched
    * never expires under the viewer.
    */
-  const target = (previewId: PreviewId): Promise<PreviewTarget | undefined> => {
-    const record = byId.get(previewId);
+  const target = async (
+    previewId: PreviewId
+  ): Promise<PreviewTarget | undefined> => {
+    let record = byId.get(previewId);
     if (record === undefined) {
-      return Promise.resolve(undefined);
+      try {
+        const stored = await getPreviewStore().get(previewId);
+        if (stored) {
+          record = {
+            buildSessionId: stored.buildSessionId,
+            detail: stored.detail,
+            hostPort: stored.hostPort,
+            lastUsedAtMs: stored.lastUsedAt.getTime(),
+            organizationId: stored.organizationId,
+            previewId: stored.previewId,
+            projectId: stored.projectId,
+            sandbox: await attachSandbox(stored),
+            status: stored.status,
+          };
+          byId.set(previewId, record);
+          bySession.set(record.buildSessionId, record);
+        }
+      } catch {
+        // Ignore
+      }
+    }
+    if (record === undefined) {
+      return undefined;
     }
 
     touched(record);
-    return Promise.resolve({
+    return {
       detail: record.detail,
       hostPort: record.hostPort,
       organizationId: record.organizationId,
       projectId: record.projectId,
       status: record.status,
-    });
+    };
   };
 
   /** Idle previews cost a container each, so the sweep is not optional. */
@@ -736,6 +1135,33 @@ export function createPreviewService(
         teardown(record).catch(() => undefined);
       }
     }
+    const backgroundSweep = async (): Promise<void> => {
+      try {
+        const expired = await getPreviewStore().listExpired(new Date(cutoff));
+        await Promise.all(
+          expired
+            .filter((item) => !byId.has(item.previewId))
+            .map(async (item) => {
+              try {
+                await execFileAsync("docker", [
+                  "rm",
+                  "-f",
+                  "-v",
+                  item.containerName,
+                ]);
+              } catch {
+                // Ignore teardown failure
+              }
+              await getPreviewStore().update(item.previewId, {
+                status: "stopped",
+              });
+            })
+        );
+      } catch {
+        // Ignore background sweep failure
+      }
+    };
+    backgroundSweep().catch(() => undefined);
   };
 
   const timer = setInterval(sweep, IDLE_SWEEP_INTERVAL_MS);
@@ -769,7 +1195,7 @@ export function createPreviewService(
     }
   });
 
-  return { disposeAll, start, status, stop, sweepOrphans, target };
+  return { disposeAll, recover, start, status, stop, sweepOrphans, target };
 }
 
 /** Whether a path exists in the sandbox, file or directory. */
