@@ -1,0 +1,129 @@
+.card {
+  margin: 18px 0 8px;
+  overflow: hidden;
+  font-size: 12px;
+  background: color-mix(in srgb, var(--muted) 28%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.summary {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  padding: 13px 14px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  list-style: none;
+}
+.summary::-webkit-details-marker {
+  display: none;
+}
+.title {
+  flex: 1;
+  font-weight: 500;
+  color: var(--foreground);
+}
+.title small {
+  margin-left: 6px;
+  font-family: monospace;
+  font-size: 10px;
+  color: var(--muted-foreground);
+}
+.counts {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.added {
+  color: #28a56a;
+}
+.removed {
+  color: #d36b75;
+}
+.chevron {
+  transition: transform 0.15s;
+}
+.card[open] .chevron {
+  transform: rotate(90deg);
+}
+.content {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
+}
+.caption {
+  margin: 0 0 9px;
+  color: var(--muted-foreground);
+}
+.files {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.file {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 8px 3px;
+  color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+.file:hover {
+  background: var(--muted);
+}
+.path {
+  flex: 1;
+  min-width: 0;
+  font-family: monospace;
+  overflow-wrap: anywhere;
+}
+.status {
+  font-size: 10px;
+  color: var(--muted-foreground);
+}
+.detail {
+  padding: 9px;
+  margin: 3px 0 8px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.detail p {
+  color: var(--muted-foreground);
+}
+.patch {
+  max-height: 400px;
+  margin: 0;
+  overflow: auto;
+  font: 11px / 1.7 monospace;
+  white-space: pre;
+}
+.addedLine {
+  color: #28a56a;
+  background: rgb(40 165 106 / 8%);
+}
+.removedLine {
+  color: #d36b75;
+  background: rgb(211 107 117 / 8%);
+}
+.unavailable {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 16px 0;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+@media (max-width: 480px) {
+  .status {
+    display: none;
+  }
+  .summary {
+    gap: 6px;
+    padding: 12px 10px;
+  }
+}

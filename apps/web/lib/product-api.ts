@@ -37,7 +37,9 @@ export async function request<T>(
     ...init,
     credentials: "same-origin",
     headers: {
-      ...(init.body ? { "content-type": "application/json" } : {}),
+      ...(init.body && !(init.body instanceof FormData)
+        ? { "content-type": "application/json" }
+        : {}),
       ...(csrf && init.method && init.method !== "GET"
         ? { [CSRF_HEADER]: csrf }
         : {}),

@@ -91,6 +91,61 @@ const events = [
 ];
 
 describe("conversation transcript", () => {
+  it("retains user steering at its original position and updates delivery on replay", () => {
+    const requested = event(
+      2,
+      { message: "Use blue", steeringId: "steer" },
+      runId,
+      "run.steering.requested"
+    );
+    const delivered = event(
+      4,
+      { steeringId: "steer" },
+      runId,
+      "run.steering.delivered"
+    );
+    const history = [
+      event(1, {
+        kind: "message_end",
+        messageId: "first",
+        role: "assistant",
+        text: "Working",
+      }),
+      requested,
+      event(3, {
+        kind: "message_end",
+        messageId: "last",
+        role: "assistant",
+        text: "Changed",
+      }),
+      delivered,
+    ];
+    const entries = projectTranscript(
+      history.reduce(foldDurable, EMPTY_TIMELINE),
+      []
+    )[0]?.entries;
+    expect(entries?.map((entry) => entry.kind)).toEqual([
+      "text",
+      "steering",
+      "text",
+    ]);
+    expect(entries?.[1]).toMatchObject({
+      status: "delivered",
+      text: "Use blue",
+    });
+    const failed = event(
+      5,
+      { reason: "Delivery unconfirmed", steeringId: "steer" },
+      runId,
+      "run.steering.failed"
+    );
+    expect(
+      projectTranscript(
+        [...history, failed].reduce(foldDurable, EMPTY_TIMELINE),
+        []
+      )[0]?.entries[1]
+    ).toMatchObject({ reason: "Delivery unconfirmed", status: "failed" });
+  });
   it("shows only the unanswered ask_user question for an active run", () => {
     const asked = event(
       4,

@@ -37,6 +37,8 @@ import {
   ReasoningTrigger,
 } from "@/components/ai-elements/reasoning";
 import { ActivityOutline } from "./activity";
+import { CheckpointCard } from "./checkpoint-card";
+import { type CheckpointScope, turnCheckpoint } from "./checkpoint-state";
 import {
   projectTranscript,
   type Timeline,
@@ -44,6 +46,7 @@ import {
 } from "./timeline";
 
 export interface TranscriptProps {
+  checkpointScope?: CheckpointScope;
   live: boolean;
   messages: ConversationMessage[];
   onEdit: (text: string) => void;
@@ -165,6 +168,28 @@ function UserMessageActions({
 }
 
 function Entry({ entry }: { entry: TranscriptEntry }) {
+  if (entry.kind === "steering") {
+    const status =
+      entry.status === "delivered"
+        ? "Delivered to the active CTO"
+        : "Waiting for the CTO’s next step";
+    return (
+      <Message from="user">
+        <MessageContent>
+          <p className="steering-label">
+            Steering ·{" "}
+            {entry.status === "failed" ? "Delivery unconfirmed" : status}
+          </p>
+          <p className="steering-message">{entry.text}</p>
+          {entry.reason && (
+            <p className="steering-label" role="status">
+              {entry.reason}
+            </p>
+          )}
+        </MessageContent>
+      </Message>
+    );
+  }
   if (entry.kind === "tool") {
     return <ActivityOutline tool={entry.tool} />;
   }
@@ -258,6 +283,7 @@ function renderEntries(entries: TranscriptEntry[]): ReactNode[] {
 }
 
 export function Transcript({
+  checkpointScope,
   messages,
   onEdit,
   onRetry,
@@ -272,6 +298,9 @@ export function Transcript({
     <Conversation className="transcript">
       <ConversationContent className="transcript-inner">
         {turns.map((turn) => {
+          const checkpoint = turnCheckpoint(
+            Object.values(timeline.runs[turn.id]?.events ?? {})
+          );
           const answer = turn.entries
             .flatMap((entry) => (entry.kind === "text" ? [entry.text] : []))
             .join("\n\n");
@@ -313,6 +342,15 @@ export function Transcript({
                     <RetryAction onRetry={onRetry} text={turn.user.text} />
                   )}
                 </MessageActions>
+              )}
+              {checkpoint && (
+                <CheckpointCard
+                  {...(checkpointScope === undefined
+                    ? {}
+                    : { scope: checkpointScope })}
+                  key={`${turn.id}:${checkpoint.sequence}`}
+                  turn={checkpoint}
+                />
               )}
             </section>
           );

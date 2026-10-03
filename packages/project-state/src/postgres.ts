@@ -73,6 +73,11 @@ import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
 import { PROJECT_STATE_MIGRATION_SQL } from "./schema.js";
 import { AUTH_SESSION_MIGRATION_SQL } from "./session-schema.js";
 import { createSessionRepository, type SessionRepository } from "./sessions.js";
+import {
+  createRunSteeringRepository,
+  type RunSteeringRepository,
+} from "./steering.js";
+import { RUN_STEERING_MIGRATION_SQL } from "./steering-schema.js";
 import { createUsageRepository, type UsageRepository } from "./usage.js";
 import { USAGE_MIGRATION_SQL } from "./usage-schema.js";
 import { createUserRepository, type UserRepository } from "./users.js";
@@ -495,6 +500,7 @@ export interface ProjectStateStore {
     scope: TenantScope;
     status: RunStatus;
   }) => Promise<boolean>;
+  steering: RunSteeringRepository;
   takeRunAnswer: (input: {
     runId: RunId;
     scope: TenantScope;
@@ -683,6 +689,10 @@ export function createProjectStateStore(config: {
   }
 
   const usage = createUsageRepository(pool, { withTransaction });
+  const steering = createRunSteeringRepository({
+    appendEvent: insertRunEvent,
+    withTransaction,
+  });
 
   async function allocateBuildSession(input: {
     attachments?: PromptAttachment[];
@@ -2063,6 +2073,7 @@ export function createProjectStateStore(config: {
               MIGRATION_LOCK_KEY,
             ]);
             await client.query(PROJECT_STATE_MIGRATION_SQL);
+            await client.query(RUN_STEERING_MIGRATION_SQL);
             await client.query(AUTH_SESSION_MIGRATION_SQL);
             await client.query(MEMBERSHIP_MIGRATION_SQL);
             await client.query(USAGE_MIGRATION_SQL);
@@ -2096,6 +2107,7 @@ export function createProjectStateStore(config: {
     requestRunCancellation,
     sessions,
     setRunStatus,
+    steering,
     takeRunAnswer,
     usage,
     users,

@@ -2,7 +2,10 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { AgentControllerEvent } from "@mastra/core/agent-controller";
 import type { PromptAttachment } from "@reasonateai/contracts/execution";
-import type { RunEventEnvelope } from "@reasonateai/contracts/execution-protocol";
+import {
+  RunCheckpointSchema,
+  type RunEventEnvelope,
+} from "@reasonateai/contracts/execution-protocol";
 import { type RunId, UserIdSchema } from "@reasonateai/contracts/identity";
 import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
 import {
@@ -30,6 +33,26 @@ import {
 
 const connectionString = process.env.DATABASE_URL;
 const describeWithDatabase = connectionString ? describe : describe.skip;
+
+function writeWorkspaceFile(volume: string, path: string, content: string) {
+  const container = execFileSync(
+    "docker",
+    ["ps", "-q", "--filter", `volume=${volume}`],
+    { encoding: "utf8" }
+  ).trim();
+  if (!container || container.includes("\n")) {
+    throw new Error("Expected one run sandbox");
+  }
+  execFileSync("docker", [
+    "exec",
+    container,
+    "node",
+    "-e",
+    "require('node:fs').writeFileSync(process.argv[1], process.argv[2]);",
+    `/workspace/${path}`,
+    content,
+  ]);
+}
 
 /**
  * The worker's whole promise in one query: a run is `running` only while a live
@@ -430,6 +453,11 @@ describeWithDatabase("run execution", () => {
     expect(terminal?.type).toBe("run.completed");
     const checkpointId = terminal?.payload.checkpointId;
     expect(typeof checkpointId).toBe("string");
+    expect(terminal?.payload.checkpoint).toMatchObject({
+      baseCommit: null,
+      checkpointId,
+      status: "available",
+    });
 
     // What the run recorded is what the next run restores from.
     const latest = await harness.checkpoints.latest({
@@ -452,8 +480,21 @@ describeWithDatabase("run execution", () => {
     }).execute(allocated.candidate, createStopSignal());
     const firstSession = await first.waitForSession();
     await firstSession.started;
+    writeWorkspaceFile(allocated.volume, "notes.txt", "first\nsecond\n");
     firstSession.complete([{ reason: "complete", type: "agent_end" }]);
     expect(await firstAttempt).toBe("succeeded");
+    const firstCheckpoint = RunCheckpointSchema.parse(
+      (await ledger(harness, allocated)).at(-1)?.payload.checkpoint
+    );
+    expect(firstCheckpoint).toMatchObject({
+      added: 2,
+      baseCommit: null,
+      removed: 0,
+      status: "available",
+    });
+    if (firstCheckpoint.status !== "available") {
+      throw new Error("First turn has no measured checkpoint");
+    }
 
     const turn = await harness.store.appendConversationTurn({
       buildSessionId: allocated.buildSessionId,
@@ -478,8 +519,23 @@ describeWithDatabase("run execution", () => {
     const secondSession = await second.waitForSession();
     await secondSession.started;
     expect(secondSession.lastMessage).toBe("Continue the same project");
+    writeWorkspaceFile(allocated.volume, "notes.txt", "first\nupdated\n");
+    writeWorkspaceFile(allocated.volume, "new.txt", "added\n");
     secondSession.complete([{ reason: "complete", type: "agent_end" }]);
     expect(await secondAttempt).toBe("succeeded");
+    const secondEvents = await harness.store.listRunEvents({
+      afterSequence: 0,
+      limit: 200,
+      runId: turn.runId,
+      scope: allocated.scope,
+    });
+    expect(secondEvents.at(-1)?.payload.checkpoint).toMatchObject({
+      added: 2,
+      baseCommit: firstCheckpoint.commit,
+      fileCount: 2,
+      removed: 1,
+      status: "available",
+    });
     expect(await containerCount(allocated.volume)).toBe(0);
     expect(await volumeCount(allocated.volume)).toBe(0);
   });
@@ -642,6 +698,11 @@ describeWithDatabase("run execution", () => {
     const attempt = executor.execute(allocated.candidate, createStopSignal());
     const session = await scripted.waitForSession();
     await session.started;
+    writeWorkspaceFile(
+      allocated.volume,
+      "partial.txt",
+      "saved before failure\n"
+    );
     session.crash("the provider refused the run");
 
     expect(await attempt).toBe("failed");
@@ -653,6 +714,11 @@ describeWithDatabase("run execution", () => {
 
     const terminal = (await ledger(harness, allocated)).at(-1);
     expect(terminal?.type).toBe("run.failed");
+    expect(terminal?.payload.checkpoint).toMatchObject({
+      added: 1,
+      removed: 0,
+      status: "available",
+    });
     expect(String(terminal?.payload.reason)).toContain(
       "the provider refused the run"
     );
@@ -713,6 +779,11 @@ describeWithDatabase("run execution", () => {
     await session.started;
     expect(await containerCount(allocated.volume)).toBe(1);
 
+    writeWorkspaceFile(
+      allocated.volume,
+      "partial.txt",
+      "saved before cancellation\n"
+    );
     stopSignal.request("the worker received SIGTERM");
     expect(await attempt).toBe("cancelled");
 
@@ -725,6 +796,11 @@ describeWithDatabase("run execution", () => {
 
     const terminal = (await ledger(harness, allocated)).at(-1);
     expect(terminal?.type).toBe("run.cancelled");
+    expect(terminal?.payload.checkpoint).toMatchObject({
+      added: 1,
+      removed: 0,
+      status: "available",
+    });
     expect(String(terminal?.payload.reason)).toContain("SIGTERM");
 
     expect(await containerCount(allocated.volume)).toBe(0);

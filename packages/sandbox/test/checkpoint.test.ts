@@ -25,6 +25,7 @@ import {
   type CheckpointSandbox,
   type CheckpointWriteResult,
   createGitCheckpointStore,
+  parseCheckpointChanges,
   restoreSandbox,
   snapshotSandbox,
 } from "../src/checkpoint.js";
@@ -261,84 +262,255 @@ const shellAvailable = await execFileAsync("sh", [
   () => false
 );
 
-describe.skipIf(!shellAvailable)("snapshotSandbox and restoreSandbox", () => {
-  it("moves a workspace through a real git bundle into a fresh sandbox", async () => {
-    const sourceDirectory = await createTemporaryDirectory("reasonate-source-");
-    const restoredDirectory = await createTemporaryDirectory(
-      "reasonate-restored-"
-    );
-    const chainedDirectory = await createTemporaryDirectory("reasonate-chain-");
-    const root = await createTemporaryDirectory("reasonate-checkpoints-");
-    const store = createGitCheckpointStore({ root });
-    const source = new FixtureSandbox(sourceDirectory);
+describe.skipIf(!shellAvailable)(
+  "snapshotSandbox and restoreSandbox",
+  { timeout: 30_000 },
+  () => {
+    it("retains the restored base for immutable diffs when a turn rewrites Git history", async () => {
+      const directory = await createTemporaryDirectory("reasonate-rewritten-");
+      const destination = await createTemporaryDirectory(
+        "reasonate-rewritten-restore-"
+      );
+      const root = await createTemporaryDirectory("reasonate-rewritten-store-");
+      const sandbox = new FixtureSandbox(directory);
+      const store = createGitCheckpointStore({ root });
+      const input = {
+        buildSessionId,
+        organizationId,
+        projectId,
+        runId,
+        sandbox,
+        store,
+      };
+      await sandbox.writeFile("file.txt", "before\n");
+      const first = await snapshotSandbox({ ...input, baseCommit: null });
+      if (first.checkpoint?.status !== "available") {
+        throw new Error("Expected first checkpoint");
+      }
+      const branch = await execFileAsync(
+        "git",
+        ["symbolic-ref", "--short", "HEAD"],
+        { cwd: directory }
+      );
+      await execFileAsync("git", ["checkout", "--orphan", "rewritten"], {
+        cwd: directory,
+      });
+      await execFileAsync("git", ["branch", "-D", branch.stdout.trim()], {
+        cwd: directory,
+      });
+      await sandbox.writeFile("file.txt", "after\n");
+      const next = await snapshotSandbox({
+        ...input,
+        baseCommit: first.checkpoint.commit,
+      });
+      expect(next.checkpoint).toMatchObject({
+        added: 1,
+        removed: 1,
+        status: "available",
+      });
+      await restoreSandbox({
+        checkpointId: next.checkpointId,
+        sandbox: new FixtureSandbox(destination),
+        store,
+      });
+      await expect(
+        execFileAsync(
+          "git",
+          ["diff", first.checkpoint.commit, "HEAD", "--", "file.txt"],
+          { cwd: destination }
+        )
+      ).resolves.toMatchObject({ stdout: expect.stringContaining("-before") });
+    });
+    it("measures additions against an empty tree and follow-up changes against the restored commit", async () => {
+      const sourceDirectory = await createTemporaryDirectory("reasonate-diff-");
+      const root = await createTemporaryDirectory("reasonate-diff-store-");
+      const sandbox = new FixtureSandbox(sourceDirectory);
+      const store = createGitCheckpointStore({ root });
+      const input = {
+        buildSessionId,
+        organizationId,
+        projectId,
+        runId,
+        sandbox,
+        store,
+      };
+      await sandbox.writeFile("old.txt", "one\ntwo\n");
+      await sandbox.writeFile("deleted.txt", "gone\n");
+      const first = await snapshotSandbox({ ...input, baseCommit: null });
+      expect(first.checkpoint).toMatchObject({
+        added: 3,
+        baseCommit: null,
+        fileCount: 2,
+        removed: 0,
+        status: "available",
+      });
+      if (first.checkpoint?.status !== "available") {
+        throw new Error("Expected a measured first checkpoint");
+      }
+      const baseCommit = first.checkpoint.commit;
+      await sandbox.writeFile("renamed.txt", "one\ntwo\n");
+      await rm(join(sourceDirectory, "old.txt"));
+      await rm(join(sourceDirectory, "deleted.txt"));
+      await sandbox.writeFile("added.txt", "new\nlines\n");
+      await sandbox.writeFile("image.bin", new Uint8Array([0, 255, 1]));
+      const next = await snapshotSandbox({ ...input, baseCommit });
+      expect(next.checkpoint).toMatchObject({
+        added: 2,
+        baseCommit,
+        fileCount: 4,
+        removed: 1,
+        status: "available",
+      });
+      if (next.checkpoint?.status !== "available") {
+        throw new Error("Expected measured changes");
+      }
+      expect(next.checkpoint.files).toEqual(
+        expect.arrayContaining([
+          {
+            added: 0,
+            path: "renamed.txt",
+            previousPath: "old.txt",
+            removed: 0,
+            status: "renamed",
+          },
+          { added: 0, path: "deleted.txt", removed: 1, status: "deleted" },
+          { added: null, path: "image.bin", removed: null, status: "added" },
+        ])
+      );
+      const unchanged = await snapshotSandbox({
+        ...input,
+        baseCommit: next.checkpoint.commit,
+      });
+      expect(unchanged.checkpoint).toMatchObject({
+        added: 0,
+        fileCount: 0,
+        files: [],
+        removed: 0,
+        status: "available",
+      });
+      const unknown = await snapshotSandbox(input);
+      expect(unknown.checkpoint).toMatchObject({
+        reason: "unknown_base",
+        status: "unavailable",
+      });
+      const missingBase = await snapshotSandbox({
+        ...input,
+        baseCommit: "1".repeat(40),
+      });
+      expect(missingBase.checkpoint).toMatchObject({
+        reason: "diff_failed",
+        status: "unavailable",
+      });
+      await expect(
+        store.read(missingBase.checkpointId)
+      ).resolves.toBeInstanceOf(Uint8Array);
+    }, 20_000);
 
-    const expectedFiles = {
-      "docs/notes with spaces.txt": "spaced\n",
-      "README.md": "reasonate\n",
-      "src/index.ts": "export const answer = 42;\n",
-    };
-    await Promise.all(
-      Object.entries(expectedFiles).map(([path, content]) =>
-        source.writeFile(path, content)
+    it("moves a workspace through a real git bundle into a fresh sandbox", async () => {
+      const sourceDirectory =
+        await createTemporaryDirectory("reasonate-source-");
+      const restoredDirectory = await createTemporaryDirectory(
+        "reasonate-restored-"
+      );
+      const chainedDirectory =
+        await createTemporaryDirectory("reasonate-chain-");
+      const root = await createTemporaryDirectory("reasonate-checkpoints-");
+      const store = createGitCheckpointStore({ root });
+      const source = new FixtureSandbox(sourceDirectory);
+
+      const expectedFiles = {
+        "docs/notes with spaces.txt": "spaced\n",
+        "README.md": "reasonate\n",
+        "src/index.ts": "export const answer = 42;\n",
+      };
+      await Promise.all(
+        Object.entries(expectedFiles).map(([path, content]) =>
+          source.writeFile(path, content)
+        )
+      );
+
+      const written = await snapshotSandbox({
+        buildSessionId,
+        organizationId,
+        projectId,
+        runId,
+        sandbox: source,
+        store,
+        workdir: SANDBOX_WORKDIR,
+      });
+
+      expect(written.bytes).toBeGreaterThan(0);
+      const bundle = await store.read(written.checkpointId);
+      expect(Buffer.from(bundle).toString("utf-8", 0, 20)).toContain(
+        "git bundle"
+      );
+
+      const restored = new FixtureSandbox(restoredDirectory);
+      await restoreSandbox({
+        checkpointId: written.checkpointId,
+        sandbox: restored,
+        store,
+        workdir: SANDBOX_WORKDIR,
+      });
+
+      await expectRestoredFiles(restoredDirectory, expectedFiles);
+      await expect(
+        stat(join(restoredDirectory, ".reasonate"))
+      ).rejects.toThrow();
+
+      // A restored workspace must be checkpointable again, so the snapshot of a
+      // restored tree has to reach the history it just fetched.
+      await restored.writeFile("CHANGELOG.md", "second generation\n");
+      const chained = await snapshotSandbox({
+        buildSessionId,
+        organizationId,
+        projectId,
+        runId,
+        sandbox: restored,
+        store,
+        workdir: SANDBOX_WORKDIR,
+      });
+
+      const chainedSandbox = new FixtureSandbox(chainedDirectory);
+      await restoreSandbox({
+        checkpointId: chained.checkpointId,
+        sandbox: chainedSandbox,
+        store,
+        workdir: SANDBOX_WORKDIR,
+      });
+
+      await expectRestoredFiles(chainedDirectory, {
+        ...expectedFiles,
+        "CHANGELOG.md": "second generation\n",
+      });
+      await expect(
+        execFileAsync("git", ["log", "--oneline"], { cwd: chainedDirectory })
+      ).resolves.toMatchObject({
+        stdout: expect.stringContaining("ReasonateAI workspace checkpoint"),
+      });
+    });
+  }
+);
+
+describe("checkpoint change records", () => {
+  it("preserves tabs and newlines in NUL-delimited filenames", () => {
+    expect(
+      parseCheckpointChanges(
+        "M\u0000a\tb\nc.txt\u0000R100\u0000old file\u0000new file\u0000",
+        "2\t1\ta\tb\nc.txt\u00000\t0\t\u0000old file\u0000new file\u0000"
       )
-    );
-
-    const written = await snapshotSandbox({
-      buildSessionId,
-      organizationId,
-      projectId,
-      runId,
-      sandbox: source,
-      store,
-      workdir: SANDBOX_WORKDIR,
-    });
-
-    expect(written.bytes).toBeGreaterThan(0);
-    const bundle = await store.read(written.checkpointId);
-    expect(Buffer.from(bundle).toString("utf-8", 0, 20)).toContain(
-      "git bundle"
-    );
-
-    const restored = new FixtureSandbox(restoredDirectory);
-    await restoreSandbox({
-      checkpointId: written.checkpointId,
-      sandbox: restored,
-      store,
-      workdir: SANDBOX_WORKDIR,
-    });
-
-    await expectRestoredFiles(restoredDirectory, expectedFiles);
-    await expect(stat(join(restoredDirectory, ".reasonate"))).rejects.toThrow();
-
-    // A restored workspace must be checkpointable again, so the snapshot of a
-    // restored tree has to reach the history it just fetched.
-    await restored.writeFile("CHANGELOG.md", "second generation\n");
-    const chained = await snapshotSandbox({
-      buildSessionId,
-      organizationId,
-      projectId,
-      runId,
-      sandbox: restored,
-      store,
-      workdir: SANDBOX_WORKDIR,
-    });
-
-    const chainedSandbox = new FixtureSandbox(chainedDirectory);
-    await restoreSandbox({
-      checkpointId: chained.checkpointId,
-      sandbox: chainedSandbox,
-      store,
-      workdir: SANDBOX_WORKDIR,
-    });
-
-    await expectRestoredFiles(chainedDirectory, {
-      ...expectedFiles,
-      "CHANGELOG.md": "second generation\n",
-    });
-    await expect(
-      execFileAsync("git", ["log", "--oneline"], { cwd: chainedDirectory })
-    ).resolves.toMatchObject({
-      stdout: expect.stringContaining("ReasonateAI workspace checkpoint"),
-    });
+    ).toEqual([
+      { added: 2, path: "a\tb\nc.txt", removed: 1, status: "modified" },
+      {
+        added: 0,
+        path: "new file",
+        previousPath: "old file",
+        removed: 0,
+        status: "renamed",
+      },
+    ]);
+  });
+  it("rejects incomplete count records instead of inventing totals", () => {
+    expect(() => parseCheckpointChanges("A\u0000missing\u0000", "")).toThrow();
   });
 });

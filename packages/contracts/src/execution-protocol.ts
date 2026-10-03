@@ -86,6 +86,9 @@ export const RunEventTypeSchema = z.enum([
   "run.failed",
   "run.cancel.requested",
   "run.cancelled",
+  "run.steering.requested",
+  "run.steering.delivered",
+  "run.steering.failed",
 ]);
 export type RunEventType = z.infer<typeof RunEventTypeSchema>;
 
@@ -128,6 +131,55 @@ export const RunEventEnvelopeSchema = z.strictObject({
   type: RunEventTypeSchema,
 });
 export type RunEventEnvelope = z.infer<typeof RunEventEnvelopeSchema>;
+
+const GitCommitSchema = z.string().regex(/^[a-f0-9]{40,64}$/);
+export const CheckpointFileChangeSchema = z.strictObject({
+  added: z.number().int().nonnegative().nullable(),
+  path: z.string().min(1).max(4096),
+  previousPath: z.string().min(1).max(4096).optional(),
+  removed: z.number().int().nonnegative().nullable(),
+  status: z.enum([
+    "added",
+    "modified",
+    "deleted",
+    "renamed",
+    "copied",
+    "typechanged",
+  ]),
+});
+export type CheckpointFileChange = z.infer<typeof CheckpointFileChangeSchema>;
+
+/** Immutable provenance and bounded, measured changes for one saved turn. */
+export const RunCheckpointSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    added: z.number().int().nonnegative(),
+    baseCommit: GitCommitSchema.nullable(),
+    checkpointId: z.string().min(1).max(512),
+    commit: GitCommitSchema,
+    fileCount: z.number().int().nonnegative(),
+    files: z.array(CheckpointFileChangeSchema).max(1000),
+    removed: z.number().int().nonnegative(),
+    status: z.literal("available"),
+    truncated: z.boolean(),
+    version: z.literal(1),
+  }),
+  z.strictObject({
+    checkpointId: z.string().min(1).max(512),
+    commit: GitCommitSchema.nullable(),
+    reason: z.enum(["unknown_base", "diff_failed"]),
+    status: z.literal("unavailable"),
+    version: z.literal(1),
+  }),
+]);
+export type RunCheckpoint = z.infer<typeof RunCheckpointSchema>;
+
+export const CheckpointDiffSchema = z.strictObject({
+  binary: z.boolean(),
+  checkpointId: z.string().min(1).max(512),
+  patch: z.string().max(256 * 1024),
+  path: z.string().min(1).max(4096),
+  unavailable: z.enum(["oversized"]).nullable(),
+});
 
 const TranscriptSpan = {
   endedAt: IsoDateTimeSchema.nullable(),

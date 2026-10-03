@@ -1,17 +1,32 @@
 "use client";
 
 import {
+  ArrowLeft,
+  ArrowRight,
   Code2,
   ExternalLink,
   Eye,
   FileCode2,
   FolderClosed,
-  Globe,
   Loader2,
+  Monitor,
+  RotateCw,
+  Smartphone,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { request } from "@/lib/product-api";
+import styles from "./panel.module.css";
+import {
+  movePreviewHistory,
+  observedPreviewPath,
+  type PreviewHistory,
+  parsePreviewPath,
+  previewRoot,
+  previewTransportUrl,
+  recordPreviewPath,
+  workspaceFilePath,
+} from "./preview-path";
 
 /**
  * The workspace panel: what the agent actually produced.
@@ -89,14 +104,14 @@ function FileView({ file }: { file: FileResponse | null }) {
   if (file.binary) {
     return (
       <div className="panel-state">
-        {file.path} is binary ({formatBytes(file.bytes)}).
+        {workspaceFilePath(file.path)} is binary ({formatBytes(file.bytes)}).
       </div>
     );
   }
   return (
     <>
       <div className="files-head">
-        <span>{file.path}</span>
+        <span>{workspaceFilePath(file.path)}</span>
         {file.truncated && <span className="files-truncated">truncated</span>}
       </div>
       <pre className="files-code">{file.text}</pre>
@@ -176,7 +191,14 @@ function FilesView({
   }
 
   if (error.length > 0) {
-    return <div className="panel-state">{error}</div>;
+    return (
+      <div className="panel-state">
+        {error}
+        <button className="panel-retry" onClick={load} type="button">
+          Try again
+        </button>
+      </div>
+    );
   }
 
   if (tree === null || tree.files.length === 0) {
@@ -191,37 +213,303 @@ function FilesView({
   const files = tree.files.filter((entry) => entry.kind === "file");
 
   return (
-    <div className="files">
-      <div className="files-tree">
-        <div className="files-meta" title={tree.commit}>
-          {files.length} file{files.length === 1 ? "" : "s"} ·{" "}
-          {tree.commit.slice(0, 7)}
+    <>
+      <div className={styles.chrome}>
+        <FolderClosed aria-hidden="true" size={14} />
+        <span
+          className={styles.filePath}
+          title={file ? workspaceFilePath(file.path) : "/workspace"}
+        >
+          {file ? workspaceFilePath(file.path) : "/workspace"}
+        </span>
+      </div>
+      <div className="files">
+        <div className="files-tree">
+          <div className="files-meta" title={tree.commit}>
+            {files.length} file{files.length === 1 ? "" : "s"} ·{" "}
+            {tree.commit.slice(0, 7)}
+          </div>
+          {tree.files.map((entry) => (
+            <button
+              className="files-row"
+              data-active={entry.path === file?.path || undefined}
+              data-kind={entry.kind}
+              disabled={entry.kind === "directory"}
+              key={entry.path}
+              onClick={openFile}
+              type="button"
+              value={entry.path}
+            >
+              {entry.kind === "directory" ? (
+                <FolderClosed aria-hidden="true" size={13} />
+              ) : (
+                <FileCode2 aria-hidden="true" size={13} />
+              )}
+              <span className="files-name">{entry.path}</span>
+              <span className="files-size">{formatBytes(entry.bytes)}</span>
+            </button>
+          ))}
         </div>
-        {tree.files.map((entry) => (
-          <button
-            className="files-row"
-            data-active={entry.path === file?.path || undefined}
-            data-kind={entry.kind}
-            disabled={entry.kind === "directory"}
-            key={entry.path}
-            onClick={openFile}
-            type="button"
-            value={entry.path}
+        <div className="files-view">
+          <FileView file={file} />
+        </div>
+      </div>
+    </>
+  );
+}
+
+function ReadyPreview({ root }: { root: string }) {
+  const [history, setHistory] = useState<PreviewHistory>({
+    index: 0,
+    paths: ["/"],
+  });
+  const [framePath, setFramePath] = useState("/");
+  const [address, setAddress] = useState("/");
+  const [navigationError, setNavigationError] = useState("");
+  const [locationNotice, setLocationNotice] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [frameError, setFrameError] = useState("");
+  const [revision, setRevision] = useState(0);
+  const [mobile, setMobile] = useState(false);
+  const frame = useRef<HTMLIFrameElement>(null);
+  const pendingPath = useRef<string | null>("/");
+  const currentPath = history.paths[history.index] ?? "/";
+  const source = previewTransportUrl(root, framePath);
+  const openUrl = previewTransportUrl(root, currentPath);
+
+  useEffect(() => setAddress(currentPath), [currentPath]);
+
+  const observeLocation = useCallback(() => {
+    if (pendingPath.current !== null) {
+      return;
+    }
+    try {
+      const href = frame.current?.contentWindow?.location.href;
+      if (!href || href === "about:blank") {
+        return;
+      }
+      const path = observedPreviewPath(root, href);
+      if (path === null) {
+        setLocationNotice(
+          "This page left the preview. Enter a project path to return."
+        );
+        return;
+      }
+      setLocationNotice("");
+      setHistory((previous) => recordPreviewPath(previous, path));
+    } catch {
+      // A separate preview origin cannot expose its location to this toolbar.
+      // Keep the entered route; generated-page messages are never trusted.
+      setLocationNotice("Showing the path opened from this toolbar.");
+    }
+  }, [root]);
+
+  useEffect(() => {
+    const timer = setInterval(observeLocation, 500);
+    return () => clearInterval(timer);
+  }, [observeLocation]);
+
+  useEffect(() => {
+    const element = frame.current;
+    if (element === null) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (element.dataset.attempt !== String(revision)) {
+        return;
+      }
+      setFrameError(
+        "The preview is taking too long to load. Try refreshing it."
+      );
+      setLoading(false);
+    }, 20_000);
+    const loaded = () => {
+      clearTimeout(timer);
+      pendingPath.current = null;
+      setLoading(false);
+      setFrameError("");
+      observeLocation();
+    };
+    const failed = () => {
+      clearTimeout(timer);
+      setFrameError("The preview could not load. Try refreshing it.");
+      setLoading(false);
+    };
+    element.addEventListener("load", loaded);
+    element.addEventListener("error", failed);
+    return () => {
+      clearTimeout(timer);
+      element.removeEventListener("load", loaded);
+      element.removeEventListener("error", failed);
+    };
+  }, [observeLocation, revision]);
+
+  const loadPath = useCallback((path: string) => {
+    pendingPath.current = path;
+    setFrameError("");
+    setNavigationError("");
+    setLocationNotice("");
+    setLoading(true);
+    setFramePath(path);
+    // Remount so re-entering the current path also performs a real reload.
+    setRevision((previous) => previous + 1);
+  }, []);
+
+  const navigate = useCallback(
+    (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const path = parsePreviewPath(address);
+      if (path === null || previewTransportUrl(root, path) === null) {
+        setNavigationError(
+          "Enter a project path such as / or /settings. External addresses and parent paths are unavailable."
+        );
+        return;
+      }
+      setAddress(path);
+      setHistory((previous) => recordPreviewPath(previous, path));
+      loadPath(path);
+    },
+    [address, loadPath, root]
+  );
+
+  const move = useCallback(
+    (delta: -1 | 1) => {
+      const next = movePreviewHistory(history, delta);
+      const path = next.paths[next.index];
+      if (next === history || path === undefined) {
+        return;
+      }
+      setHistory(next);
+      loadPath(path);
+    },
+    [history, loadPath]
+  );
+
+  const goBack = useCallback(() => move(-1), [move]);
+  const goForward = useCallback(() => move(1), [move]);
+  const refresh = useCallback(
+    () => loadPath(currentPath),
+    [currentPath, loadPath]
+  );
+  const toggleDevice = useCallback(
+    () => setMobile((previous) => !previous),
+    []
+  );
+  const changeAddress = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) =>
+      setAddress(event.currentTarget.value),
+    []
+  );
+
+  return (
+    <>
+      <div className={styles.chrome}>
+        <button
+          aria-label="Back in preview"
+          className={styles.control}
+          disabled={history.index === 0}
+          onClick={goBack}
+          type="button"
+        >
+          <ArrowLeft aria-hidden="true" size={14} />
+        </button>
+        <button
+          aria-label="Forward in preview"
+          className={styles.control}
+          disabled={history.index >= history.paths.length - 1}
+          onClick={goForward}
+          type="button"
+        >
+          <ArrowRight aria-hidden="true" size={14} />
+        </button>
+        <form className={styles.addressForm} onSubmit={navigate}>
+          <input
+            aria-invalid={navigationError.length > 0}
+            aria-label="Preview project path"
+            autoComplete="off"
+            className={styles.address}
+            maxLength={2048}
+            onChange={changeAddress}
+            spellCheck={false}
+            title={
+              locationNotice || "Enter a path in this project and press Enter"
+            }
+            value={address}
+          />
+        </form>
+        <button
+          aria-label={mobile ? "Show desktop preview" : "Show mobile preview"}
+          aria-pressed={mobile}
+          className={styles.control}
+          onClick={toggleDevice}
+          type="button"
+        >
+          {mobile ? (
+            <Smartphone aria-hidden="true" size={14} />
+          ) : (
+            <Monitor aria-hidden="true" size={14} />
+          )}
+        </button>
+        {openUrl && (
+          <a
+            aria-label="Open the preview in a new tab"
+            className={styles.control}
+            href={openUrl}
+            rel="noreferrer noopener"
+            target="_blank"
           >
-            {entry.kind === "directory" ? (
-              <FolderClosed aria-hidden="true" size={13} />
-            ) : (
-              <FileCode2 aria-hidden="true" size={13} />
-            )}
-            <span className="files-name">{entry.path}</span>
-            <span className="files-size">{formatBytes(entry.bytes)}</span>
+            <ExternalLink aria-hidden="true" size={14} />
+          </a>
+        )}
+        <button
+          aria-label="Refresh preview"
+          className={styles.control}
+          onClick={refresh}
+          type="button"
+        >
+          {loading ? (
+            <Loader2 aria-hidden="true" className="spin" size={14} />
+          ) : (
+            <RotateCw aria-hidden="true" size={14} />
+          )}
+        </button>
+      </div>
+      {navigationError && (
+        <div className={styles.notice} role="alert">
+          {navigationError}
+        </div>
+      )}
+      {locationNotice && (
+        <div className={styles.notice} role="status">
+          {locationNotice}
+        </div>
+      )}
+      {frameError && (
+        <div className={styles.notice} role="alert">
+          {frameError}{" "}
+          <button className="panel-retry" onClick={refresh} type="button">
+            Try again
           </button>
-        ))}
+        </div>
+      )}
+      <div
+        aria-busy={loading}
+        className={styles.stage}
+        data-mobile={mobile || undefined}
+      >
+        {source && (
+          <iframe
+            className={styles.frame}
+            data-attempt={revision}
+            key={revision}
+            ref={frame}
+            sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
+            src={source}
+            title="Generated app preview"
+          />
+        )}
       </div>
-      <div className="files-view">
-        <FileView file={file} />
-      </div>
-    </div>
+    </>
   );
 }
 
@@ -312,10 +600,13 @@ function PreviewView({
     );
   }
 
-  if (preview.status === "failed") {
+  if (preview.status === "failed" || preview.status === "stopped") {
     return (
       <div className="panel-state">
-        {preview.detail ?? "The preview could not start."}
+        {preview.detail ??
+          (preview.status === "stopped"
+            ? "The preview has stopped."
+            : "The preview could not start.")}
         <button
           className="panel-retry"
           disabled={starting}
@@ -328,29 +619,27 @@ function PreviewView({
     );
   }
 
-  return (
-    <>
-      <div className="panel-chrome">
-        <Globe aria-hidden="true" size={12} />
-        <span className="panel-url">{preview.url}</span>
-        <a
-          aria-label="Open the preview in a new tab"
-          className="panel-open"
-          href={preview.url}
-          rel="noreferrer"
-          target="_blank"
-        >
-          <ExternalLink aria-hidden="true" size={12} />
-        </a>
-      </div>
-      <iframe
-        className="panel-frame"
-        sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
-        src={preview.url}
-        title="Generated app preview"
-      />
-    </>
+  const root = previewRoot(
+    preview.url,
+    preview.previewId,
+    window.location.origin
   );
+  if (root === null) {
+    return (
+      <div className="panel-state">
+        The preview address is invalid.
+        <button
+          className="panel-retry"
+          disabled={starting}
+          onClick={start}
+          type="button"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
+  return <ReadyPreview key={root} root={root} />;
 }
 
 export function Panel({
