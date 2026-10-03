@@ -258,10 +258,23 @@ const previewService = createPreviewService({
       `Previews: removed ${count} container(s) left by a previous process.`
     );
   },
+  onPreviewRecovered: (previewId, port) => {
+    console.info(
+      `Previews: recovered live preview ${previewId} on loopback port ${port}.`
+    );
+  },
+  onPreviewRetired: (previewId, reason) => {
+    console.info(
+      `Previews: retired preview ${previewId} during restart (${reason}).`
+    );
+  },
+  previewStore: () => stateStore().previews,
 });
-// A preview's registry does not survive a restart, so anything a previous
-// process left is unreachable: cleaned at boot rather than when someone next
-// opens a preview.
+// When configured, ensure schema migrations are applied so the persistent
+// preview registry is available before recovering previews at startup.
+if (process.env.DATABASE_URL) {
+  await migrateProjectState();
+}
 await previewService.sweepOrphans();
 
 const previewHandlers = createPreviewHandlers({
