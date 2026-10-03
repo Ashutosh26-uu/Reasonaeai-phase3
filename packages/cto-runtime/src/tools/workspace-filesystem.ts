@@ -11,6 +11,10 @@ function isMissing(error: unknown): boolean {
   );
 }
 
+const AT_PREFIX_RE = /^@\/?/;
+const FILE_SCHEME_RE = /^file:\/\//i;
+const WINDOWS_DRIVE_RE = /^[a-zA-Z]:/;
+
 /**
  * Adapts Mastra's resolved workspace filesystem to the hashline patcher's
  * intentionally small storage contract. No Node filesystem operation is used:
@@ -27,9 +31,35 @@ export class WorkspaceHashlineFilesystem extends Filesystem {
   }
 
   override canonicalPath(path: string): string {
-    const target = path.startsWith("/")
-      ? posix.normalize(path)
-      : posix.resolve(this.#root, path);
+    const trimmed = path
+      .trim()
+      .replace(AT_PREFIX_RE, "")
+      .replace(FILE_SCHEME_RE, "")
+      .replaceAll("\\", "/")
+      .replace(WINDOWS_DRIVE_RE, "");
+
+    if (trimmed.length === 0 || trimmed.includes("\0")) {
+      throw new Error("A non-empty workspace path is required.");
+    }
+    if (trimmed === "~" || trimmed.startsWith("~/")) {
+      throw new Error("Home-directory paths are not available in the workspace.");
+    }
+
+    let target: string;
+    if (
+      this.#root === "/" ||
+      trimmed === this.#root ||
+      trimmed.startsWith(`${this.#root}/`)
+    ) {
+      target = posix.normalize(
+        trimmed.startsWith("/") ? trimmed : posix.resolve(this.#root, trimmed)
+      );
+    } else if (trimmed.startsWith("/")) {
+      target = posix.resolve(this.#root, `.${trimmed}`);
+    } else {
+      target = posix.resolve(this.#root, trimmed);
+    }
+
     const relative = posix.relative(this.#root, target);
 
     if (relative === ".." || relative.startsWith("../")) {
