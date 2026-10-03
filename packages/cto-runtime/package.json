@@ -65,6 +65,14 @@
     "./resources/types": "./src/resources/types.ts",
     "./resources/json-path": "./src/resources/json-path.ts",
     "./tools/selectors": "./src/tools/selectors.ts",
+    "./tools/edit": {
+      "types": "./src/tools/edit.ts",
+      "import": "./dist/tools/edit.js"
+    },
+    "./tools/read-snapshots": {
+      "types": "./src/tools/read-snapshots.ts",
+      "import": "./dist/tools/read-snapshots.js"
+    },
     "./context/compose": "./src/context/compose.ts",
     "./context/environment": "./src/context/environment.ts",
     "./context/instructions": "./src/context/instructions.ts"
