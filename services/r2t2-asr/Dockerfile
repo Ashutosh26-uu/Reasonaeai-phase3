@@ -8,14 +8,18 @@
 FROM python:3.12-slim
 
 # ffmpeg is required to decode browser/mobile audio (webm/opus, m4a/aac, ogg)
-# that pure-Python decoders cannot read. curl is used by HEALTHCHECK.
+# that pure-Python decoders cannot read. curl is used by HEALTHCHECK. git is
+# required because the R2T2 package is installed from its Git repository.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg curl \
+    && apt-get install -y --no-install-recommends ffmpeg curl git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install Python dependencies first so Docker can cache this layer.
+# Install Python dependencies first so Docker can cache this layer. pip reads
+# PIP_INDEX_URL natively, so a deployment behind a slow PyPI route can pass
+# --build-arg PIP_INDEX_URL=<mirror> without changing this file.
+ARG PIP_INDEX_URL
 COPY requirements.txt ./
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
