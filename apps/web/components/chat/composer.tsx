@@ -5,12 +5,14 @@ import type { PromptAttachment } from "@reasonateai/contracts/execution";
 import { BorderBeam } from "border-beam";
 import {
   ArrowUp,
+  AudioLines,
   Check,
   ChevronDown,
+  CornerDownLeft,
   Folder,
   FolderPlus,
   Mic,
-  Paperclip,
+  Plus,
   Search,
   Square,
   X,
@@ -31,6 +33,7 @@ import {
   PromptInputTools,
   usePromptInputAttachments,
 } from "@/components/ai-elements/prompt-input";
+import styles from "./composer.module.css";
 
 /**
  * What the line under the card says: an error, what the microphone is doing, or
@@ -78,14 +81,38 @@ function ComposerHint({
 /** The panel above the card: a file to mention, or what the model chip means. */
 function PromptMenus({
   files,
+  fileStatus,
   menu,
   onMention,
+  onRetryFiles,
 }: {
   files: string[];
+  fileStatus: "idle" | "loading" | "error";
   menu: "files" | "none" | "notes";
   onMention: (path: string) => void;
+  onRetryFiles: () => void;
 }) {
   if (menu === "files") {
+    if (fileStatus !== "idle") {
+      return (
+        <div aria-live="polite" className="prompt-menu">
+          <p className="prompt-menu-note">
+            {fileStatus === "loading"
+              ? "Loading project files…"
+              : "Could not load project files. Try again."}
+          </p>
+          {fileStatus === "error" && (
+            <button
+              className="prompt-menu-item"
+              onClick={onRetryFiles}
+              type="button"
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      );
+    }
     return <MentionMenu files={files} onMention={onMention} />;
   }
   if (menu === "notes") {
@@ -108,6 +135,7 @@ export interface ComposerProps {
   /** Shown only when the draft is long enough for the limit to matter. */
   count: number;
   draft: string;
+  hasConversation?: boolean;
   /** The character limit, reported only as the draft approaches it. */
   limit: number;
   /**
@@ -122,6 +150,11 @@ export interface ComposerProps {
   onCreateProject: (name: string) => Promise<boolean>;
   onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onProjectSelect: (projectId: string) => void;
+  /** Sends text guidance into the active run through the authorized API. */
+  onSteer?: (input: {
+    attachments: PromptAttachment[];
+    message: string;
+  }) => Promise<boolean>;
   /** Stops the active CTO run while its response is streaming. */
   onStop: () => void;
   onSubmit: (input: {
@@ -130,6 +163,8 @@ export interface ComposerProps {
   }) => Promise<boolean>;
   /** Turns recorded audio into text, or reports why it cannot. */
   onTranscribe: (audio: Blob) => Promise<string>;
+  /** Opens the separate voice conversation surface. */
+  onVoiceMode?: () => void;
   pending: boolean;
   placeholder: string;
   projectId: string;
@@ -186,6 +221,7 @@ function ProjectPicker({
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setOpen(false);
+        trigger.current?.focus();
       }
     };
     document.addEventListener("pointerdown", dismiss);
@@ -269,6 +305,7 @@ function ProjectPicker({
               <label className="project-picker-search">
                 <Search aria-hidden="true" size={15} />
                 <input
+                  aria-label="Search projects"
                   autoFocus
                   onChange={changeFilter}
                   placeholder="Search projects"
@@ -464,12 +501,149 @@ function PromptAttachButton({
   return (
     <PromptInputButton
       aria-label="Attach files"
-      className="prompt-mic"
+      className={`prompt-mic ${styles.attach}`}
       disabled={busy || pending}
       onClick={open}
     >
-      <Paperclip aria-hidden="true" size={15} />
+      <Plus aria-hidden="true" size={20} />
     </PromptInputButton>
+  );
+}
+
+function PromptQueueButton({ disabled }: { disabled: boolean }) {
+  const queue = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.currentTarget.form?.requestSubmit();
+  }, []);
+  return (
+    <PromptInputButton
+      className={styles.queueButton}
+      disabled={disabled}
+      onClick={queue}
+      type="button"
+    >
+      <CornerDownLeft aria-hidden="true" size={14} />
+      Queue
+    </PromptInputButton>
+  );
+}
+
+function PromptPrimaryAction({
+  hasConversation,
+  draft,
+  busy,
+  pending,
+  stopping,
+  voiceBusy,
+  onStop,
+  onVoiceMode,
+}: {
+  hasConversation: boolean;
+  draft: string;
+  busy: boolean;
+  pending: boolean;
+  stopping: boolean;
+  voiceBusy: boolean;
+  onStop: () => void;
+  onVoiceMode: (() => void) | undefined;
+}) {
+  const { files } = usePromptInputAttachments();
+  if (
+    !(hasConversation || draft.trim() || files.length || pending || busy) &&
+    onVoiceMode
+  ) {
+    return (
+      <PromptInputButton
+        aria-label="Open voice mode"
+        className={`prompt-send ${styles.voiceMode}`}
+        disabled={voiceBusy}
+        onClick={onVoiceMode}
+        title="Voice mode"
+        type="button"
+      >
+        <AudioLines aria-hidden="true" size={20} />
+      </PromptInputButton>
+    );
+  }
+  return (
+    <PromptSendButton
+      busy={busy}
+      draft={draft}
+      onStop={onStop}
+      pending={pending}
+      stopping={stopping}
+    />
+  );
+}
+
+interface QueuedMessage {
+  message: string;
+  projectId: string;
+}
+
+function queueValidationError(
+  input: PromptInputMessage,
+  projectId: string,
+  queued: QueuedMessage | null
+) {
+  if (!projectId) {
+    return "Choose a project before queuing a message.";
+  }
+  if (input.files.length > 0) {
+    return "Attachments can be sent after the run finishes. Remove them to queue text guidance.";
+  }
+  if (queued) {
+    return "A message is already queued. Edit, steer, or remove it first.";
+  }
+  return input.text.trim() ? "" : "Write a message to queue.";
+}
+
+function QueuedMessageRow({
+  queued,
+  pending,
+  sending,
+  error,
+  steerDisabled,
+  onSend,
+  onEdit,
+  onRemove,
+}: {
+  queued: QueuedMessage;
+  pending: boolean;
+  sending: boolean;
+  error: string;
+  steerDisabled: boolean;
+  onSend: () => void;
+  onEdit: () => void;
+  onRemove: () => void;
+}) {
+  let label = pending ? "Queued for after this turn" : "Ready to send";
+  if (sending) {
+    label = "Sending…";
+  }
+  return (
+    <fieldset aria-label="Queued message" className={styles.queued}>
+      <div className={styles.queuedText}>
+        <span>{label}</span>
+        <p title={queued.message}>{queued.message}</p>
+        {error && <p role="alert">{error}</p>}
+      </div>
+      <div className={styles.queuedActions}>
+        <button disabled={steerDisabled} onClick={onSend} type="button">
+          {pending ? "Steer" : "Send now"}
+        </button>
+        <button disabled={sending} onClick={onEdit} type="button">
+          Edit
+        </button>
+        <button
+          aria-label="Remove queued message"
+          disabled={sending}
+          onClick={onRemove}
+          type="button"
+        >
+          <X aria-hidden="true" size={14} />
+        </button>
+      </div>
+    </fieldset>
   );
 }
 
@@ -493,19 +667,47 @@ function useVoiceCapture(input: {
   setDraft: (value: string) => void;
 }) {
   const mic = useMicrophone();
+  const { start: startMicrophone, stop: stopMicrophone } = mic;
   const [recording, setRecording] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState("");
   const recorder = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
   const latest = useRef(input);
+  const mounted = useRef<boolean>(false);
+  const requesting = useRef<boolean>(false);
   latest.current = input;
 
   const stop = useCallback(() => {
-    recorder.current?.stop();
-    mic.stop();
+    if (recorder.current?.state !== "inactive") {
+      recorder.current?.stop();
+    }
+    stopMicrophone();
     setRecording(false);
-  }, [mic]);
+  }, [stopMicrophone]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      const active = recorder.current;
+      if (active) {
+        active.ondataavailable = null;
+        active.onstop = null;
+        active.onerror = null;
+        if (active.state !== "inactive") {
+          active.stop();
+        }
+        for (const track of active.stream.getTracks()) {
+          track.stop();
+        }
+      }
+      recorder.current = null;
+      chunks.current = [];
+      stopMicrophone();
+    };
+  }, [stopMicrophone]);
 
   useEffect(() => {
     if (!recording) {
@@ -517,63 +719,105 @@ function useVoiceCapture(input: {
   }, [recording, stop]);
 
   const start = useCallback(async () => {
+    if (requesting.current || recorder.current?.state === "recording") {
+      return;
+    }
     setError("");
-    const stream = await mic.start();
+    if (typeof MediaRecorder === "undefined") {
+      setError("This browser does not support audio recording.");
+      return;
+    }
+    requesting.current = true;
+    setStarting(true);
+    const stream = await startMicrophone();
+    requesting.current = false;
+    if (!mounted.current) {
+      for (const track of stream?.getTracks() ?? []) {
+        track.stop();
+      }
+      return;
+    }
+    setStarting(false);
     if (stream === null) {
       setError(
-        mic.error?.message ??
-          "The microphone is unavailable. Check the browser's permission for this site."
+        "The microphone is unavailable. Check the browser's permission for this site."
       );
       return;
     }
 
-    chunks.current = [];
-    const mimeType = MediaRecorder.isTypeSupported("audio/webm")
-      ? "audio/webm"
-      : "";
-    const created = new MediaRecorder(
-      stream,
-      mimeType.length > 0 ? { mimeType } : undefined
-    );
-    created.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        chunks.current.push(event.data);
-      }
-    };
-    created.onstop = () => {
-      const blob = new Blob(chunks.current, {
-        type: mimeType.length > 0 ? mimeType : "audio/webm",
-      });
+    try {
       chunks.current = [];
-      if (blob.size === 0) {
-        return;
-      }
-      setTranscribing(true);
-      const { draft, onTranscribe, setDraft } = latest.current;
-      onTranscribe(blob)
-        .then((text) => {
-          if (text.length > 0) {
-            setDraft(draft.length > 0 ? `${draft} ${text}` : text);
-          }
-        })
-        .catch((cause: unknown) => {
-          setError(
-            cause instanceof Error
-              ? cause.message
-              : "Could not transcribe that recording."
-          );
-        })
-        .finally(() => setTranscribing(false));
-    };
-    recorder.current = created;
-    created.start();
-    setRecording(true);
-  }, [mic]);
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : "";
+      const created = new MediaRecorder(
+        stream,
+        mimeType.length > 0 ? { mimeType } : undefined
+      );
+      created.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.current.push(event.data);
+        }
+      };
+      created.onerror = () => {
+        chunks.current = [];
+        created.onstop = null;
+        stop();
+        setError(
+          "Could not record audio. Check your microphone and try again."
+        );
+      };
+      created.onstop = () => {
+        recorder.current = null;
+        stopMicrophone();
+        setRecording(false);
+        const blob = new Blob(chunks.current, {
+          type: created.mimeType || "audio/webm",
+        });
+        chunks.current = [];
+        if (blob.size === 0) {
+          setError("No audio was recorded. Please try again.");
+          return;
+        }
+        setTranscribing(true);
+        latest.current
+          .onTranscribe(blob)
+          .then((text) => {
+            if (mounted.current && text.length > 0) {
+              const { draft, setDraft } = latest.current;
+              setDraft(draft.length > 0 ? `${draft} ${text}` : text);
+            }
+          })
+          .catch((cause: unknown) => {
+            if (mounted.current) {
+              setError(
+                cause instanceof Error
+                  ? cause.message
+                  : "Could not transcribe that recording."
+              );
+            }
+          })
+          .finally(() => {
+            if (mounted.current) {
+              setTranscribing(false);
+            }
+          });
+      };
+      recorder.current = created;
+      created.start();
+      setRecording(true);
+    } catch {
+      recorder.current = null;
+      stopMicrophone();
+      setError("Could not start audio recording. Please try another browser.");
+    }
+  }, [startMicrophone, stop, stopMicrophone]);
 
   return {
     error,
     recording,
     start,
+    starting,
     stop,
     supported: mic.supported,
     transcribing,
@@ -620,7 +864,9 @@ function MentionMenu({
       />
       {shown.length === 0 ? (
         <p className="prompt-menu-note">
-          This project has no checkpoint yet, so there is nothing to mention.
+          {files.length === 0
+            ? "This project has no checkpoint files to mention yet."
+            : "No files match your search."}
         </p>
       ) : (
         <div className="prompt-menu-list">
@@ -649,6 +895,7 @@ function MentionMenu({
  * border is what makes it read as the live surface of the product.
  */
 export function Composer({
+  hasConversation = false,
   busy,
   count,
   draft,
@@ -663,15 +910,29 @@ export function Composer({
   onChange,
   onKeyDown,
   onSubmit,
+  onSteer,
   onStop,
   onTranscribe,
+  onVoiceMode,
   pending,
   stopping,
   placeholder,
 }: ComposerProps) {
   const [menu, setMenu] = useState<"files" | "none" | "notes">("none");
   const [files, setFiles] = useState<string[]>([]);
+  const [fileStatus, setFileStatus] = useState<"idle" | "loading" | "error">(
+    "idle"
+  );
   const [attachmentError, setAttachmentError] = useState("");
+  const [queued, setQueued] = useState<QueuedMessage | null>(null);
+  const [queueError, setQueueError] = useState("");
+  const [dispatching, setDispatching] = useState(false);
+  const queuedRef = useRef<QueuedMessage | null>(null);
+  const autoAttempted = useRef<QueuedMessage | null>(null);
+  const dispatchingRef = useRef<boolean>(false);
+  const latestDraft = useRef(draft);
+  latestDraft.current = draft;
+  const root = useRef<HTMLDivElement>(null);
 
   const setDraft = useCallback(
     (value: string) => onChange(valueEvent(value)),
@@ -680,18 +941,144 @@ export function Composer({
 
   const voice = useVoiceCapture({ draft, onTranscribe, setDraft });
 
-  const openFiles = useCallback(async () => {
+  const updateQueue = useCallback((message: QueuedMessage | null) => {
+    autoAttempted.current = null;
+    queuedRef.current = message;
+    setQueued(message);
+  }, []);
+
+  const dispatchQueue = useCallback(async () => {
+    const message = queuedRef.current;
+    if (!message || dispatchingRef.current || busy) {
+      return;
+    }
+    if (message.projectId !== projectId) {
+      setQueueError("Return to the queued message’s project to send it.");
+      return;
+    }
+    const send = pending ? onSteer : onSubmit;
+    if (!send) {
+      setQueueError(
+        "Steering is unavailable. This message will send when the run finishes."
+      );
+      return;
+    }
+    dispatchingRef.current = true;
+    setDispatching(true);
+    setQueueError("");
+    try {
+      const sent = await send({ attachments: [], message: message.message });
+      if (!sent) {
+        throw new Error("The queued message was not sent. Try again.");
+      }
+      updateQueue(null);
+      // The parent may clear its draft after sending; keep newer writing intact.
+      setDraft(latestDraft.current);
+    } catch (cause) {
+      setQueueError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not send the queued message. Try again."
+      );
+    } finally {
+      dispatchingRef.current = false;
+      setDispatching(false);
+    }
+  }, [busy, onSteer, onSubmit, pending, projectId, setDraft, updateQueue]);
+
+  useEffect(() => {
+    if (
+      queued &&
+      !pending &&
+      !busy &&
+      !dispatching &&
+      autoAttempted.current !== queued
+    ) {
+      autoAttempted.current = queued;
+      dispatchQueue();
+    }
+  }, [busy, dispatching, dispatchQueue, pending, queued]);
+
+  const removeQueued = useCallback(() => {
+    updateQueue(null);
+    setQueueError("");
+  }, [updateQueue]);
+
+  const editQueued = useCallback(() => {
+    if (!queued) {
+      return;
+    }
+    const restored = [queued.message, draft].filter(Boolean).join("\n\n");
+    if (restored.length > limit) {
+      setQueueError(
+        "Finish your current draft before editing this queued message."
+      );
+      return;
+    }
+    setDraft(restored);
+    removeQueued();
+    document.getElementById("prompt")?.focus();
+  }, [draft, limit, queued, removeQueued, setDraft]);
+
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.nativeEvent.isComposing) {
+        return;
+      }
+      if (pending && event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        event.currentTarget.form?.requestSubmit();
+        return;
+      }
+      onKeyDown(event);
+    },
+    [onKeyDown, pending]
+  );
+
+  useEffect(() => {
+    if (menu === "none") {
+      return;
+    }
+    const dismiss = (event: PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !root.current?.contains(event.target)
+      ) {
+        setMenu("none");
+      }
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenu("none");
+        document.getElementById("prompt")?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [menu]);
+
+  const loadFiles = useCallback(async () => {
+    setFileStatus("loading");
+    try {
+      setFiles((await listFiles?.()) ?? []);
+      setFileStatus("idle");
+    } catch {
+      setFileStatus("error");
+    }
+  }, [listFiles]);
+
+  const openFiles = useCallback(() => {
     if (menu === "files") {
       setMenu("none");
       return;
     }
     setMenu("files");
-    try {
-      setFiles((await listFiles?.()) ?? []);
-    } catch {
-      setFiles([]);
-    }
-  }, [listFiles, menu]);
+    loadFiles();
+  }, [loadFiles, menu]);
 
   const mention = useCallback(
     (path: string) => {
@@ -712,6 +1099,21 @@ export function Composer({
 
   const handleSubmit = useCallback(
     async (input: PromptInputMessage) => {
+      if (busy || dispatchingRef.current) {
+        throw new Error("Wait for the current request to finish.");
+      }
+      if (pending) {
+        const error = queueValidationError(input, projectId, queuedRef.current);
+        if (error) {
+          setAttachmentError(error);
+          throw new Error(error);
+        }
+        updateQueue({ message: input.text.trim(), projectId });
+        setQueueError("");
+        setAttachmentError("");
+        setDraft("");
+        return;
+      }
       const promptAttachments = input.files.map((file) => {
         if (!file.url.startsWith("data:")) {
           throw new Error(
@@ -746,8 +1148,8 @@ export function Composer({
         setAttachmentError(`Attach up to ${MAX_ATTACHMENTS} files.`);
         throw new Error(`Attach up to ${MAX_ATTACHMENTS} files.`);
       }
-      if (!(input.text.trim() || promptAttachments.length) || busy || pending) {
-        return;
+      if (!(input.text.trim() || promptAttachments.length)) {
+        throw new Error("Write a message or attach a file.");
       }
       setAttachmentError("");
       const sent = await onSubmit({
@@ -758,7 +1160,7 @@ export function Composer({
         throw new Error("The message was not sent. Please try again.");
       }
     },
-    [busy, onSubmit, pending]
+    [busy, onSubmit, pending, projectId, setDraft, updateQueue]
   );
 
   const handleAttachmentError = useCallback(
@@ -771,127 +1173,186 @@ export function Composer({
   const clearAttachmentError = useCallback(() => setAttachmentError(""), []);
 
   return (
-    <PromptInput
-      accept={ATTACHMENT_ACCEPT}
-      className="composer"
-      globalDrop
-      maxFileSize={MAX_ATTACHMENT_BYTES}
-      maxFiles={MAX_ATTACHMENTS}
-      multiple
-      onError={handleAttachmentError}
-      onSubmit={handleSubmit}
-    >
-      <VoiceBeam
-        active={listening}
-        processing={voice.transcribing}
-        strength={0.9}
-        type="default"
+    <div className={styles.shell} ref={root}>
+      <PromptInput
+        accept={ATTACHMENT_ACCEPT}
+        className={`composer ${styles.compact}`}
+        globalDrop
+        maxFileSize={MAX_ATTACHMENT_BYTES}
+        maxFiles={MAX_ATTACHMENTS}
+        multiple
+        onError={handleAttachmentError}
+        onSubmit={handleSubmit}
       >
-        <BorderBeam
-          brightness={2}
-          colorVariant="colorful"
-          saturation={1.5}
-          size="md"
-          strength={1}
+        <PromptMenus
+          fileStatus={fileStatus}
+          files={files}
+          menu={menu}
+          onMention={mention}
+          onRetryFiles={loadFiles}
+        />
+        {queued && (
+          <QueuedMessageRow
+            error={queueError}
+            onEdit={editQueued}
+            onRemove={removeQueued}
+            onSend={dispatchQueue}
+            pending={pending}
+            queued={queued}
+            sending={dispatching}
+            steerDisabled={
+              busy || dispatching || stopping || (pending && !onSteer)
+            }
+          />
+        )}
+        <VoiceBeam
+          active={listening}
+          processing={voice.transcribing}
+          strength={0.9}
+          type="default"
         >
-          <div className="prompt">
-            <PromptMenus files={files} menu={menu} onMention={mention} />
+          <BorderBeam
+            brightness={2}
+            className={styles.beam ?? ""}
+            colorVariant="colorful"
+            saturation={1.5}
+            size="md"
+            strength={1}
+          >
+            <div className={`prompt ${styles.surface}`}>
+              <PromptAttachmentPreview />
 
-            <PromptAttachmentPreview />
+              <PromptInputBody>
+                <div className={`prompt-top ${styles.textRow}`}>
+                  <label className="sr-only" htmlFor="prompt">
+                    Message your CTO
+                  </label>
+                  <PromptInputTextarea
+                    aria-describedby="composer-hint"
+                    className={`prompt-input ${styles.input}`}
+                    id="prompt"
+                    maxLength={limit}
+                    onChange={onChange}
+                    onKeyDown={handleKeyDown}
+                    placeholder={placeholder}
+                    rows={1}
+                    value={draft}
+                  />
+                </div>
+              </PromptInputBody>
 
-            <PromptInputBody>
-              <div className="prompt-top">
-                {listFiles !== undefined && (
+              <PromptInputFooter className={`prompt-bottom ${styles.toolbar}`}>
+                <PromptInputTools>
+                  <PromptAttachButton
+                    busy={busy}
+                    onErrorClear={clearAttachmentError}
+                    pending={pending}
+                  />
+                  {pending && projectId && draft.trim() && (
+                    <PromptQueueButton
+                      disabled={busy || dispatching || queued !== null}
+                    />
+                  )}
+                </PromptInputTools>
+                <PromptInputTools
+                  className={`prompt-actions ${styles.actions}`}
+                >
                   <button
-                    aria-label="Mention a file from this project"
-                    className="prompt-mention"
-                    data-open={menu === "files" || undefined}
-                    onClick={openFiles}
+                    aria-expanded={menu === "notes"}
+                    aria-label={`Model information: ${model}`}
+                    className={`prompt-chip is-button ${styles.model}`}
+                    onClick={toggleNotes}
+                    title={model}
                     type="button"
                   >
-                    @
+                    <span>{model}</span>
+                    <ChevronDown aria-hidden="true" size={13} />
                   </button>
-                )}
-                <label className="sr-only" htmlFor="prompt">
-                  Message your CTO
-                </label>
-                <PromptInputTextarea
-                  className="prompt-input"
-                  id="prompt"
-                  maxLength={limit}
-                  onChange={onChange}
-                  onKeyDown={onKeyDown}
-                  placeholder={placeholder}
-                  rows={1}
-                  value={draft}
-                />
-              </div>
-            </PromptInputBody>
-
-            <PromptInputFooter className="prompt-bottom">
-              <PromptInputTools className="prompt-chips">
-                <ProjectPicker
-                  disabled={projectPickerDisabled}
-                  onCreateProject={onCreateProject}
-                  onSelect={onProjectSelect}
-                  projectId={projectId}
-                  projects={projects}
-                />
-                <button
-                  className="prompt-chip is-button"
-                  onClick={toggleNotes}
-                  type="button"
-                >
-                  {model}
-                  <ChevronDown aria-hidden="true" size={13} />
-                </button>
-              </PromptInputTools>
-              <PromptInputTools className="prompt-actions">
-                <PromptAttachButton
-                  busy={busy}
-                  onErrorClear={clearAttachmentError}
-                  pending={pending}
-                />
-                {voice.supported && (
                   <PromptInputButton
                     aria-label={
                       voice.recording ? "Stop recording" : "Speak your message"
                     }
-                    className="prompt-mic"
+                    aria-pressed={voice.recording}
+                    className={`prompt-mic ${styles.microphone}`}
                     data-recording={voice.recording || undefined}
-                    disabled={voice.transcribing || pending}
+                    disabled={
+                      !voice.supported ||
+                      voice.starting ||
+                      voice.transcribing ||
+                      (!voice.recording && (busy || pending))
+                    }
                     onClick={voice.recording ? voice.stop : voice.start}
+                    title={
+                      voice.supported
+                        ? "Dictate a message"
+                        : "Microphone unavailable in this browser"
+                    }
                     type="button"
                   >
-                    {voice.recording ? <Square size={13} /> : <Mic size={15} />}
+                    {voice.recording ? (
+                      <Square aria-hidden="true" size={13} />
+                    ) : (
+                      <Mic aria-hidden="true" size={18} />
+                    )}
                   </PromptInputButton>
-                )}
-                <PromptSendButton
-                  busy={busy}
-                  draft={draft}
-                  onStop={onStop}
-                  pending={pending}
-                  stopping={stopping}
-                />
-              </PromptInputTools>
-            </PromptInputFooter>
-          </div>
-        </BorderBeam>
-      </VoiceBeam>
-      <div className="composer-foot">
-        <ComposerHint
-          error={attachmentError || voice.error}
-          pending={pending}
-          projectSelected={projectId.length > 0}
-          recording={voice.recording}
-          transcribing={voice.transcribing}
-        />
-        {count > limit * 0.75 && (
-          <span className="composer-count">
-            {count.toLocaleString()} / {limit.toLocaleString()}
-          </span>
-        )}
-      </div>
-    </PromptInput>
+                  <PromptPrimaryAction
+                    busy={busy}
+                    draft={draft}
+                    hasConversation={hasConversation}
+                    onStop={onStop}
+                    onVoiceMode={onVoiceMode}
+                    pending={pending}
+                    stopping={stopping}
+                    voiceBusy={
+                      voice.recording || voice.starting || voice.transcribing
+                    }
+                  />
+                </PromptInputTools>
+              </PromptInputFooter>
+            </div>
+          </BorderBeam>
+        </VoiceBeam>
+        <div className={styles.context}>
+          <ProjectPicker
+            disabled={projectPickerDisabled || queued !== null || dispatching}
+            onCreateProject={onCreateProject}
+            onSelect={onProjectSelect}
+            projectId={projectId}
+            projects={projects}
+          />
+          {listFiles !== undefined && (
+            <button
+              aria-expanded={menu === "files"}
+              aria-label="Mention a file from this project"
+              className={`prompt-chip is-button ${styles.files}`}
+              data-open={menu === "files" || undefined}
+              onClick={openFiles}
+              type="button"
+            >
+              <span aria-hidden="true">@</span>
+              Files
+            </button>
+          )}
+        </div>
+        <div
+          aria-live="polite"
+          className={`composer-foot ${styles.hint}`}
+          id="composer-hint"
+        >
+          <ComposerHint
+            error={attachmentError || voice.error}
+            pending={pending}
+            projectSelected={projectId.length > 0}
+            recording={voice.recording}
+            transcribing={voice.transcribing}
+          />
+          {count > limit * 0.75 && (
+            <span className="composer-count">
+              {count.toLocaleString()} / {limit.toLocaleString()}
+            </span>
+          )}
+        </div>
+      </PromptInput>
+    </div>
   );
 }

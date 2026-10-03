@@ -8,6 +8,7 @@ import {
   RunLiveEventSchema,
 } from "@reasonateai/contracts/execution-protocol";
 import { useEffect, useRef, useState } from "react";
+import { runStreamEnded } from "./run-state";
 import {
   EMPTY_TIMELINE,
   foldDurable,
@@ -79,10 +80,7 @@ export function useRunStream(input: RunStreamInput) {
           event
         ),
       }));
-      if (
-        ["run.completed", "run.cancelled", "run.failed"].includes(event.type) &&
-        pendingRunId === event.runId
-      ) {
+      if (runStreamEnded([event], false) && pendingRunId === event.runId) {
         handlers.current.onEnded();
       }
     };

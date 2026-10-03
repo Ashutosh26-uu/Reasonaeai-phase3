@@ -167,6 +167,14 @@ Previews and deployed products are separate origins from the authenticated appli
 
 Mastra `createCodingAgent()` supplies the CTO and coding-worker loops. Mastra `AgentController` supplies isolated interactive sessions, threads, task state, constrained subagents, tool approvals, cancellation, and event streaming. Mastra `Workspace` supplies scoped filesystem, sandbox, language-intelligence, computer/browser-adjacent, and command tools. Durable-agent and background-task facilities are enabled only when their storage, PubSub/cache, idempotency, recovery, and replica-coordination requirements are met. ReasonateAI owns authorization, capability profiles, approval policy, budgets, audit events, evidence acceptance, tenant scope, deployment policy, and secret brokerage; Mastra components are adapters at those boundaries, never authorities that bypass them.
 
+## Workspace interactions
+
+Workspace chat keeps the existing animated Beam composer with a compact input, attachments on the left, model and voice controls on the right, and project/file context below. Tool questions appear above the input and resume the same persisted run. Dedicated voice mode uses explicit recording, editable transcription before submission, and available local browser speech for completed responses; provider availability and browser limitations remain visible. This is turn-based voice, with streaming ASR/TTS integration remaining separately scoped.
+
+The composer has one primary action: voice mode in a fresh empty chat, Send when text/files or an existing conversation are present, and Stop during execution. A text follow-up can wait in the composer above the input, or its Steer action can send it to the active controller at a safe signal boundary. Steering is a bounded, idempotent, durable user command delivered only by the current run lease owner; it never starts a second unleased run. Requested, delivered, and uncertain/failed delivery remain visible on replay. After a worker takeover, ambiguous delivery is reported rather than automatically repeated.
+
+Preview chrome displays the app route (starting at `/`), and Files displays `/workspace/<file>`; these are presentation paths over authorized product routes, never an alternative filesystem or authorization boundary. Each saved turn exposes a versioned checkpoint summary with real file and line changes against its restored base and bounded authorized file diffs. Failed or cancelled runs retain their actual outcome. Legacy or unavailable diffs show that limitation rather than fabricated zero counts.
+
 ## Unified resources
 
 One read surface resolves ordinary paths, URLs, supported documents, and registered internal URI schemes.

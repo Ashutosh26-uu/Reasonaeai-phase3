@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./steering": {
+      "types": "./src/steering.ts",
+      "import": "./dist/steering.js"
+    },
     "./postgres": {
       "types": "./src/postgres.ts",
       "import": "./dist/postgres.js"

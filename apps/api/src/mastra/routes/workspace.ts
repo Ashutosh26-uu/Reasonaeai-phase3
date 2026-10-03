@@ -9,11 +9,19 @@ import {
   BuildSessionIdSchema,
 } from "@reasonateai/contracts/execution";
 import {
+  CheckpointDiffSchema,
+  type CheckpointFileChange,
+  type RunCheckpoint,
+  RunCheckpointSchema,
+  type RunEventEnvelope,
+} from "@reasonateai/contracts/execution-protocol";
+import {
   type OrganizationId,
   OrganizationIdSchema,
   type Permission,
   type ProjectId,
   ProjectIdSchema,
+  RunIdSchema,
   type UserPrincipal,
 } from "@reasonateai/contracts/identity";
 import type {
@@ -50,11 +58,14 @@ export const WORKSPACE_TREE_PATH =
   "/v1/build-sessions/:buildSessionId/workspace/tree";
 export const WORKSPACE_FILE_PATH =
   "/v1/build-sessions/:buildSessionId/workspace/file";
+export const WORKSPACE_CHECKPOINT_DIFF_PATH =
+  "/v1/build-sessions/:buildSessionId/workspace/checkpoint-diff";
 
 /**
  * Most entries a listing returns, so one large project cannot turn into an
  * unbounded response.
  */
+const CHECKPOINT_DIGEST_PATTERN = /^[a-f0-9]{64}$/;
 const MAX_TREE_ENTRIES = 5000;
 
 /** Largest body this route returns as text. Anything larger is reported binary. */
@@ -148,27 +159,36 @@ const WorkspaceScopeSchema = z.strictObject({
  * refusal happens here rather than at the checkout, so a crafted path never
  * reaches a command.
  */
-const WorkspacePathSchema = z
-  .string()
-  .min(1)
-  .max(1024)
-  .refine((path) => !path.includes("\u0000"), {
-    message: "A workspace path may not contain a NUL byte.",
-  })
-  .refine((path) => !ABSOLUTE_PATH.test(path), {
-    message: "A workspace path must be relative to the workspace root.",
-  })
-  .refine((path) => !path.split(PATH_SEPARATOR).includes(".."), {
-    message: "A workspace path may not traverse upwards.",
-  })
-  .refine((path) => !EXCLUDED_SEGMENTS[path.split(PATH_SEPARATOR)[0] ?? ""], {
-    message: "That part of the workspace is not exposed.",
-  });
+function workspacePathSchema(maximum: number) {
+  return z
+    .string()
+    .min(1)
+    .max(maximum)
+    .refine((path) => !path.includes("\u0000"), {
+      message: "A workspace path may not contain a NUL byte.",
+    })
+    .refine((path) => !ABSOLUTE_PATH.test(path), {
+      message: "A workspace path must be relative to the workspace root.",
+    })
+    .refine((path) => !path.split(PATH_SEPARATOR).includes(".."), {
+      message: "A workspace path may not traverse upwards.",
+    })
+    .refine((path) => !EXCLUDED_SEGMENTS[path.split(PATH_SEPARATOR)[0] ?? ""], {
+      message: "That part of the workspace is not exposed.",
+    });
+}
+const WorkspacePathSchema = workspacePathSchema(1024);
+const CheckpointPathSchema = workspacePathSchema(4096);
 
 const WorkspaceFileQuerySchema = z.strictObject({
   organizationId: OrganizationIdSchema,
   path: WorkspacePathSchema,
   projectId: ProjectIdSchema,
+});
+const CheckpointDiffQuerySchema = WorkspaceFileQuerySchema.extend({
+  path: CheckpointPathSchema,
+  runId: RunIdSchema,
+  sequence: z.coerce.number().int().positive(),
 });
 
 const WorkspaceEntrySchema = z.strictObject({
@@ -241,10 +261,10 @@ function runGit(
   // `Promise.withResolvers` needs the ES2024 library, which this package does
   // not compile against, so the executor form is the one available here.
   return new Promise((resolve) => {
-    execFile(
+    const child = execFile(
       "git",
       args,
-      { encoding: "buffer", maxBuffer, windowsHide: true },
+      { encoding: "buffer", maxBuffer, timeout: 15_000, windowsHide: true },
       (error, stdout, stderr) => {
         resolve({
           code: error?.code ?? 0,
@@ -253,6 +273,7 @@ function runGit(
         });
       }
     );
+    child.stdin?.end();
   });
 }
 
@@ -582,6 +603,143 @@ async function readWorkspaceFile(input: {
   };
 }
 
+function recordedCheckpoint(
+  event: RunEventEnvelope | undefined,
+  sequence: number,
+  scope: TenantScope,
+  path: string
+):
+  | {
+      checkpoint: Extract<RunCheckpoint, { status: "available" }>;
+      file: CheckpointFileChange;
+      digest: string;
+    }
+  | undefined {
+  const parsed = RunCheckpointSchema.safeParse(event?.payload.checkpoint);
+  if (
+    !event ||
+    event.sequence !== sequence ||
+    !["run.completed", "run.failed", "run.cancelled"].includes(event.type) ||
+    !parsed.success ||
+    parsed.data.status !== "available"
+  ) {
+    return;
+  }
+  const checkpoint = parsed.data;
+  const [organization, project, digest] = checkpoint.checkpointId.split(".");
+  if (
+    organization !== scope.organizationId ||
+    project !== scope.projectId ||
+    !digest ||
+    !CHECKPOINT_DIGEST_PATTERN.test(digest) ||
+    checkpoint.checkpointId.split(".").length !== 3
+  ) {
+    return;
+  }
+  const file = checkpoint.files.find((entry) => entry.path === path);
+  if (
+    !file ||
+    (file.previousPath !== undefined &&
+      !CheckpointPathSchema.safeParse(file.previousPath).success)
+  ) {
+    return;
+  }
+  return { checkpoint, digest, file };
+}
+
+async function readCheckpointDiff({
+  c,
+  checkpoints,
+  checkpoint,
+  file,
+  digest,
+  rid,
+}: {
+  c: HandlerContext;
+  checkpoints: CheckpointStore;
+  checkpoint: Extract<RunCheckpoint, { status: "available" }>;
+  file: CheckpointFileChange;
+  digest: string;
+  rid: string;
+}): Promise<Response> {
+  const answer = (patchText: string, unavailable: "oversized" | null = null) =>
+    c.json(
+      CheckpointDiffSchema.parse({
+        binary: file.added === null || file.removed === null,
+        checkpointId: checkpoint.checkpointId,
+        patch: patchText,
+        path: file.path,
+        unavailable,
+      }),
+      200
+    );
+  if (file.added === null || file.removed === null) {
+    return answer("");
+  }
+  const directory = await materializeCheckout({
+    checkpoint: { checkpointId: checkpoint.checkpointId, digest },
+    checkpoints,
+  });
+  const head = await runGit(
+    ["-C", directory, "rev-parse", "HEAD"],
+    GIT_OUTPUT_LIMIT
+  );
+  if (
+    head.code !== 0 ||
+    head.stdout.toString("utf8").trim() !== checkpoint.commit
+  ) {
+    return apiErrorResponse({
+      code: "internal",
+      message: "The saved checkpoint commit could not be verified.",
+      requestId: rid,
+    });
+  }
+  const emptyTree =
+    checkpoint.baseCommit === null
+      ? await runGit(
+          ["-C", directory, "hash-object", "-t", "tree", "--stdin"],
+          GIT_OUTPUT_LIMIT
+        )
+      : undefined;
+  const base =
+    checkpoint.baseCommit ?? emptyTree?.stdout.toString("utf8").trim();
+  if (!base || (emptyTree && emptyTree.code !== 0)) {
+    return apiErrorResponse({
+      code: "internal",
+      message: "The checkpoint comparison base could not be read.",
+      requestId: rid,
+    });
+  }
+  const patch = await runGit(
+    [
+      "--literal-pathspecs",
+      "-C",
+      directory,
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--ignore-submodules=all",
+      "--find-renames",
+      base,
+      checkpoint.commit,
+      "--",
+      ...(file.previousPath === undefined ? [] : [file.previousPath]),
+      file.path,
+    ],
+    BLOB_READ_LIMIT
+  );
+  if (
+    patch.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
+    patch.stdout.byteLength > MAX_TEXT_BYTES
+  ) {
+    return answer("", "oversized");
+  }
+  if (patch.code !== 0) {
+    return gitFailure(rid, patch.stderr);
+  }
+  return answer(patch.stdout.toString("utf8"));
+}
+
 export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
   const checkpoints =
     deps.checkpoints ??
@@ -592,6 +750,78 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
     });
 
   return {
+    checkpointDiff: async (c: HandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+      const principal = await deps.resolvePrincipal({
+        cookieHeader: c.req.header("cookie"),
+      });
+      if (!principal) {
+        return unauthenticatedResponse(rid);
+      }
+      const buildSessionId = BuildSessionIdSchema.safeParse(
+        c.req.param("buildSessionId")
+      );
+      const query = CheckpointDiffQuerySchema.safeParse({
+        organizationId: c.req.query("organizationId"),
+        path: c.req.query("path"),
+        projectId: c.req.query("projectId"),
+        runId: c.req.query("runId"),
+        sequence: c.req.query("sequence"),
+      });
+      if (!(buildSessionId.success && query.success)) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message:
+            "A scoped run, saved event sequence and workspace path are required.",
+          requestId: rid,
+        });
+      }
+      const scope = {
+        organizationId: query.data.organizationId,
+        projectId: query.data.projectId,
+      };
+      const refusal = await guardWorkspaceRead({
+        buildSessionId: buildSessionId.data,
+        deps,
+        principal,
+        requestId: rid,
+        scope,
+      });
+      if (refusal) {
+        return refusal;
+      }
+      const run = await deps
+        .store()
+        .getRun({ ...scope, runId: query.data.runId });
+      if (!run || run.buildSessionId !== buildSessionId.data) {
+        return apiErrorResponse({
+          code: "not_found",
+          message: "No such run in this build session.",
+          requestId: rid,
+        });
+      }
+      const [event] = await deps.store().listRunEvents({
+        afterSequence: query.data.sequence - 1,
+        limit: 1,
+        runId: query.data.runId,
+        scope,
+      });
+      const recorded = recordedCheckpoint(
+        event,
+        query.data.sequence,
+        scope,
+        query.data.path
+      );
+      if (!recorded) {
+        return apiErrorResponse({
+          code: "not_found",
+          message: "This turn has no available diff for that file.",
+          requestId: rid,
+        });
+      }
+      return await readCheckpointDiff({ c, checkpoints, ...recorded, rid });
+    },
+
     /**
      * One file's content from the same checkpoint. A binary or oversized file
      * is reported as such with no body: the answer is about the file, not a

@@ -31,6 +31,7 @@ import {
 } from "./run-context.js";
 import { runDirective } from "./run-directive.js";
 import type { RunSession, RuntimeFactory } from "./runtime.js";
+import { startRunSteering } from "./steering.js";
 import type { StopSignal } from "./stop-signal.js";
 import { settleWithin } from "./wait.js";
 import { releaseBuildSandbox, workspaceVolumeName } from "./workspace.js";
@@ -84,6 +85,7 @@ const TERMINAL_EVENT: Record<RunFinishStatus, RunEventType> = {
 };
 
 type StopCause = "lease-lost" | "shutdown" | "user";
+const CHECKPOINT_COMMIT_PATTERN = /^[a-f0-9]{40,64}$/;
 
 type DriveResult =
   | { kind: "completed" }
@@ -154,6 +156,7 @@ export class RunExecutor {
 
     const requestContext = createRunRequestContext(scope);
     let sandbox: WorkspaceSandbox | undefined;
+    let baseCommit: string | null | undefined;
     let driven: DriveResult;
 
     try {
@@ -195,6 +198,26 @@ export class RunExecutor {
         ...fields,
         restoredCheckpointId: restored?.checkpointId ?? null,
       });
+      if (!recovery) {
+        if (restored === undefined) {
+          baseCommit = null;
+        } else {
+          const head = await checkpointSandboxFor(sandbox).runCommand({
+            args: ["rev-parse", "HEAD"],
+            command: "git",
+            cwd: "/workspace",
+          });
+          if (
+            head.exitCode !== 0 ||
+            !CHECKPOINT_COMMIT_PATTERN.test(head.stdout.trim())
+          ) {
+            throw new Error(
+              "The restored checkpoint commit could not be verified."
+            );
+          }
+          baseCommit = head.stdout.trim();
+        }
+      }
 
       driven = await this.#drive({
         fields,
@@ -212,6 +235,7 @@ export class RunExecutor {
     }
 
     return await this.#settle({
+      baseCommit,
       driven,
       fields,
       leaseId: lease.leaseId,
@@ -366,6 +390,16 @@ export class RunExecutor {
             )
         : Promise.resolve();
 
+    const steering = startRunSteering({
+      holder: config.holder,
+      leaseId: input.lease.leaseId,
+      logger,
+      onFailure: (reason) => requestStop("shutdown", reason),
+      requestContext: input.requestContext,
+      scope,
+      session: input.session,
+      store,
+    });
     keeper.start();
     try {
       await Promise.race([sending, stopRequested]);
@@ -427,6 +461,11 @@ export class RunExecutor {
       }
     } finally {
       clearInterval(cancellationPoll);
+      try {
+        await steering.stop();
+      } catch (error) {
+        failure = describeFailure(error);
+      }
       await keeper.stop();
       unsubscribeStop();
       unsubscribeEvents();
@@ -484,6 +523,7 @@ export class RunExecutor {
    * recorded once the run is actually ended here.
    */
   async #settle(input: {
+    baseCommit: string | null | undefined;
     driven: DriveResult;
     fields: LogFields;
     leaseId: string;
@@ -508,7 +548,7 @@ export class RunExecutor {
         runId: scope.runId,
         status: "failed",
       });
-      if (!ended) {
+      if (ended === false) {
         logger.warn("run.handed.off", {
           ...fields,
           reason: input.driven.reason,
@@ -542,6 +582,7 @@ export class RunExecutor {
     }
 
     const checkpoint = await this.#teardown({
+      baseCommit: input.baseCommit,
       fields,
       retainedReason:
         "the workspace checkpoint failed, so the volume holds the only copy of this run's work",
@@ -550,13 +591,17 @@ export class RunExecutor {
       snapshot: true,
     });
 
-    if (status === "succeeded") {
+    if (status === "succeeded" || checkpoint !== undefined) {
       await ledger.appendTransition({
         identity: scope,
         payload: {
           bytes: checkpoint?.bytes ?? null,
           checkpointId: checkpoint?.checkpointId ?? null,
+          ...(checkpoint?.checkpoint === undefined
+            ? {}
+            : { checkpoint: checkpoint.checkpoint }),
           outcome: status,
+          reason: reason ?? null,
         },
         type: TERMINAL_EVENT[status],
       });
@@ -596,6 +641,7 @@ export class RunExecutor {
    * after a failed snapshot is the only copy of the run's work.
    */
   async #teardown(input: {
+    baseCommit?: string | null | undefined;
     fields: LogFields;
     retainedReason: string;
     sandbox: WorkspaceSandbox | undefined;
@@ -612,10 +658,20 @@ export class RunExecutor {
     if (input.snapshot) {
       try {
         written = await snapshotWorkspaceCheckpoint({
+          ...(input.baseCommit === undefined
+            ? {}
+            : { baseCommit: input.baseCommit }),
           checkpoints: this.#deps.checkpoints,
           sandbox: checkpointSandboxFor(sandbox),
           scope,
         });
+        if (written.checkpoint?.status === "unavailable") {
+          logger.warn("run.checkpoint.diff.unavailable", {
+            ...fields,
+            checkpointId: written.checkpoint.checkpointId,
+            reason: written.checkpoint.reason,
+          });
+        }
       } catch (error) {
         logger.error("run.checkpoint.failed", {
           ...fields,

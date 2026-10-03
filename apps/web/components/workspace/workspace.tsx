@@ -22,6 +22,7 @@ import {
   RunCancellationAcceptedSchema,
   type RunEventEnvelope,
 } from "@reasonateai/contracts/execution-protocol";
+import { RunSteeringAcceptedSchema } from "@reasonateai/contracts/steering";
 import { FolderClosed, PanelRight, RefreshCw } from "lucide-react";
 import Image from "next/image";
 import {
@@ -37,9 +38,12 @@ import {
 } from "react";
 import { Composer } from "@/components/chat/composer";
 import { EmptyState } from "@/components/chat/empty-state";
-import { pendingQuestion } from "@/components/chat/timeline";
+import { QuestionCard } from "@/components/chat/question-card";
+import { runStreamEnded } from "@/components/chat/run-state";
+import { pendingQuestion, projectTranscript } from "@/components/chat/timeline";
 import { Transcript } from "@/components/chat/transcript";
 import { useRunStream } from "@/components/chat/use-run-stream";
+import { VoiceMode } from "@/components/chat/voice-mode";
 import { Panel } from "@/components/workspace/panel";
 import { Rail } from "@/components/workspace/rail";
 import { Settings } from "@/components/workspace/settings";
@@ -348,7 +352,10 @@ function useRunSettlement({
   return useCallback(
     async (buildSessionId: string, runId: string): Promise<void> => {
       const settle = async (attempt: number): Promise<void> => {
-        const [items] = await Promise.all([loadConversations(), loadHistory()]);
+        const items = await loadConversations();
+        // Terminal status commits after the saved checkpoint event. Read history
+        // after that status so a racing earlier replay cannot omit the checkpoint.
+        await loadHistory();
         const stillRunning = items.some(
           (item) =>
             item.buildSessionId === buildSessionId &&
@@ -357,9 +364,9 @@ function useRunSettlement({
         if (!stillRunning) {
           return;
         }
-        if (attempt === 9) {
+        if (attempt === 59) {
           setNotice(
-            "The run finished, but its status has not settled yet. Refresh to read it."
+            "The worker has not confirmed the run's final status yet. Refresh to check it."
           );
           return;
         }
@@ -410,6 +417,7 @@ function ConversationHeader({
   projectName,
   selectedProject,
   working,
+  settling,
 }: {
   conversationId: string;
   heading: string;
@@ -418,6 +426,7 @@ function ConversationHeader({
   projectName: string;
   selectedProject: boolean;
   working: boolean;
+  settling: boolean;
 }) {
   return (
     <header className="pane-head">
@@ -427,7 +436,8 @@ function ConversationHeader({
           <span>{projectName}</span>
           <span aria-hidden="true">·</span>
           <span data-state={working ? "working" : "ready"}>
-            {working ? "Working" : "Ready"}
+            {settling ? "Saving checkpoint…" : null}
+            {!settling && (working ? "Working" : "Ready")}
           </span>
         </div>
       </div>
@@ -487,6 +497,12 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   selectedHistory.current = historyIdentity;
   const historyRequest = useRef(0);
   const [draft, setDraft] = useState("");
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const steeringAttempt = useRef<{
+    runId: string;
+    message: string;
+    key: string;
+  } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [stoppingRunId, setStoppingRunId] = useState<string | null>(null);
   const [answerDraft, setAnswerDraft] = useState("");
@@ -623,6 +639,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
 
   useEffect(() => {
     const onPopState = () => {
+      setVoiceOpen(false);
       const next = readRoute();
       setProjectId(next.projectId);
       setConversationId(next.conversationId);
@@ -814,11 +831,64 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       }
       const sent = await sendTurn(input.message, input.attachments);
       if (sent) {
-        setDraft("");
+        setDraft((current) =>
+          current.trim() === input.message.trim() ? "" : current
+        );
       }
       return sent;
     },
     [organizationId, projectId, sendTurn]
+  );
+
+  const steerMessage = useCallback(
+    async (input: {
+      message: string;
+      attachments: PromptAttachment[];
+    }): Promise<boolean> => {
+      if (
+        !(pendingRunId && conversationId && organizationId && projectId) ||
+        input.attachments.length ||
+        !input.message.trim()
+      ) {
+        setError("Steering needs a text message and an active CTO run.");
+        return false;
+      }
+      const previous = steeringAttempt.current;
+      const key =
+        previous?.runId === pendingRunId && previous.message === input.message
+          ? previous.key
+          : crypto.randomUUID();
+      steeringAttempt.current = {
+        key,
+        message: input.message,
+        runId: pendingRunId,
+      };
+      try {
+        const result = await request(
+          `/v1/build-sessions/${conversationId}/runs/${pendingRunId}/steering?${scopeQuery(organizationId, projectId)}`,
+          RunSteeringAcceptedSchema.parse,
+          {
+            body: JSON.stringify({ message: input.message }),
+            headers: { "idempotency-key": key },
+            method: "POST",
+          }
+        );
+        steeringAttempt.current = null;
+        if (result.status === "failed") {
+          setError(
+            "This steering message could not be delivered. Check the run before retrying."
+          );
+          return false;
+        }
+        setError("");
+        setNotice("Steering requested. Delivery status appears in this turn.");
+        return true;
+      } catch (cause) {
+        setError(describeError(cause, "Could not steer this run."));
+        return false;
+      }
+    },
+    [conversationId, organizationId, pendingRunId, projectId]
   );
 
   const retry = useCallback(
@@ -841,12 +911,13 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
         RunCancellationAcceptedSchema.parse,
         { method: "POST" }
       );
+      await settle(conversationId, pendingRunId);
     } catch (cause) {
       setStoppingRunId(null);
       setNotice("");
       setError(describeError(cause, "Could not stop the run."));
     }
-  }, [conversationId, organizationId, pendingRunId, projectId]);
+  }, [conversationId, organizationId, pendingRunId, projectId, settle]);
 
   const editMessage = useCallback((text: string) => {
     setDraft(text);
@@ -859,23 +930,26 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
    * is what they meant.
    */
   const transcribe = useCallback(
-    async (audio: Blob): Promise<string> => {
+    (audio: Blob): Promise<string> => {
       const body = new FormData();
       body.append("audio", audio, "message.webm");
-      const response = await fetch(
+      return request(
         `/v1/voice/transcriptions?${scopeQuery(organizationId, projectId)}`,
-        { body, credentials: "same-origin", method: "POST" }
+        (value) => {
+          if (
+            typeof value !== "object" ||
+            value === null ||
+            !("text" in value) ||
+            typeof value.text !== "string"
+          ) {
+            throw new Error(
+              "The transcription service returned an invalid response."
+            );
+          }
+          return value.text;
+        },
+        { body, method: "POST" }
       );
-      const payload = (await response.json()) as {
-        error?: { message?: string };
-        text?: string;
-      };
-      if (!response.ok) {
-        throw new Error(
-          payload.error?.message ?? "Could not transcribe that recording."
-        );
-      }
-      return payload.text ?? "";
     },
     [organizationId, projectId]
   );
@@ -935,6 +1009,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   );
 
   const selectOrganization = useCallback((nextOrganizationId: string) => {
+    setVoiceOpen(false);
     setOrganizationId(nextOrganizationId);
     setProjectId("");
     setConversationId("");
@@ -946,6 +1021,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   }, []);
 
   const selectProject = useCallback((nextProjectId: string) => {
+    setVoiceOpen(false);
     setProjectId(nextProjectId);
     setConversationId("");
     setMessages([]);
@@ -955,6 +1031,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
 
   const selectConversation = useCallback(
     (nextProjectId: string, nextConversationId: string) => {
+      setVoiceOpen(false);
       setProjectId(nextProjectId);
       setConversationId(nextConversationId);
       setMessages([]);
@@ -964,6 +1041,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   );
 
   const newConversation = useCallback(() => {
+    setVoiceOpen(false);
     setConversationId("");
     setMessages([]);
     setDraft("");
@@ -974,6 +1052,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   }, [projectId]);
 
   const newConversationForProject = useCallback((nextProjectId: string) => {
+    setVoiceOpen(false);
     setProjectId(nextProjectId);
     setConversationId("");
     setMessages([]);
@@ -999,6 +1078,8 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   const closePanel = useCallback(() => setPanelOpen(false), []);
   const openSettings = useCallback(() => setSettingsOpen(true), []);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const openVoice = useCallback(() => setVoiceOpen(true), []);
+  const closeVoice = useCallback(() => setVoiceOpen(false), []);
   const renameOrganization = useCallback(
     (name: string) => {
       setOrganizations((current) =>
@@ -1039,12 +1120,22 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   }, [conversationId, organizationId, projectId]);
 
   const selectedProject = projects.some((item) => item.projectId === projectId);
-  const working = pendingRunId !== null;
+  const activeRunEvents = Object.values(
+    timeline.runs[pendingRunId ?? ""]?.events ?? {}
+  );
+  const streamEnded = runStreamEnded(
+    activeRunEvents,
+    stoppingRunId === pendingRunId
+  );
+  const working = pendingRunId !== null && !streamEnded;
+  const savingStoppedRun = pendingRunId !== null && streamEnded;
   const composer = (
     <Composer
-      busy={submitting}
+      busy={submitting || savingStoppedRun}
       count={draft.length}
       draft={draft}
+      hasConversation={conversationId.length > 0}
+      key={`${organizationId}:${projectId}:${conversationId}`}
       limit={DRAFT_LIMIT}
       listFiles={listFiles}
       model={MODEL}
@@ -1052,9 +1143,11 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       onCreateProject={createProjectNamed}
       onKeyDown={promptKeyDown}
       onProjectSelect={selectProject}
+      onSteer={steerMessage}
       onStop={stopRun}
       onSubmit={submitMessage}
       onTranscribe={transcribe}
+      onVoiceMode={openVoice}
       pending={working || !selectedProject}
       placeholder={
         selectedProject
@@ -1069,27 +1162,44 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   );
   const questionForm =
     question && answeredToolCallId !== question.toolCallId ? (
-      <form className="question-form" onSubmit={answerQuestion}>
-        <label htmlFor="question-answer">{question.question}</label>
-        <textarea
-          id="question-answer"
-          maxLength={DRAFT_LIMIT}
-          onChange={updateAnswerDraft}
-          value={answerDraft}
-        />
-        <button
-          disabled={answering || answerDraft.trim().length === 0}
-          type="submit"
-        >
-          {answering ? "Sending…" : "Send answer"}
-        </button>
-      </form>
+      <QuestionCard
+        busy={answering}
+        key={question.toolCallId}
+        limit={DRAFT_LIMIT}
+        onChange={updateAnswerDraft}
+        onSubmit={answerQuestion}
+        question={question.question}
+        value={answerDraft}
+      />
     ) : null;
   const emptyConversation =
     messages.length === 0 && Object.keys(timeline.runs).length === 0;
   const heading =
     active?.title ?? (conversationId ? "Conversation" : "New conversation");
   const project = projects.find((item) => item.projectId === projectId);
+  const renderedMessages = visibleHistory(
+    historyIdentity,
+    history,
+    messages
+  ).messages;
+  const completedVoiceTurn = projectTranscript(timeline, renderedMessages)
+    .filter((turn) =>
+      Object.values(timeline.runs[turn.id]?.events ?? {}).some(
+        (event) =>
+          event.type === "run.completed" &&
+          event.payload.outcome === "succeeded"
+      )
+    )
+    .at(-1);
+  const voiceResponseText =
+    completedVoiceTurn?.entries
+      .filter((entry) => entry.kind === "text" && !entry.streaming)
+      .map((entry) => (entry.kind === "text" ? entry.text : ""))
+      .join("\n\n") ?? "";
+  const voiceResponse =
+    completedVoiceTurn && voiceResponseText
+      ? { id: completedVoiceTurn.id, text: voiceResponseText }
+      : null;
   const organizationName =
     organizations.find((item) => item.organizationId === organizationId)
       ?.name ?? "This workspace";
@@ -1102,7 +1212,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   );
 
   return (
-    <div className="app">
+    <div className="app" data-stopping-run={stoppingRunId || undefined}>
       <Rail
         accountEmail={accountProfile?.email ?? ""}
         accountName={accountProfile?.displayName ?? ""}
@@ -1141,6 +1251,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
             onRefresh={refreshConversation}
             projectName={project?.name ?? "No project selected"}
             selectedProject={selectedProject}
+            settling={savingStoppedRun}
             working={working}
           />
 
@@ -1162,8 +1273,27 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
           )}
 
           <div className="pane-body">
-            {selectedProject ? (
+            {selectedProject && voiceOpen ? (
+              <VoiceMode
+                busy={working || submitting}
+                disabled={questionForm !== null}
+                key={`${organizationId}:${projectId}`}
+                onClose={closeVoice}
+                onStop={stopRun}
+                onSubmit={sendTurn}
+                onTranscribe={transcribe}
+                projectName={project?.name ?? "Your project"}
+                question={questionForm}
+                response={voiceResponse}
+              />
+            ) : null}
+            {selectedProject && !voiceOpen && (
               <ConversationPane
+                checkpointScope={{
+                  buildSessionId: conversationId,
+                  organizationId,
+                  projectId,
+                }}
                 composer={composer}
                 empty={emptyConversation}
                 live={live}
@@ -1178,7 +1308,8 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
                 starters={promptStarters}
                 timeline={timeline}
               />
-            ) : (
+            )}
+            {!selectedProject && (
               <EmptyState
                 mark={<FolderClosed aria-hidden="true" size={26} />}
                 onStarter={selectStarter}
@@ -1231,6 +1362,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
  * happened yet, and the transcript with the composer docked under it otherwise.
  */
 function ConversationPane({
+  checkpointScope,
   composer,
   questionForm,
   empty,
@@ -1243,6 +1375,11 @@ function ConversationPane({
   starters,
   timeline,
 }: {
+  checkpointScope: {
+    buildSessionId: string;
+    organizationId: string;
+    projectId: string;
+  };
   composer: React.ReactNode;
   questionForm: React.ReactNode;
   empty: boolean;
@@ -1279,6 +1416,7 @@ function ConversationPane({
   return (
     <>
       <Transcript
+        checkpointScope={checkpointScope}
         live={live}
         messages={messages}
         onEdit={onEdit}

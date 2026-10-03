@@ -66,9 +66,14 @@ import {
   PROJECT_COLLECTION_PATH,
 } from "./routes/projects";
 import { createRunEventHandlers, RUN_EVENTS_PATH } from "./routes/run-events";
+import {
+  createRunSteeringHandlers,
+  RUN_STEERING_PATH,
+} from "./routes/steering";
 import { createVoiceHandlers, VOICE_TRANSCRIPTION_PATH } from "./routes/voice";
 import {
   createWorkspaceHandlers,
+  WORKSPACE_CHECKPOINT_DIFF_PATH,
   WORKSPACE_FILE_PATH,
   WORKSPACE_TREE_PATH,
 } from "./routes/workspace";
@@ -239,6 +244,11 @@ const runEventHandlers = createRunEventHandlers({
   store: stateStore,
 });
 
+const steeringHandlers = createRunSteeringHandlers({
+  resolvePrincipal: resolvePrincipalFrom,
+  store: stateStore,
+});
+
 const workspaceHandlers = createWorkspaceHandlers({
   resolvePrincipal: resolvePrincipalFrom,
   store: stateStore,
@@ -361,6 +371,16 @@ export const mastra = new Mastra({
           tags: ["Build sessions"],
         },
       }),
+      registerApiRoute(RUN_STEERING_PATH, {
+        handler: (c) => steeringHandlers.steer(c),
+        method: "POST",
+        openapi: {
+          description:
+            "Idempotently requests a bounded user message for the active scoped run; the lease-owning worker delivers it at the controller's next signal boundary.",
+          summary: "Steer the active CTO run",
+          tags: ["Build sessions"],
+        },
+      }),
       registerApiRoute(BUILD_SESSION_COLLECTION_PATH, {
         handler: (c) => buildSessionHandlers.allocate(c),
         method: "POST",
@@ -408,6 +428,16 @@ export const mastra = new Mastra({
           description:
             "Reads one file from the project's latest checkpoint. A binary or oversized file is reported as binary with no body, and the same centralized project authorization guards both workspace reads.",
           summary: "Read a generated source file",
+          tags: ["Workspace"],
+        },
+      }),
+      registerApiRoute(WORKSPACE_CHECKPOINT_DIFF_PATH, {
+        handler: (c) => workspaceHandlers.checkpointDiff(c),
+        method: "GET",
+        openapi: {
+          description:
+            "Reads a bounded file diff from a saved turn checkpoint after project authorization and durable run provenance verification.",
+          summary: "Read a turn checkpoint diff",
           tags: ["Workspace"],
         },
       }),

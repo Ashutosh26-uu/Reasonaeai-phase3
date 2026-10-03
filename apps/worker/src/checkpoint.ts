@@ -112,11 +112,13 @@ export async function restoreLatestCheckpoint(input: {
 
 /** Commits the workspace inside the sandbox and stores the resulting bundle. */
 export async function snapshotWorkspaceCheckpoint(input: {
+  baseCommit?: string | null;
   checkpoints: CheckpointStore;
   sandbox: CheckpointSandbox;
   scope: RunScope;
 }): Promise<CheckpointWriteResult> {
   return await snapshotSandbox({
+    ...(input.baseCommit === undefined ? {} : { baseCommit: input.baseCommit }),
     buildSessionId: input.scope.buildSessionId,
     organizationId: input.scope.organizationId,
     projectId: input.scope.projectId,

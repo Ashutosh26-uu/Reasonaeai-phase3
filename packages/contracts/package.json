@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./steering": {
+      "types": "./src/steering.ts",
+      "import": "./dist/steering.js"
+    },
     "./api-error": {
       "types": "./src/api-error.ts",
       "import": "./dist/api-error.js"
