@@ -243,7 +243,7 @@ export function createWorkspaceReadTool(input: WorkspaceReadToolOptions) {
   const root = posix.normalize(input.root ?? "/");
   return createTool({
     description:
-      "Read a project file, directory, or registered resource URL. File reads emit hashline anchors for the edit tool; use an optional :line-range, :raw, or :conflicts selector. Every filesystem path is confined to the verified project workspace.",
+      "Read a file, directory, or named resource within the verified project. Files emit edit anchors and support :line-range, :raw, or :conflicts. Choose skill:// names from the supplied catalog; rules are already applied, so do not enumerate rule:// before every task. An empty listing is normal, and an unknown resource requires correcting the target rather than repeated guessing.",
     execute: async ({ target }, context) => {
       const trimmed = target.trim();
       if (trimmed.length === 0) {
