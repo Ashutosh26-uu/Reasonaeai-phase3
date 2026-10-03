@@ -60,6 +60,8 @@ export interface ComposeSystemPromptOptions {
   cwd: string;
   /** Overrides the home directory used for user-level instructions. */
   home?: string | undefined;
+  /** Already loaded through the verified workspace. An empty array disables host discovery. */
+  instructionSources?: readonly InstructionSource[] | undefined;
   maxFileChars?: number | undefined;
   maxImportDepth?: number | undefined;
   model: string;
@@ -111,9 +113,12 @@ export function composeSystemPrompt(
 ): ComposedContext {
   const diagnostics: ContextDiagnostic[] = [];
 
-  const candidates = discoverInstructionFileCandidates(options.cwd, {
-    ...(options.home === undefined ? {} : { home: options.home }),
-  });
+  const candidates =
+    options.instructionSources === undefined
+      ? discoverInstructionFileCandidates(options.cwd, {
+          ...(options.home === undefined ? {} : { home: options.home }),
+        })
+      : [];
 
   const loaded = candidates
     .map((candidate) =>
@@ -125,7 +130,9 @@ export function composeSystemPrompt(
     )
     .filter((source): source is InstructionSource => source !== undefined);
 
-  const sources = selectInstructionSources(loaded);
+  const sources = selectInstructionSources(
+    options.instructionSources ?? loaded
+  );
   const renderedSources = sources.map(renderInstructionSource);
 
   const workspaceRoot = findWorkspaceRoot(options.cwd);
@@ -201,7 +208,7 @@ export function renderResourceCatalog(
   return [
     "## Additional resources",
     "",
-    "Beyond workspace paths, these schemes address resources that do not live on the filesystem. They are read through the same read tool, each with an optional `:selector` for line ranges or `:raw`.",
+    "Use the read tool for a named resource only when relevant. The bundled rules are already applied and skills are listed above; no startup enumeration is required. Do not guess schemes or repeatedly retry empty listings. Selectors apply to workspace files; a resource uses its own handler contract.",
     "",
     ...ordered.map(
       (entry) => `- \`${entry.scheme}://\` — ${entry.description}`

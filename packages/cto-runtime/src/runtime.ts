@@ -8,7 +8,10 @@ import type { RequestContext } from "@mastra/core/request-context";
 import type { MastraCompositeStore } from "@mastra/core/storage";
 import type { Workspace, WorkspaceFilesystem } from "@mastra/core/workspace";
 import { Memory } from "@mastra/memory";
-import { materializeDelegatableSubagents } from "./agents/materialize.js";
+import {
+  materializeDelegatableSubagents,
+  type WorkerOverrides,
+} from "./agents/materialize.js";
 import {
   type BudgetStopCondition,
   createRunBudget,
@@ -17,6 +20,9 @@ import {
 } from "./budget.js";
 import { composeSystemPrompt } from "./context/compose.js";
 import type { PlatformFacts, SandboxCapacity } from "./context/environment.js";
+import type { InstructionSource } from "./context/instructions.js";
+import { loadWorkspaceInstructions } from "./context/workspace-instructions.js";
+import { renderBundledRules, renderSkillCatalog } from "./guidance/catalog.js";
 import { deepseekReasoningCompat } from "./model/deepseek-reasoning.js";
 import { MAIN_AGENT_INSTRUCTIONS, REASONATE_CTO_NAME } from "./prompts.js";
 import {
@@ -45,10 +51,13 @@ export type RuntimeWorkspace =
  *
  * When a value is provided it is validated, so a typo cannot silently become an
  * accidental cap of one step.
+ * Mastra may supply its own fallback: installed unbudgeted nonforked workers
+ * default to 50 steps when neither maxSteps nor stopWhen is passed.
  */
 export interface CtoRuntimeLimits {
   debuggerMaxSteps?: number;
   mainMaxSteps?: number;
+  reviewerMaxSteps?: number;
   scoutMaxSteps?: number;
   workerMaxSteps?: number;
 }
@@ -67,6 +76,7 @@ interface CtoControllerState {
 export interface CtoSubagentModels {
   coder: string;
   debugger: string;
+  reviewer: string;
   scout: string;
 }
 
@@ -152,6 +162,30 @@ function createRuntimeMemory(
   return new Memory(storage ? { storage } : {});
 }
 
+function resolveWorkerOverrides(
+  config: ReasonateCtoRuntimeConfig,
+  limits: CtoRuntimeLimits
+): WorkerOverrides {
+  const workers = [
+    ["coder", limits.workerMaxSteps],
+    ["debugger", limits.debuggerMaxSteps],
+    ["reviewer", limits.reviewerMaxSteps],
+    ["scout", limits.scoutMaxSteps],
+  ] as const;
+  return Object.fromEntries(
+    workers.map(([name, maxTurns]) => {
+      const model = config.subagentModels?.[name];
+      return [
+        name,
+        {
+          ...(model ? { model } : {}),
+          ...(maxTurns === undefined ? {} : { maxTurns }),
+        },
+      ];
+    })
+  );
+}
+
 export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
   const limits = resolveLimits(config.limits);
   const budget =
@@ -179,7 +213,25 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     }
     return filesystem;
   };
-  const resourcesByRequest = new WeakMap<RequestContext, RunResources>();
+  const resourcesByRequest = new WeakMap<
+    RequestContext,
+    Promise<RunResources>
+  >();
+  const instructionSourcesByRequest = new WeakMap<
+    RequestContext,
+    Promise<InstructionSource[]>
+  >();
+  const resolveInstructionSources = (requestContext: RequestContext) => {
+    let sources = instructionSourcesByRequest.get(requestContext);
+    if (!sources) {
+      readRunScope(requestContext);
+      sources = resolveFilesystem(requestContext).then((filesystem) =>
+        loadWorkspaceInstructions(filesystem, config.workspaceRoot ?? "/")
+      );
+      instructionSourcesByRequest.set(requestContext, sources);
+    }
+    return sources;
+  };
   const resourcesRoot =
     config.resourcesRoot ?? join(tmpdir(), "reasonate-run-resources");
   /**
@@ -188,16 +240,23 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
    * the request context, because a shared router would let one run answer
    * another run's read.
    */
-  const resolveResources = (requestContext: RequestContext): RunResources => {
+  const resolveResources = (
+    requestContext: RequestContext
+  ): Promise<RunResources> => {
     const existing = resourcesByRequest.get(requestContext);
     if (existing !== undefined) {
       return existing;
     }
-    const resources = createRunResources({
-      cwd: config.workspaceRoot ?? process.cwd(),
-      root: resourcesRoot,
-      scope: readRunScope(requestContext),
-    });
+    const scope = readRunScope(requestContext);
+    const resources = resolveInstructionSources(requestContext).then(
+      (instructionSources) =>
+        createRunResources({
+          cwd: config.workspaceRoot ?? process.cwd(),
+          instructionSources,
+          root: resourcesRoot,
+          scope,
+        })
+    );
     resourcesByRequest.set(requestContext, resources);
     return resources;
   };
@@ -225,7 +284,7 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
         scope: readRunScope(requestContext),
       }),
       resolveRouter: async (requestContext) =>
-        resolveResources(requestContext).router,
+        (await resolveResources(requestContext)).router,
       resolveSnapshots,
       ...(config.workspaceRoot === undefined
         ? {}
@@ -241,39 +300,58 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
   };
 
   const sessionStartedAt = new Date();
-  const instructionsByRequest = new WeakMap<RequestContext, string>();
+  const instructionsByRequest = new WeakMap<
+    RequestContext,
+    Map<string, string>
+  >();
   /**
-   * The prompt is assembled once per run scope from the base role, the
+   * The prompt is assembled once per request-context instance from the role, the
    * environment facts, and the project's own instruction files. It is cached
    * because every model step resolves instructions: recomposing per step would
-   * re-read the instruction files and change the prompt prefix mid-run.
+   * re-read the instruction files and change that agent's prompt prefix.
+   * Mastra nonforked workers clone the context and capture a fresh project
+   * snapshot; their prompt and resource handler share that same snapshot.
    */
-  const resolveInstructions = ({
-    requestContext,
-  }: {
-    requestContext: RequestContext;
-  }): string => {
-    const composed = instructionsByRequest.get(requestContext);
-    if (composed !== undefined) {
-      return composed;
-    }
-    const scope = readRunScope(requestContext);
-    const [provider, ...modelParts] = config.model.split("/");
-    const prompt = composeSystemPrompt({
-      basePrompt: MAIN_AGENT_INSTRUCTIONS,
-      cwd: config.workspaceRoot ?? process.cwd(),
-      ...(config.capacity === undefined ? {} : { capacity: config.capacity }),
-      model: modelParts.length === 0 ? config.model : modelParts.join("/"),
-      ...(modelParts.length === 0 ? {} : { provider }),
-      ...(config.platform === undefined ? {} : { platform: config.platform }),
-      sandboxId: sandboxIdFor(scope),
-      schemes: resolveResources(requestContext).router.describeSchemes(),
-      scope,
-      sessionStartedAt,
-    }).systemPrompt;
-    instructionsByRequest.set(requestContext, prompt);
-    return prompt;
-  };
+  const instructionsFor =
+    (basePrompt: string, modelId = config.model) =>
+    async ({
+      requestContext,
+    }: {
+      requestContext: RequestContext;
+    }): Promise<string> => {
+      const promptKey = `${modelId}\n${basePrompt}`;
+      const composed = instructionsByRequest
+        .get(requestContext)
+        ?.get(promptKey);
+      if (composed !== undefined) {
+        return composed;
+      }
+      const scope = readRunScope(requestContext);
+      const resources = await resolveResources(requestContext);
+      const [provider, ...modelParts] = modelId.split("/");
+      const prompt = composeSystemPrompt({
+        basePrompt: [
+          basePrompt,
+          renderBundledRules(),
+          renderSkillCatalog(),
+        ].join("\n\n"),
+        cwd: config.workspaceRoot ?? process.cwd(),
+        instructionSources: await resolveInstructionSources(requestContext),
+        ...(config.capacity === undefined ? {} : { capacity: config.capacity }),
+        model: modelParts.length === 0 ? modelId : modelParts.join("/"),
+        ...(modelParts.length === 0 ? {} : { provider }),
+        ...(config.platform === undefined ? {} : { platform: config.platform }),
+        sandboxId: sandboxIdFor(scope),
+        schemes: resources.router.describeSchemes(),
+        scope,
+        sessionStartedAt,
+      }).systemPrompt;
+      const prompts =
+        instructionsByRequest.get(requestContext) ?? new Map<string, string>();
+      prompts.set(promptKey, prompt);
+      instructionsByRequest.set(requestContext, prompts);
+      return prompt;
+    };
 
   const mainAgent = createCodingAgent({
     defaultOptions: {
@@ -289,7 +367,7 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
       "ReasonateAI's autonomous CTO that owns the complete product lifecycle from intent through verified deployment.",
     id: "reasonate-cto",
     inputProcessors: [deepseekReasoningCompat()],
-    instructions: resolveInstructions,
+    instructions: instructionsFor(MAIN_AGENT_INSTRUCTIONS),
     model: config.model,
     name: REASONATE_CTO_NAME,
     ...(config.skills ? { skills: config.skills } : {}),
@@ -297,35 +375,26 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     workspace: config.workspace,
   });
 
-  const subagents = materializeDelegatableSubagents({
+  const workerOverrides = resolveWorkerOverrides(config, limits);
+  const materialized = materializeDelegatableSubagents({
     defaultModelId: config.model,
-    overrides: {
-      coder: {
-        ...(config.subagentModels?.coder
-          ? { model: config.subagentModels.coder }
-          : {}),
-        ...(limits.workerMaxSteps === undefined
-          ? {}
-          : { maxTurns: limits.workerMaxSteps }),
-      },
-      debugger: {
-        ...(config.subagentModels?.debugger
-          ? { model: config.subagentModels.debugger }
-          : {}),
-        ...(limits.debuggerMaxSteps === undefined
-          ? {}
-          : { maxTurns: limits.debuggerMaxSteps }),
-      },
-      scout: {
-        ...(config.subagentModels?.scout
-          ? { model: config.subagentModels.scout }
-          : {}),
-        ...(limits.scoutMaxSteps === undefined
-          ? {}
-          : { maxTurns: limits.scoutMaxSteps }),
-      },
-    },
+    instructions: (definition) =>
+      instructionsFor(
+        definition.prompt,
+        workerOverrides[definition.name]?.model ??
+          definition.model?.id ??
+          config.model
+      ),
+    overrides: workerOverrides,
+    tools,
   });
+  const subagents =
+    budget === undefined
+      ? materialized
+      : materialized.map((subagent) => ({
+          ...subagent,
+          stopWhen: stopConditions(budget, subagent.maxSteps),
+        }));
 
   const controller = new AgentController<CtoControllerState>({
     id: config.controllerId ?? "reasonate-cto-controller",
@@ -357,13 +426,7 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
       },
     ],
     ...(config.storage ? { storage: config.storage } : {}),
-    subagents:
-      budget === undefined
-        ? subagents
-        : subagents.map((subagent) => ({
-            ...subagent,
-            stopWhen: stopConditions(budget, subagent.maxSteps),
-          })),
+    subagents,
     workspace: config.workspace,
   });
 
@@ -372,5 +435,6 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     controller,
     limits,
     mainAgent,
+    subagents,
   };
 }
