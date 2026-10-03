@@ -97,5 +97,57 @@ describe("SandboxFilesystem", () => {
     await expect(filesystem.readFile("../../host-secret")).rejects.toThrow(
       "escapes the build-session workspace"
     );
+    await expect(filesystem.readFile("/../../host-secret")).rejects.toThrow(
+      "escapes the build-session workspace"
+    );
+    await expect(
+      filesystem.readFile("/workspace/../../host-secret")
+    ).rejects.toThrow("escapes the build-session workspace");
+  });
+
+  it("normalizes leading slash, full workspace, and Windows-style paths to the workspace root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "reasonate-sandbox-fs-"));
+    const filesystem = new SandboxFilesystem({
+      id: "test-filesystem",
+      root: "/workspace",
+      sandbox: testSandbox(root),
+    });
+
+    // Write using leading slash
+    await filesystem.writeFile("/src/index.ts", "console.log('hello');\n", {
+      recursive: true,
+    });
+
+    // Read using relative path
+    expect(
+      await filesystem.readFile("src/index.ts", { encoding: "utf8" })
+    ).toBe("console.log('hello');\n");
+
+    // Read using full workspace path
+    expect(
+      await filesystem.readFile("/workspace/src/index.ts", { encoding: "utf8" })
+    ).toBe("console.log('hello');\n");
+
+    // Read using Windows backslash
+    expect(
+      await filesystem.readFile("src\\index.ts", { encoding: "utf8" })
+    ).toBe("console.log('hello');\n");
+
+    // Read using leading slash
+    expect(
+      await filesystem.readFile("/src/index.ts", { encoding: "utf8" })
+    ).toBe("console.log('hello');\n");
+
+    // Read using Windows drive letter with workspace
+    expect(
+      await filesystem.readFile("C:\\workspace\\src\\index.ts", {
+        encoding: "utf8",
+      })
+    ).toBe("console.log('hello');\n");
+
+    // Read using Windows drive letter with root-relative path
+    expect(
+      await filesystem.readFile("C:\\src\\index.ts", { encoding: "utf8" })
+    ).toBe("console.log('hello');\n");
   });
 });
