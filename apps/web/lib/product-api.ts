@@ -8,7 +8,7 @@ import { CSRF_COOKIE, CSRF_HEADER } from "@reasonateai/contracts/auth";
  * CSRF header or lose the server's own explanation of a refusal.
  */
 
-function csrfToken(): string | undefined {
+export function csrfToken(): string | undefined {
   const cookie = document.cookie
     .split("; ")
     .find((part) => part.startsWith(`${CSRF_COOKIE}=`));
@@ -25,6 +25,27 @@ export class ApiRequestError extends Error {
     this.name = "ApiRequestError";
     this.status = status;
   }
+}
+
+/**
+ * The message a refusal owes its caller. A product route writes a sentence a
+ * person can read into `error.message`, and the client states it as-is;
+ * anything else — a proxy error page, a truncated body — still leaves the
+ * caller with the status said plainly.
+ */
+export function apiErrorMessage(body: unknown, status: number): string {
+  if (typeof body === "object" && body !== null && "error" in body) {
+    const { error } = body;
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "message" in error &&
+      typeof error.message === "string"
+    ) {
+      return error.message;
+    }
+  }
+  return `Request failed (${status}).`;
 }
 
 export async function request<T>(
@@ -51,20 +72,9 @@ export async function request<T>(
     throw new Error("The product API is unavailable.", { cause });
   }
   if (!response.ok) {
-    if (typeof body === "object" && body !== null && "error" in body) {
-      const { error } = body;
-      if (
-        typeof error === "object" &&
-        error !== null &&
-        "message" in error &&
-        typeof error.message === "string"
-      ) {
-        throw new ApiRequestError(response.status, error.message);
-      }
-    }
     throw new ApiRequestError(
       response.status,
-      `Request failed (${response.status}).`
+      apiErrorMessage(body, response.status)
     );
   }
   return parse(body);

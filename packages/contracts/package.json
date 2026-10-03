@@ -35,6 +35,10 @@
     "./sandbox": {
       "types": "./src/sandbox.ts",
       "import": "./dist/sandbox.js"
+    },
+    "./voice": {
+      "types": "./src/voice.ts",
+      "import": "./dist/voice.js"
     }
   },
   "scripts": {

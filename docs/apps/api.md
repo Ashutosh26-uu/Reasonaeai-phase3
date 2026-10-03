@@ -39,10 +39,14 @@ Agent behaviour is **not** here. It lives in `@reasonateai/cto-runtime`. This ap
 | `src/mastra/routes/build-sessions.ts` | Build-session allocation, conversation turns, conversation history and listing |
 | `src/mastra/routes/run-events.ts` | The durable and live event streams a browser follows |
 | `src/mastra/routes/artifacts.ts` | Artifact recording, listing, signed access, and download |
+| `src/mastra/routes/voice.ts` | Recording transcription and bounded turn synthesis behind the replaceable ASR/TTS adapters |
 | `src/mastra/adapters/magic-link-sender.ts` | The delivery boundary for sign-in links |
+| `src/mastra/adapters/asr.ts` | The OpenAI-compatible speech-to-text boundary and its environment resolution |
+| `src/mastra/adapters/tts.ts` | The OpenAI-compatible text-to-speech boundary and its environment resolution |
 | `test/server.test.ts` | The required denial set, one middleware per group, and the 404 answer |
 | `test/principal.test.ts` | Cookie matching, fail-closed resolution, error envelope |
 | `test/run-events.test.ts` | Durable replay, gap backfill, live delivery, and the live topic over real Redis |
+| `test/voice.test.ts` | Refusal ordering, upload bounds, provider-error redaction, and the synthesis contract |
 
 ---
 

@@ -1,0 +1,120 @@
+# Kokoro TTS — self-hosted, OpenAI-compatible text-to-speech behind ReasonateAI's
+# REASONATE_TTS_URL. This directory is configuration and documentation only; the model
+# server is the upstream project, not vendored here.
+#
+# Image choice: the upstream README (https://github.com/remsky/Kokoro-FastAPI) documents
+# the published CPU image `ghcr.io/remsky/kokoro-fastapi-cpu` as the quickest start, and
+# that image bakes the Kokoro-82M weights in, so no clone or build step is needed. The
+# upstream `docker/cpu` compose form builds from a checkout instead; we use the published
+# image, and follow the README's advice to pin a release tag rather than `:latest`.
+#
+# The port is published on the loopback interface only: the product API reaches this over
+# 127.0.0.1, and nothing off-host can call it. There is no authentication, so the loopback
+# bind is the security boundary.
+#
+# `docker compose` automatically reads a `.env` file sitting next to this file; copy
+# `.env.example` to `.env` to set the variables interpolated below.
+
+name: kokoro-tts
+
+services:
+  kokoro-tts:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:v0.9.0
+    container_name: kokoro-tts
+    # Survive host reboots and crashes; do not resurrect after an explicit `compose down`.
+    restart: unless-stopped
+
+    # Host-side port comes from .env; the container side is fixed at the upstream default
+    # 8880. Published to 127.0.0.1 only, so `KOKORO_TTS_PORT` moves the host port without
+    # widening reachability.
+    ports:
+      - "127.0.0.1:${KOKORO_TTS_PORT:-8880}:8880"
+
+    environment:
+      # --- API surface --------------------------------------------------------------
+      # Bind inside the container's network namespace; reachability is constrained by the
+      # loopback publish above, not by this value.
+      HOST: 0.0.0.0
+      PORT: "8880"
+      # Upstream defaults to DEBUG, which is a line per request. INFO is enough for a
+      # service the product calls on every reply.
+      API_LOG_LEVEL: INFO
+
+      # --- Model and device ---------------------------------------------------------
+      # This is the CPU image. Be explicit so a GPU-less host never probes for CUDA.
+      USE_GPU: "false"
+      # Where the weights live inside the container; persisted by the named volume below.
+      MODEL_DIR: /app/api/src/models
+      # Voice packs ship inside the image. Do NOT mount a volume over this path: an empty
+      # volume would hide the stock voices and the default voice would fail to load.
+      VOICES_DIR: /app/api/src/voices/v1_0
+      # The named volume shadows the weights baked into the image, so let the upstream
+      # entrypoint fetch them into the volume on first start. It verifies a checksum and
+      # no-ops once they are present, so this is a one-time download (see README).
+      DOWNLOAD_MODEL: "true"
+
+      # --- Voices -------------------------------------------------------------------
+      # Voice a request falls back to when it omits `voice`. Keep in step with the
+      # product's REASONATE_TTS_VOICE.
+      DEFAULT_VOICE: ${KOKORO_TTS_VOICE:-af_heart}
+      # Kokoro applies `speed` per request and has no server-side default-speed setting,
+      # so this is this deployment's declared default that callers send in the request
+      # body. It is forwarded here so `docker compose config` and `docker inspect` show
+      # the agreed value alongside the stack; the server itself ignores the key.
+      DEFAULT_SPEED: ${KOKORO_TTS_SPEED:-1.0}
+
+      # --- CORS ---------------------------------------------------------------------
+      # The product calls server-to-server and needs no CORS. Narrow the built-in web
+      # player's origins to this host's own loopback addresses.
+      CORS_ENABLED: "true"
+      CORS_ORIGINS: '["http://localhost:${KOKORO_TTS_PORT:-8880}","http://127.0.0.1:${KOKORO_TTS_PORT:-8880}"]'
+
+    volumes:
+      # Named volume for the model and tuner cache, so replacing the container does not
+      # re-download weights. `KOKORO_TTS_CACHE_VOLUME` names the Docker volume itself.
+      - kokoro-model-cache:/app/api/src/models
+
+    healthcheck:
+      # Upstream exposes GET /health -> {"status":"healthy"} (not /healthz); curl ships in
+      # the image. See README for how to wire a platform probe that expects /healthz.
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8880/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # Generous: CPU model warmup, plus the one-time weight download on a fresh volume.
+      start_period: 300s
+
+    # Resource ceilings. Uncomment and size to the host. Kokoro-82M on CPU fits in about
+    # 1-2 GB, but uvicorn serves inference serially, so leave headroom for queued requests.
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "4.0"
+    #       memory: 4g
+    #     reservations:
+    #       cpus: "1.0"
+    #       memory: 1g
+
+    # CUDA hosts: switch the image to `ghcr.io/remsky/kokoro-fastapi-gpu:v0.9.0`, set
+    # USE_GPU: "true" above, and uncomment this reservation.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+    logging:
+      # Bound container logs so a long-running service cannot fill the disk; the product
+      # never needs transcript or audio content from them.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  kokoro-model-cache:
+    # The concrete Docker volume name; change KOKORO_TTS_CACHE_VOLUME to run several
+    # deployments side by side on one host.
+    name: ${KOKORO_TTS_CACHE_VOLUME:-reasonate-kokoro-model-cache}

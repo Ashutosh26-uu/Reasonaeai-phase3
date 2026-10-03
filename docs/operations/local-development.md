@@ -108,6 +108,20 @@ pnpm --filter @reasonateai/api smoke:checkpoint
 | `REASONATE_PUBLIC_ORIGIN` | `apps/api` | The origin a sign-in link points back at; defaults to the dev server's own address |
 | `REASONATE_ALLOWED_ORIGINS` | `apps/api` | Origins allowed to make state-changing browser requests; a mismatched origin is refused |
 | `SESSION_SECRET` | `apps/api` | Signing key for the CSRF pair; identity routes refuse to run without it |
+| `REASONATE_ASR_URL` | `apps/api` speech intake | Speech-to-text stays off and the transcription route answers `503 voice_unconfigured` |
+| `REASONATE_ASR_API_KEY` | `apps/api` speech intake | The transcription request is sent without a bearer token |
+| `REASONATE_ASR_MODEL` | `apps/api` speech intake | The endpoint transcribes with its own default model |
+| `REASONATE_TTS_URL` | `apps/api` voice mode | Speech synthesis stays off and the speech route answers `503 voice_unconfigured` |
+| `REASONATE_TTS_API_KEY` | `apps/api` voice mode | The synthesis request is sent without a bearer token |
+| `REASONATE_TTS_MODEL` | `apps/api` voice mode | The endpoint synthesizes with its own default model |
+| `REASONATE_TTS_VOICE` | `apps/api` voice mode | A caller that names no voice gets the endpoint's own default |
+
+Each `REASONATE_*_URL` names the **exact** endpoint URL the adapter posts to
+(`/v1/audio/transcriptions` and `/v1/audio/speech` respectively), not a base
+URL. Self-hosted backends for both live under `services/`: `services/r2t2-asr`
+serves transcription from the Confucius4-R2T2 checkpoint and
+`services/kokoro-tts` stands up Kokoro-82M through Docker Compose; each
+directory's README carries the bring-up commands and the model licensing notes.
 
 Never commit a `.env` file. `.env` and `.env.*` are ignored, with `.env.example` as the documented template.
 
