@@ -8,13 +8,26 @@ import {
   ProjectIdSchema,
   type UserPrincipal,
 } from "@reasonateai/contracts/identity";
+import {
+  MAX_SPEECH_TEXT_CHARS,
+  MAX_VOICE_AUDIO_BYTES,
+  MAX_VOICE_LANGUAGE_LENGTH,
+  type VoiceSpeechRequest,
+  VoiceSpeechRequestSchema,
+  VoiceTranscriptionSchema,
+  voiceAudioMediaTypes,
+} from "@reasonateai/contracts/voice";
 import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
-import { z } from "zod";
 import {
   ASR_UNCONFIGURED_MESSAGE,
   type AsrAdapter,
   AsrProviderError,
 } from "../adapters/asr";
+import {
+  TTS_UNCONFIGURED_MESSAGE,
+  type TtsAdapter,
+  TtsProviderError,
+} from "../adapters/tts";
 import { apiErrorResponse, unauthenticatedResponse } from "../principal";
 import { auditEvent } from "./auth";
 
@@ -23,9 +36,11 @@ import { auditEvent } from "./auth";
  *
  * Transcription exists to produce a turn: the caller speaks, this route turns
  * the recording into text, and the browser puts that text in front of the
- * person who decides whether to send it. Nothing here writes product state, so
- * nothing here is a security transition — the turn a person actually sends is
- * recorded in the run ledger, which is the authoritative record of it.
+ * person who decides whether to send it. Synthesis is the mirror: the text a
+ * completed turn should speak goes to a configured endpoint and the audio comes
+ * back to the browser unchanged. Nothing here writes product state, so nothing
+ * here is a security transition — the turn a person actually sends is recorded
+ * in the run ledger, which is the authoritative record of it.
  *
  * Three properties make the route honest:
  *
@@ -47,21 +62,21 @@ import { auditEvent } from "./auth";
  */
 export const VOICE_TRANSCRIPTION_PATH = "/v1/voice/transcriptions";
 
-/** Largest audio payload this route accepts, in bytes. */
-const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
+/**
+ * The mirror route: a turn the product wants to speak goes out as text and
+ * comes back as audio the browser can play.
+ */
+export const VOICE_SPEECH_PATH = "/v1/voice/speech";
 
 /**
- * The media types a transcription may arrive as. A browser records WebM/Opus,
- * but a client may legitimately upload an existing file instead, so every
- * container the adapter can forward is accepted here.
+ * The media types a transcription may arrive as, in the lookup this route
+ * checks against. The containers themselves are a shared wire fact: the
+ * contract module owns the list, and this is only its membership test.
  */
-const ACCEPTED_AUDIO_MEDIA_TYPES: Readonly<Partial<Record<string, true>>> = {
-  "audio/mp4": true,
-  "audio/mpeg": true,
-  "audio/ogg": true,
-  "audio/wav": true,
-  "audio/webm": true,
-};
+const ACCEPTED_AUDIO_MEDIA_TYPES: Readonly<Partial<Record<string, true>>> =
+  Object.fromEntries(
+    voiceAudioMediaTypes.map((mediaType) => [mediaType, true])
+  );
 
 /**
  * Room above the audio cap for the multipart envelope itself: boundaries, part
@@ -70,8 +85,8 @@ const ACCEPTED_AUDIO_MEDIA_TYPES: Readonly<Partial<Record<string, true>>> = {
  */
 const MULTIPART_ENVELOPE_BYTES = 8 * 1024;
 
-/** The largest language tag forwarded to a provider. */
-const MAX_LANGUAGE_LENGTH = 64;
+/** The largest JSON body one synthesis request may carry. */
+const MAX_SPEECH_BODY_BYTES = 64 * 1024;
 
 /**
  * Refusals this route states in its own vocabulary. They describe the voice
@@ -82,17 +97,6 @@ const MAX_LANGUAGE_LENGTH = 64;
 const VOICE_UNCONFIGURED_CODE = "voice_unconfigured";
 const VOICE_UPLOAD_TOO_LARGE_CODE = "voice_upload_too_large";
 const VOICE_UNSUPPORTED_MEDIA_TYPE_CODE = "voice_unsupported_media_type";
-
-/**
- * What a caller gets back: the transcript, the language it was transcribed in
- * when the caller named one, and which adapter produced it, so a client can say
- * where the text came from.
- */
-const TranscriptionSchema = z.strictObject({
-  language: z.string().min(1).max(MAX_LANGUAGE_LENGTH).nullable(),
-  provider: z.string().min(1).max(64),
-  text: z.string(),
-});
 
 /**
  * Maps a contract denial reason to a client-facing code. Insufficient authority
@@ -143,6 +147,12 @@ export interface VoiceRouteDeps {
    * database is configured, and so tests can inject their own.
    */
   store: () => ProjectStateStore;
+  /**
+   * Resolved per request for the same reason as the transcription adapter: a
+   * deployment with no synthesis endpoint owes its caller the honest refusal,
+   * not speech from nowhere.
+   */
+  tts: () => TtsAdapter | undefined;
 }
 
 /**
@@ -181,7 +191,7 @@ function voiceErrorResponse(input: {
 function tooLargeResponse(requestId: string): Response {
   return voiceErrorResponse({
     code: VOICE_UPLOAD_TOO_LARGE_CODE,
-    message: `An audio recording may not exceed ${MAX_AUDIO_BYTES} bytes.`,
+    message: `An audio recording may not exceed ${MAX_VOICE_AUDIO_BYTES} bytes.`,
     requestId,
     status: 413,
   });
@@ -267,7 +277,7 @@ async function readAudioUpload(
     });
   }
 
-  const uploadLimit = MAX_AUDIO_BYTES + MULTIPART_ENVELOPE_BYTES;
+  const uploadLimit = MAX_VOICE_AUDIO_BYTES + MULTIPART_ENVELOPE_BYTES;
 
   // A declared length that cannot fit is refused before the body is read at
   // all; the bounded read below is what holds when the header is absent or does
@@ -318,7 +328,7 @@ async function readAudioUpload(
       requestId,
     });
   }
-  if (audio.size > MAX_AUDIO_BYTES) {
+  if (audio.size > MAX_VOICE_AUDIO_BYTES) {
     return tooLargeResponse(requestId);
   }
 
@@ -341,10 +351,10 @@ async function readAudioUpload(
     });
   }
   const language = (languageField ?? "").trim();
-  if (language.length > MAX_LANGUAGE_LENGTH) {
+  if (language.length > MAX_VOICE_LANGUAGE_LENGTH) {
     return apiErrorResponse({
       code: "invalid_request",
-      message: `A language tag may not exceed ${MAX_LANGUAGE_LENGTH} characters.`,
+      message: `A language tag may not exceed ${MAX_VOICE_LANGUAGE_LENGTH} characters.`,
       requestId,
     });
   }
@@ -465,8 +475,142 @@ async function authorizeVoiceRequest(input: {
   });
 }
 
-export function createVoiceHandlers(deps: VoiceRouteDeps) {
+/**
+ * Reads and validates one synthesis request. A speech turn is text, not an
+ * upload, so the body is small and bounded: the same bounded read that guards
+ * audio keeps a caller from buffering a large body behind a small claim.
+ */
+async function readSpeechRequest(
+  c: VoiceHandlerContext,
+  requestId: string
+): Promise<VoiceSpeechRequest | Response> {
+  const { body } = c.req.raw;
+  if (body === null) {
+    return apiErrorResponse({
+      code: "invalid_request",
+      message: "The request must carry a JSON synthesis request.",
+      requestId,
+    });
+  }
+
+  const upload = await readBoundedUpload(body, MAX_SPEECH_BODY_BYTES);
+  if (!upload.ok) {
+    return upload.refusal === "too_large"
+      ? apiErrorResponse({
+          code: "invalid_request",
+          message: `A synthesis request may not exceed ${MAX_SPEECH_BODY_BYTES} bytes.`,
+          requestId,
+        })
+      : apiErrorResponse({
+          code: "invalid_request",
+          message: "The request body could not be read.",
+          requestId,
+        });
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(upload.bytes));
+  } catch {
+    return apiErrorResponse({
+      code: "invalid_request",
+      message: "The request body must be JSON.",
+      requestId,
+    });
+  }
+
+  const request = VoiceSpeechRequestSchema.safeParse(parsed);
+  if (!request.success) {
+    return apiErrorResponse({
+      code: "invalid_request",
+      message: `A synthesis request needs text of at most ${MAX_SPEECH_TEXT_CHARS} characters, with optional voice, language, and format.`,
+      requestId,
+    });
+  }
+  return request.data;
+}
+
+/** The handler surface the composition root registers as product routes. */
+export interface VoiceHandlers {
+  speak: (c: VoiceHandlerContext) => Promise<Response>;
+  transcribe: (c: VoiceHandlerContext) => Promise<Response>;
+}
+
+export function createVoiceHandlers(deps: VoiceRouteDeps): VoiceHandlers {
   return {
+    speak: async (c: VoiceHandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+
+      const refusal = await authorizeVoiceRequest({
+        context: c,
+        deps,
+        requestId: rid,
+      });
+      if (refusal !== undefined) {
+        return refusal;
+      }
+
+      // Configuration is decided before the body is read, for the same reason
+      // transcription does it: with no endpoint there is nothing the text
+      // could be spoken by.
+      const tts = deps.tts();
+      if (tts === undefined) {
+        return voiceErrorResponse({
+          code: VOICE_UNCONFIGURED_CODE,
+          message: TTS_UNCONFIGURED_MESSAGE,
+          requestId: rid,
+          status: 503,
+        });
+      }
+
+      const request = await readSpeechRequest(c, rid);
+      if (request instanceof Response) {
+        return request;
+      }
+
+      let result: { audio: Uint8Array; mediaType: string };
+      try {
+        result = await tts.synthesize({
+          format: request.format,
+          ...(request.language === undefined
+            ? {}
+            : { language: request.language }),
+          text: request.text,
+          ...(request.voice === undefined ? {} : { voice: request.voice }),
+        });
+      } catch (error) {
+        if (!(error instanceof TtsProviderError)) {
+          throw error;
+        }
+        // The message is this repository's own sentence about the failure,
+        // never the provider's body, so stating it to the caller is safe and
+        // tells an operator which status the provider answered with.
+        return apiErrorResponse({
+          code: "internal",
+          message: error.message,
+          requestId: rid,
+        });
+      }
+
+      // What arrived is what is played: the adapter reports the media type the
+      // provider answered with, and this route states it on the response so the
+      // player knows the container before the first byte is decoded. The
+      // adapter hands back a plain `Uint8Array`, while a `BodyInit` must be a
+      // view over a non-shared buffer; re-viewing the identical memory narrows
+      // that type without copying the bytes — same buffer, offset, and length.
+      const audio = new Uint8Array(
+        result.audio.buffer as ArrayBuffer,
+        result.audio.byteOffset,
+        result.audio.byteLength
+      );
+      return new Response(audio, {
+        headers: {
+          "content-type": result.mediaType,
+          "x-reasonate-voice-provider": tts.name,
+        },
+        status: 200,
+      });
+    },
     transcribe: async (c: VoiceHandlerContext): Promise<Response> => {
       const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
 
@@ -521,7 +665,7 @@ export function createVoiceHandlers(deps: VoiceRouteDeps) {
       }
 
       return c.json(
-        TranscriptionSchema.parse({
+        VoiceTranscriptionSchema.parse({
           language: upload.language ?? null,
           provider: asr.name,
           text: result.text,

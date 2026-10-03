@@ -19,6 +19,7 @@ import {
 } from "@reasonateai/project-state/postgres";
 import { resolveAsrAdapter } from "./adapters/asr";
 import { createMagicLinkSender } from "./adapters/magic-link-sender";
+import { resolveTtsAdapter } from "./adapters/tts";
 import { createCsrfMiddleware } from "./middleware";
 import { frontierModel } from "./model";
 import { startOutboxRelay } from "./outbox-relay";
@@ -66,7 +67,11 @@ import {
   PROJECT_COLLECTION_PATH,
 } from "./routes/projects";
 import { createRunEventHandlers, RUN_EVENTS_PATH } from "./routes/run-events";
-import { createVoiceHandlers, VOICE_TRANSCRIPTION_PATH } from "./routes/voice";
+import {
+  createVoiceHandlers,
+  VOICE_SPEECH_PATH,
+  VOICE_TRANSCRIPTION_PATH,
+} from "./routes/voice";
 import {
   createWorkspaceHandlers,
   WORKSPACE_FILE_PATH,
@@ -271,13 +276,15 @@ const previewHandlers = createPreviewHandlers({
 });
 
 /**
- * Transcription is resolved per request: a deployment with no ASR endpoint
- * configured has no adapter, and the route says so rather than inventing text.
+ * Transcription and synthesis are resolved per request: a deployment with no
+ * speech endpoint configured has no adapter, and the route says so rather than
+ * inventing text or audio.
  */
 const voiceHandlers = createVoiceHandlers({
   asr: () => resolveAsrAdapter(process.env),
   resolvePrincipal: resolvePrincipalFrom,
   store: stateStore,
+  tts: () => resolveTtsAdapter(process.env),
 });
 
 const artifactHandlers = createArtifactHandlers({
@@ -471,6 +478,16 @@ export const mastra = new Mastra({
           description:
             "Transcribes one recorded message through the deployment's configured speech-to-text adapter. A deployment with no adapter answers with a typed refusal that names what is missing.",
           summary: "Transcribe a recorded message",
+          tags: ["Voice"],
+        },
+      }),
+      registerApiRoute(VOICE_SPEECH_PATH, {
+        handler: (c) => voiceHandlers.speak(c),
+        method: "POST",
+        openapi: {
+          description:
+            "Speaks one bounded turn of text through the deployment's configured text-to-speech adapter and returns the audio. A deployment with no adapter answers with a typed refusal that names what is missing.",
+          summary: "Speak a turn of text",
           tags: ["Voice"],
         },
       }),

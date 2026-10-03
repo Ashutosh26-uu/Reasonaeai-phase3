@@ -285,8 +285,8 @@ packages/
   ui/                     Shared UI components
 
 services/
-  qwen-asr/
-  qwen-tts/
+  r2t2-asr/
+  kokoro-tts/
 
 infra/
   compose/
@@ -301,6 +301,7 @@ Directories are created only when their phase has complete behavior to place in 
 - **Paid frontier-model APIs are prohibited.** OpenAI GPT-class, Anthropic Claude, and Google hosted models may not be called from any environment — production, development, preproduction, or demonstration. The product carries no third-party recurring inference cost. Every model call runs on open-weight inference behind spending limits, or on local inference through an OpenAI-compatible endpoint.
 - Model integrations use Mastra's provider/model routing behind spending and authorization policy.
 - The primary implementation candidates are current open-weight models selected by repeatable multimodal, coding-agent, ASR, TTS, latency, license, and cost evaluations; no stale family or version is the default.
+- The selected speech stack is the recorded default and stays replaceable: transcription runs on the Confucius4-R2T2 streaming/offline checkpoint behind the OpenAI-compatible `/audio/transcriptions` contract, with Qwen3-ASR as the accuracy-and-coverage fallback; synthesis runs on Kokoro-82M behind the OpenAI-compatible `/audio/speech` contract, with CosyVoice2-0.5B as the low-latency streaming alternative. A deployment selects models by endpoint configuration, never by code change. Model weights carry their own licenses — the R2T2 weights are under the NetEase Youdao Model Use License Agreement with commercial thresholds — and a deployment must record the checkpoint and license it runs.
 - Hosted open-weight inference may be used behind spending limits; local inference remains supported through an OpenAI-compatible endpoint.
 - Production model selection is based on cost per verified completed task, including specification accuracy, visual extraction, tool validity, edit success, repair iterations, speech latency, visual acceptance, elapsed time, total inference cost, and behavior under context pressure.
 - Architect, worker, ASR, and TTS model choices remain replaceable behind stable contracts.
