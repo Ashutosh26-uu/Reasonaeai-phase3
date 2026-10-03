@@ -95,6 +95,7 @@ The model policy in `.context/SPEC.md` is binding: paid frontier-model APIs are 
 - Added account, appearance, workspace, plan/usage, and security settings. Display-name and workspace-name saves are authorized server writes; workspace rename is audited. The API now applies project-state migrations once before handling the first product request, keeping build-time imports database-free. Browser verification against PostgreSQL confirmed profile edits, workspace rename and restoration, the enforced Free plan's actual usage/limits, theme switching and restoration, and current-session expiry details. Billing changes, editable sign-in email, device/session management, and stronger authentication controls remain unavailable until their server contracts are implemented.
 - Merged [PR #11](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/11) on September 30. Project conversations, CTO execution and streaming, account settings, project navigation, and the `ask_user` answer path are on `main`. The authenticated browser verified continuation after a forced worker restart; the frozen install, check, typecheck, PostgreSQL/Redis/Docker tests (17/17 tasks), and build (10/10 tasks) passed on the merged head's PR branch.
 - Fixed the sandbox `edit` tool path handling and verified through a live Docker run: normalized paths across `@reasonateai/cto-runtime` and `SandboxFilesystem` (API and worker), stripping host drive letters and URI schemes (`@/`, `file://`), supporting root-relative, workspace, and Windows backslash paths, and rejecting directory traversals. Added automated live Docker integration test (`apps/worker/test/docker-edit.test.ts`) verifying exact edits, hashline patches, in-container Node execution, and clean teardown with zero container or volume leaks.
+- Added reproducible GitHub Actions CI workflow in `.github/workflows/ci.yml` executing on push to `main` and all pull requests: frozen lockfile validation, `pnpm check` (Biome/Ultracite), `pnpm typecheck`, `pnpm build`, `pnpm test` with real PostgreSQL 16 and Redis 7 Alpine service containers, Docker sandbox image pulling, checkpoint smoke verification against Docker, built API artifact health and raw-route denial smoke verification, production dependency audit (`pnpm audit --prod --audit-level high`), and gitleaks secret scanning across commit history. Pinned Node `22.22.3` in `.nvmrc`, serialized package test tasks via `--concurrency=1`, and configured `.gitleaksignore` for test fixture false positives.
 
 ### Known defects
 
@@ -164,7 +165,7 @@ PR #11 is the baseline for conversation work. PRs #15 and #16 need integration a
 5. Persist the preview registry so a process restart can restore or intentionally retire previews.
 6. Meter real runs: record sandbox minutes, workspace bytes, and each run's tokens and spend through the usage store at run end.
 7. Add a build-session lookup by idempotency key so a replayed allocation releases its slot before allocating.
-8. Add reproducible PR CI gates and the affected preview, security, and staging checks before claiming the phase exit criteria.
+8. Add affected preview and staging checks before claiming the phase exit criteria.
 
 ### Blocked
 
