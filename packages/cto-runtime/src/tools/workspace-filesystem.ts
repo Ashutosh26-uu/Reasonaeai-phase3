@@ -42,7 +42,9 @@ export class WorkspaceHashlineFilesystem extends Filesystem {
       throw new Error("A non-empty workspace path is required.");
     }
     if (trimmed === "~" || trimmed.startsWith("~/")) {
-      throw new Error("Home-directory paths are not available in the workspace.");
+      throw new Error(
+        "Home-directory paths are not available in the workspace."
+      );
     }
 
     let target: string;

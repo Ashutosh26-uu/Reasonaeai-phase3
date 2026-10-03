@@ -133,9 +133,7 @@ function tryParseRecoveryHeader(line: string, cwd?: string): RawSection | null {
 }
 
 function normalizeHashlinePath(rawPath: string, cwd?: string): string {
-  const unquoted = stripApplyPatchPathNoise(
-    unquoteHashlinePath(rawPath.trim())
-  )
+  const unquoted = stripApplyPatchPathNoise(unquoteHashlinePath(rawPath.trim()))
     .replaceAll("\\", "/")
     .replace(WINDOWS_DRIVE_RE, "");
   if (!cwd) {
@@ -156,7 +154,7 @@ function normalizeHashlinePath(rawPath: string, cwd?: string): string {
       const relReRooted = posix.relative(normalizedCwd, reRooted);
       if (
         relReRooted === "" ||
-        (!relReRooted.startsWith("..") && !posix.isAbsolute(relReRooted))
+        !(relReRooted.startsWith("..") || posix.isAbsolute(relReRooted))
       ) {
         return relReRooted || ".";
       }
