@@ -89,6 +89,10 @@ export const RunEventTypeSchema = z.enum([
   "run.steering.requested",
   "run.steering.delivered",
   "run.steering.failed",
+  "run.defect_detected",
+  "run.repair_attempted",
+  "run.repair_verified",
+  "run.repair_failed",
 ]);
 export type RunEventType = z.infer<typeof RunEventTypeSchema>;
 
