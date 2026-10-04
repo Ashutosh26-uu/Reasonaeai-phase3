@@ -454,13 +454,25 @@ function ConversationHeader({
       </div>
       <div className="pane-tools">
         {selectedProject && (
-          <button className="pane-button" onClick={onRefresh} type="button">
-            <RefreshCw size={14} /> Refresh
+          <button
+            aria-label="Refresh conversation"
+            className="pane-button pane-icon-button"
+            onClick={onRefresh}
+            title="Refresh conversation"
+            type="button"
+          >
+            <RefreshCw aria-hidden="true" size={18} />
           </button>
         )}
         {selectedProject && conversationId.length > 0 && (
-          <button className="pane-button" onClick={onOpenPanel} type="button">
-            <PanelRight size={14} /> Workspace
+          <button
+            aria-label="Open workspace"
+            className="pane-button pane-icon-button"
+            onClick={onOpenPanel}
+            title="Open workspace"
+            type="button"
+          >
+            <PanelRight aria-hidden="true" size={18} />
           </button>
         )}
       </div>

@@ -4,7 +4,7 @@ Branch: `codex/workspace-interactions-checkpoints`. Implementation is in progres
 
 ## Behavior
 
-- The existing PromptInput and animated BorderBeam remain. The smaller composer has an inset project/file tray below, attached questions and queued text above, and stronger surface contrast. A low-specificity inherited control color no longer hides primary button labels.
+- The existing PromptInput and animated BorderBeam remain. The composer has larger type and an inset project/file tray in the fresh-chat state, attached questions and queued text above, and stronger surface contrast. Loaded conversations omit the tray. A low-specificity inherited control color no longer hides primary button labels.
 - One primary control opens voice mode in a fresh empty chat, sends a draft or a text conversation, and stops an executing run. Controller cancellation confirmation removes the executing appearance while the worker saves its checkpoint; bounded status polling then reconciles the durable final state.
 - Up to ten queued messages appear above the composer, with attachment thumbnails, edit/delete, side-chat, and queuing controls. The memory budget is 24 MiB; each submission still obeys the existing five-file/12 MiB intake limits. Follow-ups dispatch in order after success; Stop, failure, and cancellation pause dispatch. Active steering accepts text only. Queues remain local to the current mounted chat and are not persisted across reload.
 - A row records its delivery type, original target run, and request key before sending. An uncertain steering or side-chat response stays on that endpoint when retried and never becomes an automatic follow-up. A successful command response consumes its row even when the subsequent history refresh fails.
@@ -80,3 +80,34 @@ The first full test run exposed the real Git suite's default five-second timeout
 Use a signed-in development account and configured open-weight model. Verify fresh-chat waveform, draft/existing-chat Send, a single Stop control, cancellation during streaming and while awaiting a question, and the stopped sidebar indicator. Verify the top question card resumes the same run and its Continue label remains readable, including Settings primary labels. Verify queue edit/remove, active steering delivery, follow-up order, reload/replay, rejected steering, and worker takeover.
 
 Verify attached tray contrast and Beam animation at desktop/mobile widths and reduced motion. Exercise dedicated voice open/close, denied microphone, transcription failure, reviewed submission, cancellation, and available speech playback. Verify preview navigation/path validation and per-turn checkpoint totals/diffs for edits, additions, deletions, failures, and cancellations after subsequent turns. Save screenshots and report provider limitations separately. Completion remains pending until these real surfaces are exercised.
+
+## Composer and Sketch refinement — October 4, 2026
+
+The composer keeps its existing controls and submission behavior, with larger input/control type, adjusted outer proportions, a larger inset project/file tray only for a fresh chat, and a blue primary action. Its plus control toggles a rounded Add menu for the supported file, project, and Sketch actions. Loaded conversations expose file/project actions through this menu. Header Refresh and Workspace are accessible icon buttons.
+
+Sketch is a general-purpose local editor, named `sketch-*` rather than wireframe-specific modules. It opens on a dark canvas with floating pill controls, an optional grid, color swatches/custom color, and panels shown only when requested. Pen, shapes, directional arrows, text, editable UI blocks, additive starter layouts, layers, selection, dragging/resizing, keyboard nudging, deletion/duplication, and bounded undo/redo work on the same object model. Limits are 100 objects, 1,500 points per stroke, 6,000 total points, and 30 undo entries. Export rasterizes local SVG shapes/text to a 1,200 × 800 PNG, excluding grid/selection controls, with an actionable error on export failure. Existing attachment limits remain five files, 4 MiB per file, and 12 MiB total. A rejected export/attachment keeps the editor and draft available; close/reopen preserves the draft until chat switch or reload.
+
+Successful delivered steering becomes an ordinary user bubble after its own run terminates, including durable replay. Pending/unconfirmed/failed delivery remains explicit; the durable command and event ledger are unchanged. Tool group headings now describe action types, use singular/plural wording according to their counts, retain the total as an accessible label/tooltip, and distinguish successful, working, declined, and failed operations.
+
+| Check | Result |
+| --- | --- |
+| `pnpm install --frozen-lockfile` | Passed without new dependencies or lockfile changes |
+| `pnpm check` | Passed, 356 files |
+| `pnpm typecheck` | Passed, ten workspace tasks |
+| `pnpm test` | Passed, 17 tasks; web 106 tests at that snapshot. Database-dependent API/worker/store suites skipped without isolated test services; live Docker edit test passed |
+| Final `pnpm --filter @reasonateai/web test` | Passed, 107 tests across 15 files, including a further transcript-rendering group-title regression |
+| `pnpm --filter @reasonateai/web build` | Passed: compiled, type-checked, and generated production pages |
+| `pnpm --filter @reasonateai/worker build` | Passed |
+| `pnpm build` | Did not pass: Mastra refuses to clear its output while the user's API development server is active. No force build or server interruption was attempted |
+| `pnpm audit --prod --audit-level high` | Passed threshold; one existing moderate advisory, no high/critical finding |
+| Running surface | Signed-in browser on port 3219: plus opens/closes; tray exists in new chat and is absent from loaded conversation; icons are accessible; Send computes to blue `rgb(52,120,246)` with white foreground |
+| Canvas browser checks | Desktop and 390 × 844 mobile: pen and rectangle drawing, undo/redo, optional panels, label/position edits, swatch selection, grid toggle, close/reopen draft retention, actual PNG attachment; test attachment removed and no message sent |
+| Production smoke | Built web served `/` with HTTP 200 on temporary port 3221; existing API `/health` returned 200. Signed-in built chat and canvas opened and PNG export worked. Workspace resource requests on this extra port were correctly denied by the API origin allowlist; no allowlist change was made |
+
+Appearance evidence: [floating Sketch controls](../../.context/evidence/sketch-floating-controls.jpg). All browser test drafts/attachments were local and disposable; the temporary production server was stopped afterwards. Preserve the pre-existing generated `apps/web/next-env.d.ts` development paths outside any eventual commit. This change introduces no persistence migration, provider integration, external asset loading, new permissions, or dependency. Rollback is the prior web artifact; durable steering history remains compatible. No publishable package version changes apply because this is a private web application change.
+
+Full branch release acceptance stays in progress until the guarded repository build and isolated database/Redis integration gates run in CI. Existing provider/live-model acceptance described above is unchanged; pure replay/rendering regressions exercise the steering/tool-heading changes without altering stored user history.
+
+### Feature branch preservation — October 5, 2026
+
+The UI changes are isolated in one feature commit on `codex/sketch-canvas-composer-ui`, based on current `main` at `2135030` after workspace PR #20 merged. Rebase required no conflict resolution. On this integrated snapshot, `pnpm check` passed 370 files, `pnpm typecheck` passed all ten workspace tasks, and `pnpm --filter @reasonateai/web test` passed 116 tests across 17 files. Earlier build/browser evidence above remains evidence for the UI implementation; the rebased branch still requires the full CI build and isolated integration gates. The user's generated Next.js development file remains a local-only change.

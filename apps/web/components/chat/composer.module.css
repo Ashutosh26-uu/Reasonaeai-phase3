@@ -155,15 +155,16 @@
 }
 
 .compact .surface[class~="prompt"] {
-  gap: 4px;
-  padding: 10px 14px 8px;
+  gap: 12px;
+  padding: 14px 14px 12px;
   background: var(--composer-surface);
   border-color: var(--composer-line);
-  border-radius: 22px;
+  border-radius: 24px;
 }
 
 .compact .textRow[class~="prompt-top"] {
   min-width: 0;
+  min-height: 42px;
 }
 
 .compact .input[class~="prompt-input"] {
@@ -172,8 +173,8 @@
   max-height: 160px;
   padding: 0 2px;
   overflow-y: auto;
-  font-size: 16px;
-  line-height: 1.6;
+  font-size: 18px;
+  line-height: 1.5;
   border-radius: 4px;
   box-shadow: none;
 }
@@ -196,12 +197,87 @@
   border-color: transparent;
 }
 
+.compact .attach[data-state="open"] {
+  color: var(--ink);
+  background: var(--raised-hover);
+}
+
+.addMenu {
+  z-index: 70;
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(420px, var(--radix-dropdown-menu-content-available-height));
+  padding: 8px;
+  overflow-y: auto;
+  color: var(--ink);
+  background: var(--composer-tray);
+  border: 1px solid var(--line-strong);
+  border-radius: 22px;
+  box-shadow: 0 12px 36px #0003;
+}
+
+.addMenu .addMenuLabel {
+  padding: 3px 8px 6px;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--ink-3);
+}
+
+.addMenu .addMenuItem {
+  gap: 8px;
+  min-height: 38px;
+  padding: 8px 10px;
+  font-size: 14px;
+  color: var(--ink-2);
+  cursor: pointer;
+  border-radius: 16px;
+}
+
+.addMenu .addMenuItem[data-highlighted] {
+  color: var(--ink);
+  background: var(--raised-hover);
+}
+
+:where(.addMenu .addMenuItem) svg {
+  color: inherit;
+}
+
+.addMenuDescription {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.projectMenu {
+  width: min(280px, calc(100vw - 32px));
+}
+
+.projectMenu .addMenuItem {
+  padding-left: 28px;
+}
+
 .compact .voiceMode[class~="prompt-send"] {
   width: 34px;
   height: 34px;
-  color: var(--solid-ink);
-  background: var(--solid);
+  color: #ffffff;
+  background: #3478f6;
   border-color: transparent;
+}
+
+.compact button[class~="prompt-send"] {
+  color: #ffffff;
+  background: #3478f6;
+}
+
+.compact button[class~="prompt-send"]:hover:not(:disabled) {
+  background: #2468df;
+}
+
+.compact button[class~="prompt-send"]:disabled {
+  color: #dce8ff;
+  background: #355991;
+  opacity: 1;
 }
 
 .compact .model[class~="prompt-chip"] {
@@ -209,7 +285,7 @@
   max-width: 210px;
   height: 32px;
   padding: 0 6px;
-  font-size: 12px;
+  font-size: 14px;
   background: transparent;
   border-color: transparent;
 }
@@ -233,8 +309,8 @@
   gap: 5px;
   align-items: center;
   min-width: 0;
-  padding: 21px 12px 10px;
-  margin: -14px 18px 0;
+  padding: 22px 8px 10px;
+  margin: -14px 14px 0;
   background: var(--composer-tray);
   border: 1px solid var(--line-strong);
   border-top: 0;
@@ -243,9 +319,9 @@
 
 .compact .context [class~="prompt-chip"] {
   max-width: 100%;
-  height: 26px;
+  height: 32px;
   padding: 0 8px;
-  font-size: 12px;
+  font-size: 14px;
   color: var(--ink-2);
   background: transparent;
   border-color: transparent;
@@ -273,7 +349,7 @@
 .compact .hint[class~="composer-foot"] {
   gap: 8px;
   padding: 3px 11px 0;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.4;
 }
 
@@ -307,7 +383,7 @@
   }
 
   .compact .surface[class~="prompt"] {
-    padding: 11px 10px 9px;
+    padding: 14px 10px 12px;
   }
 
   .compact .actions[class~="prompt-actions"] {
@@ -315,9 +391,9 @@
   }
 
   .compact .model[class~="prompt-chip"] {
-    max-width: 116px;
+    max-width: 140px;
     padding: 0 3px;
-    font-size: 11px;
+    font-size: 13px;
   }
 
   .compact .hint[class~="composer-foot"] {

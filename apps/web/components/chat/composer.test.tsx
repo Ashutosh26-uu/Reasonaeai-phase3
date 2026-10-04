@@ -26,6 +26,26 @@ const props: ComposerProps = {
 };
 
 describe("composer primary action", () => {
+  it("shows project/file context only before a conversation is selected", () => {
+    const withFiles = {
+      ...props,
+      listFiles: vi.fn(async () => ["index.html"]),
+    };
+    const fresh = renderToStaticMarkup(<Composer {...withFiles} />);
+    expect(fresh).toContain("project-picker-trigger");
+    expect(fresh).toContain('aria-label="Mention a file from this project"');
+    const selected = renderToStaticMarkup(
+      <Composer {...withFiles} hasConversation />
+    );
+    expect(selected).not.toContain("project-picker-trigger");
+    expect(selected).not.toContain(
+      'aria-label="Mention a file from this project"'
+    );
+    expect(selected).toContain('aria-label="Add to message"');
+    expect(selected).toContain('aria-haspopup="menu"');
+    expect(selected).toContain('aria-label="Speak your message"');
+    expect(selected).toContain('aria-label="Send message"');
+  });
   it("offers only voice mode in a fresh empty conversation", () => {
     const html = renderToStaticMarkup(<Composer {...props} />);
     expect(html).toContain('aria-label="Open voice mode"');

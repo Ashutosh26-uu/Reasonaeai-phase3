@@ -11,7 +11,6 @@ import {
   ChevronDown,
   Clock3,
   Copy,
-  Layers3,
   Link2,
   Pencil,
   RotateCcw,
@@ -36,7 +35,7 @@ import {
   ReasoningContent,
   ReasoningTrigger,
 } from "@/components/ai-elements/reasoning";
-import { ActivityOutline } from "./activity";
+import { ActivityOutline, actionIcon } from "./activity";
 import { CheckpointCard } from "./checkpoint-card";
 import { type CheckpointScope, turnCheckpoint } from "./checkpoint-state";
 import {
@@ -44,6 +43,7 @@ import {
   type Timeline,
   type TranscriptEntry,
 } from "./timeline";
+import { toolGroupSummary } from "./tool-group-summary";
 
 export interface TranscriptProps {
   checkpointScope?: CheckpointScope;
@@ -179,13 +179,15 @@ function Entry({ entry }: { entry: TranscriptEntry }) {
         ? "Delivered to the active CTO"
         : "Waiting for the CTO’s next step";
     return (
-      <Message from="user">
-        <MessageContent>
-          <p className="steering-label">
-            Steering ·{" "}
-            {entry.status === "failed" ? "Delivery unconfirmed" : status}
-          </p>
-          <p className="steering-message">{entry.text}</p>
+      <Message className="msg" from="user">
+        <MessageContent className="msg-user-bubble">
+          {(entry.active || entry.status !== "delivered") && (
+            <p className="steering-label">
+              Steering ·{" "}
+              {entry.status === "failed" ? "Delivery unconfirmed" : status}
+            </p>
+          )}
+          <p className="msg-user-text">{entry.text}</p>
           {entry.reason && (
             <p className="steering-label" role="status">
               {entry.reason}
@@ -254,6 +256,10 @@ function renderEntries(entries: TranscriptEntry[]): ReactNode[] {
     if (group.length === 1) {
       rendered.push(<Entry entry={entry} key={entry.id} />);
     } else {
+      const summary = toolGroupSummary(
+        group.map((toolEntry) => toolEntry.tool)
+      );
+      const GroupIcon = actionIcon(summary.iconTool);
       const expanded = group.some(
         (toolEntry) =>
           toolEntry.tool.state === "input-available" ||
@@ -265,9 +271,13 @@ function renderEntries(entries: TranscriptEntry[]): ReactNode[] {
           defaultOpen={expanded}
           key={entry.id}
         >
-          <CollapsibleTrigger className="transcript-tool-group-trigger">
-            <Layers3 aria-hidden="true" size={15} />
-            <span>{group.length} tool calls</span>
+          <CollapsibleTrigger
+            className="transcript-tool-group-trigger"
+            title={`${summary.count} tool calls`}
+          >
+            <GroupIcon aria-hidden="true" size={15} />
+            <span>{summary.label}</span>
+            <span className="sr-only">({summary.count} tool calls)</span>
             <ChevronDown
               aria-hidden="true"
               className="transcript-tool-group-chevron"

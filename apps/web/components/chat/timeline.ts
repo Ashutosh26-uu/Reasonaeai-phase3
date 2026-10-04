@@ -153,6 +153,7 @@ export type TranscriptEntry =
   | {
       id: string;
       kind: "steering";
+      active: boolean;
       text: string;
       status: "requested" | "delivered" | "failed";
       reason?: string;
@@ -392,6 +393,7 @@ function steeringEntry(
   const status =
     outcome?.type === "run.steering.delivered" ? "delivered" : "requested";
   return {
+    active: !events.some(terminal),
     id: `${event.runId}:steering:${event.payload.steeringId}`,
     kind: "steering",
     status: outcome?.type === "run.steering.failed" ? "failed" : status,
