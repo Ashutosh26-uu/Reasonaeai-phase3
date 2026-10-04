@@ -53,12 +53,25 @@ describeWithDocker("Docker sandbox edit tool integration", () => {
   }, 45_000);
 
   afterAll(async () => {
-    if (sandbox) {
-      await sandbox.destroy().catch(() => undefined);
+    try {
+      if (sandbox) {
+        await sandbox.destroy();
+      }
+    } finally {
+      await execFileAsync("docker", ["volume", "rm", "-f", volumeName]);
+      const containers = await execFileAsync("docker", [
+        "ps",
+        "-a",
+        "--filter",
+        `name=^${sandboxId}$`,
+        "--format",
+        "{{.Names}}",
+      ]);
+      expect(containers.stdout.trim()).toBe("");
+      await expect(
+        execFileAsync("docker", ["volume", "inspect", volumeName])
+      ).rejects.toMatchObject({ code: 1 });
     }
-    await execFileAsync("docker", ["volume", "rm", "-f", volumeName]).catch(
-      () => undefined
-    );
   });
 
   it("edits files inside live Docker container across all path representations", async () => {
@@ -72,7 +85,7 @@ describeWithDocker("Docker sandbox edit tool integration", () => {
       { recursive: true }
     );
 
-    const snapshots = new ReadSnapshotStore();
+    const snapshots = new ReadSnapshotStore(undefined, async (path) => path);
     const editTool = createWorkspaceEditTool({
       resolveFilesystem: async () => filesystem,
       resolveSnapshots: async () => snapshots,
@@ -109,11 +122,11 @@ describeWithDocker("Docker sandbox edit tool integration", () => {
     });
     expect(res1).toContain('+console.log("EDIT_RELATIVE");');
 
-    // 3. Edit using leading slash path: "/src/index.ts"
+    // 3. Edit using an explicit @/ workspace shortcut
     const res2 = await runEdit({
       newString: 'console.log("EDIT_ROOT_RELATIVE");\n',
       oldString: 'console.log("EDIT_RELATIVE");\n',
-      path: "/src/index.ts",
+      path: "@/src/index.ts",
     });
     expect(res2).toContain('+console.log("EDIT_ROOT_RELATIVE");');
 
@@ -141,11 +154,11 @@ describeWithDocker("Docker sandbox edit tool integration", () => {
     });
     expect(res5).toContain('+console.log("EDIT_WIN_DRIVE_WORKSPACE");');
 
-    // 7. Edit using Windows drive letter root-relative: "C:\\src\\index.ts"
+    // 7. Edit using a Windows drive-prefixed file URI
     const res6 = await runEdit({
       newString: 'console.log("EDIT_WIN_DRIVE_ROOT");\n',
       oldString: 'console.log("EDIT_WIN_DRIVE_WORKSPACE");\n',
-      path: "C:\\src\\index.ts",
+      path: "file:///C:/workspace/src/index.ts",
     });
     expect(res6).toContain('+console.log("EDIT_WIN_DRIVE_ROOT");');
 
@@ -188,6 +201,36 @@ describeWithDocker("Docker sandbox edit tool integration", () => {
     );
     expect(execResultMath.success).toBe(true);
     expect(execResultMath.stdout.trim()).toBe("50");
+
+    await filesystem.writeFile("scope.txt", "other", { recursive: true });
+    await filesystem.writeFile("@scope.txt", "before", { recursive: true });
+    await runEdit({
+      newString: "after",
+      oldString: "before",
+      path: "@scope.txt",
+    });
+    expect(await filesystem.readFile("scope.txt", { encoding: "utf8" })).toBe(
+      "other"
+    );
+    expect(await filesystem.readFile("@scope.txt", { encoding: "utf8" })).toBe(
+      "after"
+    );
+    await filesystem.copyFile("@/@scope.txt", "@copy.txt");
+    await filesystem.moveFile("@copy.txt", "file:///workspace/%40moved.txt");
+    await filesystem.appendFile("@moved.txt", " appended");
+    expect(
+      await filesystem.readFile("C:\\workspace\\@moved.txt", {
+        encoding: "utf8",
+      })
+    ).toBe("after appended");
+    expect(await filesystem.stat("@/@moved.txt")).toMatchObject({
+      name: "@moved.txt",
+    });
+    await filesystem.deleteFile("@moved.txt");
+    expect(await filesystem.exists("@moved.txt")).toBe(false);
+    await expect(filesystem.readFile("/scope.txt")).rejects.toThrow(
+      "escapes the verified workspace"
+    );
 
     // 11. Verify traversal attempts fail without modifying files
     await expect(

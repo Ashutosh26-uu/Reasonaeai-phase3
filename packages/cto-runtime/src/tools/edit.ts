@@ -325,7 +325,9 @@ export async function applyEditRequest(
         fs: filesystem,
         snapshots: snapshots.store,
       });
-      const result = await patcher.apply(Patch.parse(patch, { cwd }));
+      const result = await patcher.apply(
+        Patch.parse(patch, options.filesystem ? {} : { cwd })
+      );
       const lines = result.sections.map((section) => {
         const at = section.firstChangedLine
           ? ` at line ${section.firstChangedLine}`

@@ -1,7 +1,7 @@
 import { posix } from "node:path";
-
 import type { FileContent, WorkspaceFilesystem } from "@mastra/core/workspace";
 import { Filesystem, NotFoundError, type WriteResult } from "./hashline/fs.js";
+import { resolveWorkspacePath } from "./workspace-path.js";
 
 function isMissing(error: unknown): boolean {
   return (
@@ -10,10 +10,6 @@ function isMissing(error: unknown): boolean {
     (error as Error & { code?: string }).code === "ENOENT"
   );
 }
-
-const AT_PREFIX_RE = /^@\/?/;
-const FILE_SCHEME_RE = /^file:\/\//i;
-const WINDOWS_DRIVE_RE = /^[a-zA-Z]:/;
 
 /**
  * Adapts Mastra's resolved workspace filesystem to the hashline patcher's
@@ -31,44 +27,7 @@ export class WorkspaceHashlineFilesystem extends Filesystem {
   }
 
   override canonicalPath(path: string): string {
-    const trimmed = path
-      .trim()
-      .replace(AT_PREFIX_RE, "")
-      .replace(FILE_SCHEME_RE, "")
-      .replaceAll("\\", "/")
-      .replace(WINDOWS_DRIVE_RE, "");
-
-    if (trimmed.length === 0 || trimmed.includes("\0")) {
-      throw new Error("A non-empty workspace path is required.");
-    }
-    if (trimmed === "~" || trimmed.startsWith("~/")) {
-      throw new Error(
-        "Home-directory paths are not available in the workspace."
-      );
-    }
-
-    let target: string;
-    if (
-      this.#root === "/" ||
-      trimmed === this.#root ||
-      trimmed.startsWith(`${this.#root}/`)
-    ) {
-      target = posix.normalize(
-        trimmed.startsWith("/") ? trimmed : posix.resolve(this.#root, trimmed)
-      );
-    } else if (trimmed.startsWith("/")) {
-      target = posix.resolve(this.#root, `.${trimmed}`);
-    } else {
-      target = posix.resolve(this.#root, trimmed);
-    }
-
-    const relative = posix.relative(this.#root, target);
-
-    if (relative === ".." || relative.startsWith("../")) {
-      throw new Error("The patch path escapes the verified workspace.");
-    }
-
-    return target;
+    return resolveWorkspacePath(path, this.#root);
   }
 
   override async readText(path: string): Promise<string> {

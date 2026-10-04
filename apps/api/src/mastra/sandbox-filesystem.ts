@@ -12,6 +12,7 @@ import type {
   WorkspaceSandbox,
   WriteOptions,
 } from "@mastra/core/workspace";
+import { resolveWorkspacePath } from "@reasonateai/cto-runtime/tools/workspace-path";
 
 type SandboxFileOperation =
   | "append"
@@ -32,10 +33,6 @@ interface SandboxFilesystemResult {
   ok: boolean;
   value?: unknown;
 }
-
-const AT_PREFIX_RE = /^@\/?/;
-const FILE_SCHEME_RE = /^file:\/\//i;
-const WINDOWS_DRIVE_RE = /^[a-zA-Z]:/;
 
 /**
  * A workspace filesystem whose implementation runs entirely within the
@@ -156,42 +153,7 @@ export class SandboxFilesystem implements WorkspaceFilesystem {
   }
 
   #path(path: string): string {
-    const trimmed = path
-      .trim()
-      .replace(AT_PREFIX_RE, "")
-      .replace(FILE_SCHEME_RE, "")
-      .replaceAll("\\", "/")
-      .replace(WINDOWS_DRIVE_RE, "");
-
-    if (trimmed.length === 0 || trimmed.includes("\0")) {
-      throw new Error("A non-empty workspace path is required.");
-    }
-    if (trimmed === "~" || trimmed.startsWith("~/")) {
-      throw new Error(
-        "Home-directory paths are not available in the workspace."
-      );
-    }
-
-    let target: string;
-    if (
-      this.#root === "/" ||
-      trimmed === this.#root ||
-      trimmed.startsWith(`${this.#root}/`)
-    ) {
-      target = posix.normalize(
-        trimmed.startsWith("/") ? trimmed : posix.resolve(this.#root, trimmed)
-      );
-    } else if (trimmed.startsWith("/")) {
-      target = posix.resolve(this.#root, `.${trimmed}`);
-    } else {
-      target = posix.resolve(this.#root, trimmed);
-    }
-
-    const relative = posix.relative(this.#root, target);
-    if (relative === ".." || relative.startsWith("../")) {
-      throw new Error("The path escapes the build-session workspace.");
-    }
-    return target;
+    return resolveWorkspacePath(path, this.#root);
   }
 
   async #call(

@@ -75,7 +75,11 @@
     },
     "./context/compose": "./src/context/compose.ts",
     "./context/environment": "./src/context/environment.ts",
-    "./context/instructions": "./src/context/instructions.ts"
+    "./context/instructions": "./src/context/instructions.ts",
+    "./tools/workspace-path": {
+      "types": "./src/tools/workspace-path.ts",
+      "import": "./dist/tools/workspace-path.js"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
