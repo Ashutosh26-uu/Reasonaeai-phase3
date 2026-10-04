@@ -79,6 +79,10 @@
     "./tools/workspace-path": {
       "types": "./src/tools/workspace-path.ts",
       "import": "./dist/tools/workspace-path.js"
+    },
+    "./repair": {
+      "types": "./src/repair/index.ts",
+      "import": "./dist/repair/index.js"
     }
   },
   "scripts": {

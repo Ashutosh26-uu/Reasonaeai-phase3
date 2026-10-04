@@ -19,6 +19,7 @@ import { composeSystemPrompt } from "./context/compose.js";
 import type { PlatformFacts, SandboxCapacity } from "./context/environment.js";
 import { deepseekReasoningCompat } from "./model/deepseek-reasoning.js";
 import { MAIN_AGENT_INSTRUCTIONS, REASONATE_CTO_NAME } from "./prompts.js";
+import { createTestExecutionTool } from "./repair/test-tool.js";
 import {
   createRunResources,
   type RunResources,
@@ -85,6 +86,7 @@ export interface ReasonateCtoRuntimeConfig {
    */
   capacity?: SandboxCapacity | undefined;
   controllerId?: string;
+  enableTestRunner?: boolean | undefined;
   limits?: Partial<CtoRuntimeLimits>;
   memory?: Memory;
   model: string;
@@ -152,6 +154,60 @@ function createRuntimeMemory(
   return new Memory(storage ? { storage } : {});
 }
 
+function createRuntimeTools(
+  config: ReasonateCtoRuntimeConfig,
+  resolveWorkspace: (requestContext: RequestContext) => Promise<Workspace>,
+  resolveFilesystem: (
+    requestContext: RequestContext
+  ) => Promise<WorkspaceFilesystem>,
+  resolveSnapshots: (
+    requestContext: RequestContext
+  ) => Promise<ReadSnapshotStore>,
+  resolveResources: (requestContext: RequestContext) => RunResources
+) {
+  const testExecutionTool = createTestExecutionTool({
+    resolveSandbox: async (requestContext) => {
+      const ws = await resolveWorkspace(requestContext);
+      const sb = await ws.resolveSandbox({ requestContext });
+      return sb ?? {};
+    },
+    ...(config.workspaceRoot === undefined
+      ? {}
+      : { workspaceRoot: config.workspaceRoot }),
+  });
+  const tools = {
+    edit: createWorkspaceEditTool({
+      resolveFilesystem,
+      resolveSnapshots,
+      ...(config.workspaceRoot === undefined
+        ? {}
+        : { root: config.workspaceRoot }),
+    }),
+    read: createWorkspaceReadTool({
+      resolveFilesystem,
+      resolveResourceContext: async (requestContext) => ({
+        cwd: config.workspaceRoot ?? process.cwd(),
+        scope: readRunScope(requestContext),
+      }),
+      resolveRouter: async (requestContext) =>
+        resolveResources(requestContext).router,
+      resolveSnapshots,
+      ...(config.workspaceRoot === undefined
+        ? {}
+        : { root: config.workspaceRoot }),
+    }),
+    write: createWorkspaceWriteTool({
+      resolveFilesystem,
+      resolveSnapshots,
+      ...(config.workspaceRoot === undefined
+        ? {}
+        : { root: config.workspaceRoot }),
+    }),
+    ...(config.enableTestRunner ? { test_execution: testExecutionTool } : {}),
+  };
+  return { testExecutionTool, tools };
+}
+
 export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
   const limits = resolveLimits(config.limits);
   const budget =
@@ -210,35 +266,13 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     snapshotsByRequest.set(requestContext, snapshots);
     return Promise.resolve(snapshots);
   };
-  const tools = {
-    edit: createWorkspaceEditTool({
-      resolveFilesystem,
-      resolveSnapshots,
-      ...(config.workspaceRoot === undefined
-        ? {}
-        : { root: config.workspaceRoot }),
-    }),
-    read: createWorkspaceReadTool({
-      resolveFilesystem,
-      resolveResourceContext: async (requestContext) => ({
-        cwd: config.workspaceRoot ?? process.cwd(),
-        scope: readRunScope(requestContext),
-      }),
-      resolveRouter: async (requestContext) =>
-        resolveResources(requestContext).router,
-      resolveSnapshots,
-      ...(config.workspaceRoot === undefined
-        ? {}
-        : { root: config.workspaceRoot }),
-    }),
-    write: createWorkspaceWriteTool({
-      resolveFilesystem,
-      resolveSnapshots,
-      ...(config.workspaceRoot === undefined
-        ? {}
-        : { root: config.workspaceRoot }),
-    }),
-  };
+  const { testExecutionTool, tools } = createRuntimeTools(
+    config,
+    resolveWorkspace,
+    resolveFilesystem,
+    resolveSnapshots,
+    resolveResources
+  );
 
   const sessionStartedAt = new Date();
   const instructionsByRequest = new WeakMap<RequestContext, string>();
@@ -315,6 +349,9 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
         ...(limits.debuggerMaxSteps === undefined
           ? {}
           : { maxTurns: limits.debuggerMaxSteps }),
+        ...(config.enableTestRunner
+          ? { tools: { test_execution: testExecutionTool } }
+          : {}),
       },
       scout: {
         ...(config.subagentModels?.scout
@@ -372,5 +409,6 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     controller,
     limits,
     mainAgent,
+    testExecutionTool,
   };
 }

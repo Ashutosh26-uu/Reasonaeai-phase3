@@ -39,6 +39,10 @@
     "./sandbox": {
       "types": "./src/sandbox.ts",
       "import": "./dist/sandbox.js"
+    },
+    "./repair": {
+      "types": "./src/repair.ts",
+      "import": "./dist/repair.js"
     }
   },
   "scripts": {
