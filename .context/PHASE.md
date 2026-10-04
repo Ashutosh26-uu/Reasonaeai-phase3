@@ -130,6 +130,11 @@ The model policy in `.context/SPEC.md` is binding: paid frontier-model APIs are 
 - Persisted the preview registry in PostgreSQL (`previews` table with composite indices, foreign keys, and tenant scoping) with cold restart recovery: `recover()` inspects active host containers, resolves loopback host ports via `docker port`, validates HTTP serving readiness, reattaches existing Docker sandboxes via `DockerSandboxProvider.attach()`, and restores live previews into memory. Dead containers and idle-expired previews (> 15 min) are retired in PostgreSQL and pruned from the Docker host without disturbing active recovered previews. Fallback to an in-memory store ensures clean build-time bundling.
 
 - Merged [PR #26](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/26): preserve literal `@` filenames and centralize API, worker, read, write, and edit path resolution. Absolute paths outside the sandbox workspace, including `/src/...`, are rejected; relative paths and explicit `@/` shortcuts resolve beneath the root. The 98 focused tests, frozen installation, lint, affected type checks/builds, and both GitHub CI jobs passed before the approved merge on October 4, 2026.
+- Added client network connectivity detection, exponential backoff, and non-intrusive status notification in `apps/web`:
+  - `NetworkStateManager` manages network state with progressive backoff intervals (`5s`, `10s`, `20s`, `40s`, `60s`), 1-second countdown ticker, and window `online`/`offline` listeners for immediate recovery upon Wi-Fi reconnection.
+  - Non-intrusive floating glassmorphic pill (`NetworkBanner`) in root layout with live tabular countdown, status indicator dots, accessible `role="status"`, and manual retry trigger.
+  - Connected product API client (`product-api.ts`) to feed network failure and recovery events into the manager.
+  - Covered by unit and component test suites in `apps/web/lib/network-state.test.ts` and `apps/web/components/network/network-banner.test.tsx`.
 
 ### In progress
 

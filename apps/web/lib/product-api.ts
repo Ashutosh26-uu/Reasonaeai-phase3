@@ -1,4 +1,5 @@
 import { CSRF_COOKIE, CSRF_HEADER } from "@reasonateai/contracts/auth";
+import { networkManager } from "./network-state";
 
 /**
  * The product API, as the browser calls it.
@@ -66,11 +67,13 @@ export async function request<T>(
     },
   }).catch((cause: unknown) => {
     diagnose(0, "network_or_timeout");
+    networkManager.notifyNetworkFailure();
     throw new Error(
       "The product API could not be reached. Retry when the connection returns.",
       { cause }
     );
   });
+  networkManager.notifyNetworkSuccess();
   let body: unknown;
   let unreadable = false;
   let decodingFailure: unknown;
