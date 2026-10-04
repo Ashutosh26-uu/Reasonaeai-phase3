@@ -13,6 +13,10 @@ import { describe, expect, it } from "vitest";
 
 import { createWorkspaceEditTool } from "../src/tools/edit.js";
 import { ReadSnapshotStore } from "../src/tools/read-snapshots.js";
+import { createWorkspaceReadTool } from "../src/tools/workspace-read.js";
+import { createWorkspaceWriteTool } from "../src/tools/write.js";
+
+const FILE_TAG_RE = /#([0-9A-F]{4})/i;
 
 class InMemoryWorkspaceFilesystem implements WorkspaceFilesystem {
   readonly id = "mock-workspace-fs";
@@ -134,12 +138,12 @@ describe("createWorkspaceEditTool path handling", () => {
     return tool.execute(args, dummyContext);
   };
 
-  it("handles relative, root-relative, absolute, Windows, and scheme paths in exact mode", async () => {
+  it("handles relative, shortcut-relative, absolute, Windows, and scheme paths in exact mode", async () => {
     const initialText = "export const answer = 42;\n";
     const workspaceFs = new InMemoryWorkspaceFilesystem({
       "/workspace/src/app.ts": initialText,
     });
-    const snapshots = new ReadSnapshotStore();
+    const snapshots = new ReadSnapshotStore(undefined, async (path) => path);
 
     const tool = createWorkspaceEditTool({
       resolveFilesystem: async () => workspaceFs,
@@ -158,11 +162,11 @@ describe("createWorkspaceEditTool path handling", () => {
       "export const answer = 43;\n"
     );
 
-    // 2. Leading slash workspace-relative path: /src/app.ts
+    // 2. Absolute workspace path with Windows separators
     const res2 = await run(tool, {
       newString: "export const answer = 44;",
       oldString: "export const answer = 43;",
-      path: "/src/app.ts",
+      path: "\\workspace\\src\\app.ts",
     });
     expect(res2).toContain("+export const answer = 44;");
     expect(workspaceFs.files.get("/workspace/src/app.ts")).toBe(
@@ -224,11 +228,11 @@ describe("createWorkspaceEditTool path handling", () => {
       "export const answer = 49;\n"
     );
 
-    // 8. Windows drive letter with root-relative path: C:\src\app.ts
+    // 8. Windows drive-prefixed file URI
     const res8 = await run(tool, {
       newString: "export const answer = 50;",
       oldString: "export const answer = 49;",
-      path: "C:\\src\\app.ts",
+      path: "file:///C:/workspace/src/app.ts",
     });
     expect(res8).toContain("+export const answer = 50;");
     expect(workspaceFs.files.get("/workspace/src/app.ts")).toBe(
@@ -236,12 +240,12 @@ describe("createWorkspaceEditTool path handling", () => {
     );
   });
 
-  it("handles hashline patches with relative, leading-slash, and full paths", async () => {
+  it("handles hashline patches with relative, shortcut, and full paths", async () => {
     const text = "first line\nsecond line\nthird line\n";
     const workspaceFs = new InMemoryWorkspaceFilesystem({
       "/workspace/src/math.ts": text,
     });
-    const snapshots = new ReadSnapshotStore();
+    const snapshots = new ReadSnapshotStore(undefined, async (path) => path);
     const tag = await snapshots.record(
       "/workspace/src/math.ts",
       text,
@@ -273,7 +277,7 @@ describe("createWorkspaceEditTool path handling", () => {
 
     // Hashline patch with leading slash path
     const res2 = await run(tool, {
-      patch: `[/src/math.ts#${tag2}]\nSWAP 1.=1:\n+HEADER line\n`,
+      patch: `[@/src/math.ts#${tag2}]\nSWAP 1.=1:\n+HEADER line\n`,
     });
     expect(res2).toContain("update");
     expect(workspaceFs.files.get("/workspace/src/math.ts")).toBe(
@@ -300,7 +304,7 @@ describe("createWorkspaceEditTool path handling", () => {
 
   it("strictly rejects directory traversal and escaping paths", async () => {
     const workspaceFs = new InMemoryWorkspaceFilesystem();
-    const snapshots = new ReadSnapshotStore();
+    const snapshots = new ReadSnapshotStore(undefined, async (path) => path);
 
     const tool = createWorkspaceEditTool({
       resolveFilesystem: async () => workspaceFs,
@@ -339,5 +343,97 @@ describe("createWorkspaceEditTool path handling", () => {
         path: "~/home-secret",
       })
     ).rejects.toThrow("Home-directory paths are not available");
+  });
+});
+
+describe("consistent workspace file tools", () => {
+  const context = { requestContext: {} } as never;
+  it.each([
+    "@scope/app.ts",
+    "/workspace/@scope/app.ts",
+    "@/@scope/app.ts",
+    "@scope\\app.ts",
+    "C:\\workspace\\@scope\\app.ts",
+    "file:///workspace/%40scope/app.ts",
+  ])("reads, edits, and writes the same file for %s", async (path) => {
+    const filesystem = new InMemoryWorkspaceFilesystem({
+      "/workspace/scope/app.ts": "other file\n",
+    });
+    const snapshots = new ReadSnapshotStore(
+      undefined,
+      async (target) => target
+    );
+    const options = {
+      resolveFilesystem: async () => filesystem,
+      resolveSnapshots: async () => snapshots,
+      root: "/workspace",
+    };
+    const read = createWorkspaceReadTool(options);
+    const write = createWorkspaceWriteTool(options);
+    const edit = createWorkspaceEditTool(options);
+    if (!(read.execute && write.execute && edit.execute)) {
+      throw new Error("Missing file tool execution");
+    }
+    await write.execute({ content: "before\n", path }, context);
+    const first = await read.execute({ target: `${path}:1` }, context);
+    expect(first).toContain("before");
+    await edit.execute(
+      { newString: "exact", oldString: "before", path },
+      context
+    );
+    const [anchor] = String(
+      await read.execute({ target: path }, context)
+    ).split("\n");
+    await edit.execute(
+      { patch: `${anchor}\nSWAP 1.=1:\n+hashline\n` },
+      context
+    );
+    const readBack = String(await read.execute({ target: path }, context));
+    const expectedHash = readBack.match(FILE_TAG_RE)?.[1];
+    if (!expectedHash) {
+      throw new Error("Read did not mint an anchor");
+    }
+    await write.execute({ content: "written\n", expectedHash, path }, context);
+    expect(filesystem.files.get("/workspace/@scope/app.ts")).toBe("written\n");
+    expect(filesystem.files.get("/workspace/scope/app.ts")).toBe(
+      "other file\n"
+    );
+  });
+
+  it.each([
+    "/src/app.ts",
+    "C:\\src\\app.ts",
+    "file:///src/app.ts",
+    "../secret",
+  ])("rejects the same outside path in every tool: %s", async (path) => {
+    const filesystem = new InMemoryWorkspaceFilesystem();
+    const snapshots = new ReadSnapshotStore(
+      undefined,
+      async (target) => target
+    );
+    const options = {
+      resolveFilesystem: async () => filesystem,
+      resolveSnapshots: async () => snapshots,
+      root: "/workspace",
+    };
+    const read = createWorkspaceReadTool(options);
+    const write = createWorkspaceWriteTool(options);
+    const edit = createWorkspaceEditTool(options);
+    if (!(read.execute && write.execute && edit.execute)) {
+      throw new Error("Missing file tool execution");
+    }
+    await expect(read.execute({ target: path }, context)).rejects.toThrow(
+      "escapes the verified workspace"
+    );
+    await expect(
+      write.execute({ content: "bad", path }, context)
+    ).rejects.toThrow("escapes the verified workspace");
+    await expect(
+      edit.execute({ newString: "bad", oldString: "old", path }, context)
+    ).rejects.toThrow("escapes the verified workspace");
+    await expect(
+      edit.execute({ patch: `[${path}#ABCD]\nSWAP 1.=1:\n+bad\n` }, context)
+    ).rejects.toThrow("escapes the verified workspace");
+    expect(filesystem.files.size).toBe(0);
   });
 });

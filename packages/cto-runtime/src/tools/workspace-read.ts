@@ -18,11 +18,11 @@ import {
   selectorTailCount,
   splitPathAndSel,
 } from "./selectors.js";
+import { resolveWorkspacePath } from "./workspace-path.js";
 
 const MAX_INLINE_BYTES = 60_000;
 const MAX_INLINE_LINES = 2000;
-const AT_PREFIX_RE = /^@(?=[^@])/;
-const FILE_URL_RE = /^file:\/\/(?:\/)?/i;
+const FILE_URI_RE = /^file:\/\//i;
 const URI_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 export interface WorkspaceReadToolOptions {
@@ -56,29 +56,6 @@ function resolveRanges(
   return [
     { endLine: totalLines, startLine: Math.max(1, totalLines - tail + 1) },
   ];
-}
-
-function workspacePath(pathArgument: string, root: string): string {
-  const trimmed = pathArgument
-    .trim()
-    .replace(AT_PREFIX_RE, "")
-    .replace(FILE_URL_RE, "")
-    .replaceAll("\\", "/");
-  if (trimmed.length === 0 || trimmed.includes("\0")) {
-    throw new Error("A non-empty workspace path is required.");
-  }
-  if (trimmed === "~" || trimmed.startsWith("~/")) {
-    throw new Error("Home-directory paths are not available in the workspace.");
-  }
-
-  const target = trimmed.startsWith("/")
-    ? posix.normalize(trimmed)
-    : posix.resolve(root, trimmed);
-  const relative = posix.relative(root, target);
-  if (relative === ".." || relative.startsWith("../")) {
-    throw new Error("The path escapes the verified project workspace.");
-  }
-  return target;
 }
 
 function relativePath(path: string, root: string): string {
@@ -194,7 +171,7 @@ async function readWorkspaceFile(
   root: string
 ): Promise<string> {
   const { path: pathArgument, sel } = splitPathAndSel(target);
-  const path = workspacePath(pathArgument, root);
+  const path = resolveWorkspacePath(pathArgument, root);
   const filesystem = await input.resolveFilesystem(requestContext);
   const metadata = await filesystem.stat(path);
 
@@ -257,7 +234,7 @@ export function createWorkspaceReadTool(input: WorkspaceReadToolOptions) {
       if (resource !== undefined) {
         return resource;
       }
-      if (URI_RE.test(trimmed)) {
+      if (URI_RE.test(trimmed) && !FILE_URI_RE.test(trimmed)) {
         throw new ResourceError(
           `No registered resource handler can read ${trimmed}.`,
           "Use a project path, or a URI scheme granted to this run."

@@ -131,6 +131,7 @@ Formatting and linting are owned by Ultracite/Biome. Do not add ESLint, Prettier
 - Every tenant-owned row and resource is scoped to an organization, and project-owned data is additionally scoped to a project.
 - Agents and sandboxes use short-lived, least-privilege capability grants; they never receive a user session or unrestricted credential.
 - Resources are nouns addressed by paths or URIs; tools are verbs. Resource handlers do not bypass centralized authorization.
+- Workspace file tools and sandbox filesystem adapters share POSIX path resolution. Preserve genuine filenames; only `@/` is a shortcut. Reject absolute paths outside the verified workspace rather than silently rebasing them.
 - Secrets are brokered. They never enter model context, resource reads, logs, artifacts, screenshots, browser storage, or source control.
 - Persist important transitions and emit auditable events for security-sensitive state changes.
 - Mastra is the primary agent platform. Each build session has one run-scoped, full-capability ReasonateAI CTO operating within its verified grant. It may plan, inspect, edit, execute, debug, verify, and deploy directly, or delegate bounded work to a read-only scout, full-capability coder, repair-capable debugger, or ephemeral custom agent. Frontend, backend, database, infrastructure, security, and release engineering are task objectives, not permanent agent services.
