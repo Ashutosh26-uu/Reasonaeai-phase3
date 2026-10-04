@@ -57,6 +57,7 @@ Integrate `main` at `95f3227` into the published feature branch without rewritin
 - `pnpm --filter @reasonateai/cto-runtime build`: passed. The first worker check found the old local build missing the newly merged workspace-path export; rebuilding resolved package loading.
 - Worker config/scheduling check: six config tests passed; three database-backed scheduling tests were skipped locally because no test `DATABASE_URL` was supplied. The new recovery and store/API integration regressions must run against GitHub CI's private PostgreSQL/Redis/Docker services rather than user data.
 - No product server, live project run, or TTS checkout was started or changed by verification. Full CI and authenticated acceptance remain pending.
+- First combined CI run `37184400772`: dependency/secret scan, frozen installation, lint, type checking, and build passed; 16 of 17 test tasks passed. The API heartbeat test failed because its global fake-timer assertion included PostgreSQL timers. It now fakes only heartbeat intervals, retains the zero-heartbeat-timer assertion, and also verifies the cancelled reader has ended. All 19 SSE tests then passed against disposable PostgreSQL/Redis containers on private loopback ports; both test containers were removed. The corrected snapshot still requires full CI and signed-in acceptance.
 
 ## Verification evidence — October 3, 2026
 

@@ -581,9 +581,9 @@ describeWithDatabase("run event stream", () => {
         ": connected\n\n"
       );
       await settle();
-      // Install fake timers before opening a second stream, so its actual
-      // heartbeat interval is controlled while database setup remains real.
-      vi.useFakeTimers();
+      // Control only heartbeat intervals: PostgreSQL pool idle timers and
+      // connection deadlines must remain real and outside this assertion.
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
       const secondResponse = await handlers.stream(
         streamRequest({
           buildSessionId: buildSession.buildSessionId,
@@ -602,6 +602,7 @@ describeWithDatabase("run event stream", () => {
         );
         await second.cancel();
         expect(vi.getTimerCount()).toBe(0);
+        expect(await second.read()).toEqual({ done: true, value: undefined });
       } finally {
         await second.cancel();
         vi.useRealTimers();
