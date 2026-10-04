@@ -19,11 +19,18 @@ function csrfToken(): string | undefined {
 
 export class ApiRequestError extends Error {
   readonly status: number;
+  readonly requestId: string | undefined;
 
-  constructor(status: number, message: string) {
-    super(message);
+  constructor(
+    status: number,
+    message: string,
+    requestId?: string,
+    options?: ErrorOptions
+  ) {
+    super(message, options);
     this.name = "ApiRequestError";
     this.status = status;
+    this.requestId = requestId;
   }
 }
 
@@ -33,24 +40,58 @@ export async function request<T>(
   init: RequestInit = {}
 ): Promise<T> {
   const csrf = csrfToken();
+  const requestId = crypto.randomUUID();
+  const diagnose = (status: number, reason: string) =>
+    console.warn(
+      JSON.stringify({
+        event: "product.request.failed",
+        path: path.split("?")[0],
+        reason,
+        requestId,
+        status,
+      })
+    );
   const response = await fetch(path, {
     ...init,
     credentials: "same-origin",
     headers: {
-      ...(init.body ? { "content-type": "application/json" } : {}),
+      "x-request-id": requestId,
+      ...(init.body && !(init.body instanceof FormData)
+        ? { "content-type": "application/json" }
+        : {}),
       ...(csrf && init.method && init.method !== "GET"
         ? { [CSRF_HEADER]: csrf }
         : {}),
       ...init.headers,
     },
+  }).catch((cause: unknown) => {
+    diagnose(0, "network_or_timeout");
+    throw new Error(
+      "The product API could not be reached. Retry when the connection returns.",
+      { cause }
+    );
   });
   let body: unknown;
+  let unreadable = false;
+  let decodingFailure: unknown;
   try {
     body = await response.json();
   } catch (cause) {
-    throw new Error("The product API is unavailable.", { cause });
+    unreadable = true;
+    decodingFailure = cause;
+  }
+  if (unreadable) {
+    diagnose(response.status, "non_json_response");
+    const message =
+      response.status === 404
+        ? "This feature is unavailable in the running API (404). Restart the API with the latest branch, then retry."
+        : `The product API returned an unreadable response (${response.status}). Retry when the service is ready.`;
+    throw new ApiRequestError(response.status, message, requestId, {
+      cause: decodingFailure,
+    });
   }
   if (!response.ok) {
+    diagnose(response.status, "api_refusal");
     if (typeof body === "object" && body !== null && "error" in body) {
       const { error } = body;
       if (

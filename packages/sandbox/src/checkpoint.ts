@@ -3,6 +3,11 @@ import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { BuildSessionId } from "@reasonateai/contracts/execution";
 import {
+  type CheckpointFileChange,
+  type RunCheckpoint,
+  RunCheckpointSchema,
+} from "@reasonateai/contracts/execution-protocol";
+import {
   type OrganizationId,
   OrganizationIdSchema,
   type ProjectId,
@@ -45,6 +50,7 @@ export interface CheckpointReference {
 
 export interface CheckpointWriteResult extends CheckpointReference {
   readonly bytes: number;
+  readonly checkpoint?: RunCheckpoint;
 }
 
 export interface CheckpointStore {
@@ -78,6 +84,8 @@ export interface GitCheckpointStoreOptions {
 
 const BUNDLE_SUFFIX = ".bundle";
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
+const COMMIT_PATTERN = /^[a-f0-9]{40,64}$/;
+const LINE_COUNT_PATTERN = /^(?:\d+|-)$/;
 const MANIFEST_SUFFIX = ".json";
 
 /** Default working directory of a build sandbox. */
@@ -178,6 +186,8 @@ export function createGitCheckpointStore(
 }
 
 export interface SnapshotSandboxInput extends CheckpointScope {
+  /** The restored commit; null means a verified empty starting workspace. */
+  readonly baseCommit?: string | null;
   readonly buildSessionId: BuildSessionId;
   readonly runId: RunId;
   readonly sandbox: CheckpointSandbox;
@@ -208,18 +218,205 @@ export async function snapshotSandbox(
     ["commit", "--allow-empty", "-q", "-m", CHECKPOINT_COMMIT_MESSAGE],
     GIT_IDENTITY_ENV
   );
+  const baseRetained = await retainCheckpointBase(input, workdir);
   const bundled = await runChecked(sandbox, workdir, "sh", [
     "-c",
     GIT_BUNDLE_COMMAND,
   ]);
 
-  return input.store.write({
+  const written = await input.store.write({
     buildSessionId: input.buildSessionId,
     content: decodeBundle(bundled.stdout),
     organizationId: input.organizationId,
     projectId: input.projectId,
     runId: input.runId,
   });
+  let commit: string | null = null;
+  try {
+    const head = (
+      await runChecked(sandbox, workdir, "git", ["rev-parse", "HEAD"])
+    ).stdout.trim();
+    if (!COMMIT_PATTERN.test(head)) {
+      throw new Error("Invalid saved checkpoint commit.");
+    }
+    commit = head;
+    if (!baseRetained) {
+      throw new Error(
+        "The restored base could not be retained in the checkpoint bundle."
+      );
+    }
+    if (input.baseCommit === undefined) {
+      return {
+        ...written,
+        checkpoint: RunCheckpointSchema.parse({
+          checkpointId: written.checkpointId,
+          commit,
+          reason: "unknown_base",
+          status: "unavailable",
+          version: 1,
+        }),
+      };
+    }
+    const base =
+      input.baseCommit ??
+      (
+        await runChecked(sandbox, workdir, "sh", [
+          "-c",
+          "git hash-object -t tree --stdin < /dev/null",
+        ])
+      ).stdout.trim();
+    const args = [
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--ignore-submodules=all",
+      "--find-renames",
+      base,
+      commit,
+    ];
+    const [status, counts] = await Promise.all([
+      runChecked(sandbox, workdir, "git", [...args, "--name-status", "-z"]),
+      runChecked(sandbox, workdir, "git", [...args, "--numstat", "-z"]),
+    ]);
+    const files = parseCheckpointChanges(status.stdout, counts.stdout);
+    return {
+      ...written,
+      checkpoint: RunCheckpointSchema.parse({
+        added: files.reduce((total, file) => total + (file.added ?? 0), 0),
+        baseCommit: input.baseCommit,
+        checkpointId: written.checkpointId,
+        commit,
+        fileCount: files.length,
+        files: files.slice(0, 1000),
+        removed: files.reduce((total, file) => total + (file.removed ?? 0), 0),
+        status: "available",
+        truncated: files.length > 1000,
+        version: 1,
+      }),
+    };
+  } catch {
+    // Saving the bundle succeeded. A failed summary must never retain the
+    // volume or claim that the durable checkpoint was lost.
+    return {
+      ...written,
+      checkpoint: RunCheckpointSchema.parse({
+        checkpointId: written.checkpointId,
+        commit,
+        reason: "diff_failed",
+        status: "unavailable",
+        version: 1,
+      }),
+    };
+  }
+}
+
+/** Keep the restored base reachable even when the agent rewrites its Git history. */
+async function retainCheckpointBase(
+  input: SnapshotSandboxInput,
+  workdir: string
+): Promise<boolean> {
+  if (input.baseCommit === undefined || input.baseCommit === null) {
+    return true;
+  }
+  if (!COMMIT_PATTERN.test(input.baseCommit)) {
+    return false;
+  }
+  try {
+    await runChecked(input.sandbox, workdir, "git", [
+      "update-ref",
+      "refs/reasonate/checkpoint-base",
+      input.baseCommit,
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** NUL-delimited Git records preserve spaces, tabs and newlines in filenames. */
+export function parseCheckpointChanges(
+  statusOutput: string,
+  countOutput: string
+): CheckpointFileChange[] {
+  if (
+    Buffer.byteLength(statusOutput) + Buffer.byteLength(countOutput) >
+    8 * 1024 * 1024
+  ) {
+    throw new Error("Checkpoint change listing exceeds its limit.");
+  }
+  const counts = parseChangeCounts(countOutput);
+  const statuses: Record<string, CheckpointFileChange["status"]> = {
+    A: "added",
+    C: "copied",
+    D: "deleted",
+    M: "modified",
+    R: "renamed",
+    T: "typechanged",
+  };
+  const fields = statusOutput.split("\u0000").values();
+  const files: CheckpointFileChange[] = [];
+  for (const rawStatus of fields) {
+    if (!rawStatus) {
+      continue;
+    }
+    const status = statuses[rawStatus[0] ?? ""];
+    const oldPath = fields.next().value;
+    const path =
+      status === "renamed" || status === "copied"
+        ? fields.next().value
+        : oldPath;
+    const count = counts.get(path ?? "");
+    if (!(status && path && oldPath && count)) {
+      throw new Error("Invalid Git file change.");
+    }
+    files.push({
+      ...count,
+      path,
+      status,
+      ...(path === oldPath ? {} : { previousPath: oldPath }),
+    });
+  }
+  return files;
+}
+
+function parseChangeCounts(countOutput: string) {
+  const counts = new Map<
+    string,
+    { added: number | null; removed: number | null }
+  >();
+  const records = countOutput.split("\u0000");
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (!record) {
+      continue;
+    }
+    const first = record.indexOf("\t");
+    const second = record.indexOf("\t", first + 1);
+    if (first < 0 || second < 0) {
+      throw new Error("Invalid Git change count.");
+    }
+    const added = record.slice(0, first);
+    const removed = record.slice(first + 1, second);
+    let path = record.slice(second + 1);
+    if (path === "") {
+      path = records[index + 2] ?? "";
+      index += 2;
+    }
+    if (
+      !(
+        path &&
+        LINE_COUNT_PATTERN.test(added) &&
+        LINE_COUNT_PATTERN.test(removed)
+      )
+    ) {
+      throw new Error("Invalid Git change count.");
+    }
+    counts.set(path, {
+      added: added === "-" ? null : Number(added),
+      removed: removed === "-" ? null : Number(removed),
+    });
+  }
+  return counts;
 }
 
 export interface RestoreSandboxInput {
@@ -448,8 +645,8 @@ async function runChecked(
 ): Promise<RunCommandResult> {
   const request: RunCommandRequest =
     env === undefined
-      ? { args, command, cwd: workdir }
-      : { args, command, cwd: workdir, env };
+      ? { args, command, cwd: workdir, timeoutMs: 120_000 }
+      : { args, command, cwd: workdir, env, timeoutMs: 120_000 };
 
   const result = await sandbox.runCommand(request);
   if (result.exitCode !== 0) {

@@ -112,11 +112,13 @@ export async function restoreLatestCheckpoint(input: {
 
 /** Commits the workspace inside the sandbox and stores the resulting bundle. */
 export async function snapshotWorkspaceCheckpoint(input: {
+  baseCommit?: string | null;
   checkpoints: CheckpointStore;
   sandbox: CheckpointSandbox;
   scope: RunScope;
 }): Promise<CheckpointWriteResult> {
   return await snapshotSandbox({
+    ...(input.baseCommit === undefined ? {} : { baseCommit: input.baseCommit }),
     buildSessionId: input.scope.buildSessionId,
     organizationId: input.scope.organizationId,
     projectId: input.scope.projectId,
@@ -134,14 +136,10 @@ export async function snapshotWorkspaceCheckpoint(input: {
  * is not a leak.
  */
 export async function removeWorkspaceVolume(scope: RunScope): Promise<void> {
-  try {
-    await execFileAsync("docker", [
-      "volume",
-      "rm",
-      "-f",
-      workspaceVolumeName(scope),
-    ]);
-  } catch {
-    // Best-effort: the container may never have started, or Docker is absent.
-  }
+  await execFileAsync("docker", [
+    "volume",
+    "rm",
+    "-f",
+    workspaceVolumeName(scope),
+  ]);
 }

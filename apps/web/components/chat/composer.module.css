@@ -1,0 +1,335 @@
+.shell {
+  width: 100%;
+  min-width: 0;
+}
+
+.compact[class~="composer"] {
+  position: relative;
+  width: min(100%, 760px);
+  min-width: 0;
+}
+
+.beam {
+  position: relative;
+  z-index: 2;
+}
+
+.queued {
+  padding: 7px 10px 12px;
+  margin: 0 18px -7px;
+  background: var(--composer-tray);
+  border: 1px solid var(--line-strong);
+  border-radius: 18px 18px 0 0;
+}
+
+.queued ul {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.queuedRow {
+  min-width: 0;
+  padding: 4px 0;
+}
+
+.queuedMain {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+}
+
+.queueIcon {
+  flex: none;
+  color: var(--ink-3);
+}
+
+.queuedThumbnail {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  overflow: hidden;
+  color: var(--ink-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+}
+
+.queuedThumbnail img {
+  object-fit: cover;
+}
+
+.queuedThumbnail small {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  font-size: 9px;
+  background: var(--composer-tray);
+}
+
+.queuedText {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.queueError,
+.queueNote {
+  margin: 4px 0 0 25px;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.queuedActions {
+  display: flex;
+  flex: none;
+  gap: 4px;
+  align-items: center;
+}
+
+.queuedActions button,
+.queueEditor button,
+.compact .queueButton {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  min-height: 27px;
+  padding: 4px 7px;
+  font-size: 11px;
+  color: var(--ink-2);
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.queuedActions button:hover,
+.compact .queueButton:hover {
+  background: var(--raised);
+}
+
+.queuedActions button:disabled,
+.compact .queueButton:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.queueMenu {
+  z-index: 70;
+  padding: 6px;
+  color: var(--ink);
+  background: var(--composer-tray);
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+}
+
+.queueMenu [role="menuitem"] {
+  padding: 9px;
+  font-size: 13px;
+}
+
+.queueEditor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 7px 0 2px 25px;
+}
+
+.queueEditor textarea {
+  width: 100%;
+  min-height: 65px;
+  padding: 8px;
+  color: var(--ink);
+  resize: vertical;
+  background: var(--composer-surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+}
+
+.compact .surface[class~="prompt"] {
+  gap: 4px;
+  padding: 10px 14px 8px;
+  background: var(--composer-surface);
+  border-color: var(--composer-line);
+  border-radius: 22px;
+}
+
+.compact .textRow[class~="prompt-top"] {
+  min-width: 0;
+}
+
+.compact .input[class~="prompt-input"] {
+  width: 100%;
+  min-height: 26px;
+  max-height: 160px;
+  padding: 0 2px;
+  overflow-y: auto;
+  font-size: 16px;
+  line-height: 1.6;
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+.compact .toolbar[class~="prompt-bottom"] {
+  gap: 8px;
+  padding: 0;
+}
+
+.compact .actions[class~="prompt-actions"] {
+  gap: 5px;
+  min-width: 0;
+}
+
+.compact .attach[class~="prompt-mic"],
+.compact .microphone[class~="prompt-mic"] {
+  width: 32px;
+  height: 32px;
+  color: var(--ink-2);
+  border-color: transparent;
+}
+
+.compact .voiceMode[class~="prompt-send"] {
+  width: 34px;
+  height: 34px;
+  color: var(--solid-ink);
+  background: var(--solid);
+  border-color: transparent;
+}
+
+.compact .model[class~="prompt-chip"] {
+  gap: 4px;
+  max-width: 210px;
+  height: 32px;
+  padding: 0 6px;
+  font-size: 12px;
+  background: transparent;
+  border-color: transparent;
+}
+
+.model span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model svg {
+  flex: none;
+}
+
+.context {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  padding: 21px 12px 10px;
+  margin: -14px 18px 0;
+  background: var(--composer-tray);
+  border: 1px solid var(--line-strong);
+  border-top: 0;
+  border-radius: 0 0 18px 18px;
+}
+
+.compact .context [class~="prompt-chip"] {
+  max-width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--ink-2);
+  background: transparent;
+  border-color: transparent;
+  border-radius: 6px;
+}
+
+.compact .context [class~="project-picker"] {
+  min-width: 0;
+  max-width: calc(100% - 78px);
+}
+
+.compact .context [class~="project-picker-trigger"] span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact .context [class~="prompt-chip"]:hover,
+.compact .files[data-open] {
+  color: var(--ink);
+  background: var(--raised-hover);
+}
+
+.compact .hint[class~="composer-foot"] {
+  gap: 8px;
+  padding: 3px 11px 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.compact [class~="composer-count"] {
+  flex: none;
+}
+
+.compact button:focus-visible,
+.compact textarea:focus-visible {
+  outline: 2px solid var(--ink-3);
+  outline-offset: 3px;
+}
+
+@media (max-width: 600px) {
+  .queued {
+    gap: 5px;
+    padding-right: 8px;
+    padding-left: 8px;
+    margin-right: 10px;
+    margin-left: 10px;
+  }
+
+  .queuedActions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .context {
+    margin-right: 10px;
+    margin-left: 10px;
+  }
+
+  .compact .surface[class~="prompt"] {
+    padding: 11px 10px 9px;
+  }
+
+  .compact .actions[class~="prompt-actions"] {
+    gap: 2px;
+  }
+
+  .compact .model[class~="prompt-chip"] {
+    max-width: 116px;
+    padding: 0 3px;
+    font-size: 11px;
+  }
+
+  .compact .hint[class~="composer-foot"] {
+    align-items: flex-start;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compact *,
+  .compact *::before,
+  .compact *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}

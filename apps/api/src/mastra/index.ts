@@ -47,6 +47,7 @@ import {
   PROJECT_CONVERSATIONS_PATH,
   RUN_ANSWER_PATH,
   RUN_CANCELLATION_PATH,
+  RUN_RETRY_PATH,
 } from "./routes/build-sessions";
 import {
   createOrganizationHandlers,
@@ -66,9 +67,14 @@ import {
   PROJECT_COLLECTION_PATH,
 } from "./routes/projects";
 import { createRunEventHandlers, RUN_EVENTS_PATH } from "./routes/run-events";
+import {
+  createRunSteeringHandlers,
+  RUN_STEERING_PATH,
+} from "./routes/steering";
 import { createVoiceHandlers, VOICE_TRANSCRIPTION_PATH } from "./routes/voice";
 import {
   createWorkspaceHandlers,
+  WORKSPACE_CHECKPOINT_DIFF_PATH,
   WORKSPACE_FILE_PATH,
   WORKSPACE_TREE_PATH,
 } from "./routes/workspace";
@@ -239,6 +245,11 @@ const runEventHandlers = createRunEventHandlers({
   store: stateStore,
 });
 
+const steeringHandlers = createRunSteeringHandlers({
+  resolvePrincipal: resolvePrincipalFrom,
+  store: stateStore,
+});
+
 const workspaceHandlers = createWorkspaceHandlers({
   resolvePrincipal: resolvePrincipalFrom,
   store: stateStore,
@@ -364,6 +375,16 @@ export const mastra = new Mastra({
         handler: (c) => buildSessionHandlers.answerRun(c),
         method: "POST",
       }),
+      registerApiRoute(RUN_RETRY_PATH, {
+        handler: (c) => buildSessionHandlers.retryRun(c),
+        method: "POST",
+        openapi: {
+          description:
+            "Idempotently retries a failed or cancelled generation using its stored input and attachments within the authorized conversation.",
+          summary: "Retry a generation",
+          tags: ["Build sessions"],
+        },
+      }),
       registerApiRoute(RUN_CANCELLATION_PATH, {
         handler: (c) => buildSessionHandlers.cancelRun(c),
         method: "POST",
@@ -371,6 +392,16 @@ export const mastra = new Mastra({
           description:
             "Requests cancellation of an active run in the caller's authorized project scope.",
           summary: "Stop a run",
+          tags: ["Build sessions"],
+        },
+      }),
+      registerApiRoute(RUN_STEERING_PATH, {
+        handler: (c) => steeringHandlers.steer(c),
+        method: "POST",
+        openapi: {
+          description:
+            "Idempotently requests a bounded user message for the active scoped run; the lease-owning worker delivers it at the controller's next signal boundary.",
+          summary: "Steer the active CTO run",
           tags: ["Build sessions"],
         },
       }),
@@ -421,6 +452,16 @@ export const mastra = new Mastra({
           description:
             "Reads one file from the project's latest checkpoint. A binary or oversized file is reported as binary with no body, and the same centralized project authorization guards both workspace reads.",
           summary: "Read a generated source file",
+          tags: ["Workspace"],
+        },
+      }),
+      registerApiRoute(WORKSPACE_CHECKPOINT_DIFF_PATH, {
+        handler: (c) => workspaceHandlers.checkpointDiff(c),
+        method: "GET",
+        openapi: {
+          description:
+            "Reads a bounded file diff from a saved turn checkpoint after project authorization and durable run provenance verification.",
+          summary: "Read a turn checkpoint diff",
           tags: ["Workspace"],
         },
       }),

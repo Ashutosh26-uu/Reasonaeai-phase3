@@ -23,7 +23,11 @@ import { LeaseKeeper } from "./lease.js";
 import { type Ledger, RunEventAppender } from "./ledger.js";
 import type { LiveEventPublisher } from "./live-events.js";
 import type { LogFields, Logger } from "./logger.js";
-import { prepareRecoveredSandbox } from "./recovery.js";
+import {
+  prepareRecoveredSandbox,
+  recoveredWorkspaceExists,
+  stopRecoveredSandbox,
+} from "./recovery.js";
 import {
   candidateScope,
   createRunRequestContext,
@@ -31,6 +35,7 @@ import {
 } from "./run-context.js";
 import { runDirective } from "./run-directive.js";
 import type { RunSession, RuntimeFactory } from "./runtime.js";
+import { startRunSteering } from "./steering.js";
 import type { StopSignal } from "./stop-signal.js";
 import { settleWithin } from "./wait.js";
 import { releaseBuildSandbox, workspaceVolumeName } from "./workspace.js";
@@ -84,6 +89,7 @@ const TERMINAL_EVENT: Record<RunFinishStatus, RunEventType> = {
 };
 
 type StopCause = "lease-lost" | "shutdown" | "user";
+const CHECKPOINT_COMMIT_PATTERN = /^[a-f0-9]{40,64}$/;
 
 type DriveResult =
   | { kind: "completed" }
@@ -154,8 +160,18 @@ export class RunExecutor {
 
     const requestContext = createRunRequestContext(scope);
     let sandbox: WorkspaceSandbox | undefined;
+    let baseCommit: string | null | undefined;
     let driven: DriveResult;
 
+    const recordedOutcome = await this.#recordedOutcome(scope);
+    if (recordedOutcome !== undefined) {
+      return await this.#recoverRecordedTerminal({
+        lease,
+        outcome: recordedOutcome,
+        requestContext,
+        scope,
+      });
+    }
     try {
       const runtime = this.#deps.runtime();
       await runtime.controller.init();
@@ -173,17 +189,26 @@ export class RunExecutor {
               toolCallId: candidate.pendingToolCallId,
             }
           : undefined;
+      const retainedWorkspace = await recoveredWorkspaceExists(scope);
       if (recovery) {
         session.suspensions.register({
           runId: recovery.mastraRunId,
           toolCallId: recovery.toolCallId,
           toolName: "ask_user",
         });
+      }
+      if (recovery || retainedWorkspace) {
         await prepareRecoveredSandbox(scope);
       }
 
       sandbox = await this.#deps.resolveSandbox({ requestContext, scope });
       await sandbox.start?.();
+      await this.#checkpointRetainedWorkspace({
+        retained: retainedWorkspace,
+        sandbox,
+        scope,
+        suspended: recovery !== undefined,
+      });
       const restored = recovery
         ? undefined
         : await restoreLatestCheckpoint({
@@ -195,6 +220,26 @@ export class RunExecutor {
         ...fields,
         restoredCheckpointId: restored?.checkpointId ?? null,
       });
+      if (!recovery) {
+        if (restored === undefined) {
+          baseCommit = null;
+        } else {
+          const head = await checkpointSandboxFor(sandbox).runCommand({
+            args: ["rev-parse", "HEAD"],
+            command: "git",
+            cwd: "/workspace",
+          });
+          if (
+            head.exitCode !== 0 ||
+            !CHECKPOINT_COMMIT_PATTERN.test(head.stdout.trim())
+          ) {
+            throw new Error(
+              "The restored checkpoint commit could not be verified."
+            );
+          }
+          baseCommit = head.stdout.trim();
+        }
+      }
 
       driven = await this.#drive({
         fields,
@@ -212,12 +257,177 @@ export class RunExecutor {
     }
 
     return await this.#settle({
+      baseCommit,
       driven,
       fields,
       leaseId: lease.leaseId,
       sandbox,
       scope,
     });
+  }
+
+  async #checkpointRetainedWorkspace(input: {
+    retained: boolean;
+    suspended: boolean;
+    sandbox: WorkspaceSandbox;
+    scope: RunScope;
+  }): Promise<void> {
+    if (!input.retained || input.suspended) {
+      return;
+    }
+    const checkpoint = await snapshotWorkspaceCheckpoint({
+      checkpoints: this.#deps.checkpoints,
+      sandbox: checkpointSandboxFor(input.sandbox),
+      scope: input.scope,
+    });
+    this.#deps.logger.warn("run.workspace.recovered", {
+      ...runLogFields(input.scope),
+      checkpointId: checkpoint.checkpointId,
+      reason:
+        "Retained workspace edits were checkpointed before restoring project state.",
+    });
+  }
+
+  async #recoverRecordedTerminal(input: {
+    lease: { expiresAt: Date; leaseId: string };
+    outcome: RunFinishStatus;
+    requestContext: RequestContext;
+    scope: RunScope;
+  }): Promise<RunOutcome> {
+    const { config, ledger, logger, store } = this.#deps;
+    const { scope } = input;
+    const fields = runLogFields(scope);
+    let leaseLost = false;
+    const keeper = new LeaseKeeper({
+      expiresAt: input.lease.expiresAt,
+      fields,
+      holder: config.holder,
+      leaseId: input.lease.leaseId,
+      logger,
+      onLost: () => {
+        leaseLost = true;
+      },
+      renew: async (renewal) => await store.renewRunLease(renewal),
+      renewIntervalMs: config.renewIntervalMs,
+      runId: scope.runId,
+      ttlMs: config.leaseTtlMs,
+    });
+    let sandbox: WorkspaceSandbox | undefined;
+    let checkpoint: CheckpointWriteResult | undefined;
+    keeper.start();
+    try {
+      const retained = await recoveredWorkspaceExists(scope);
+      await stopRecoveredSandbox(scope);
+      releaseBuildSandbox(scope);
+      if (retained) {
+        sandbox = await this.#deps.resolveSandbox({
+          requestContext: input.requestContext,
+          scope,
+        });
+        await sandbox.start?.();
+        // Never restore an older checkpoint over the previous worker's edits.
+        checkpoint = await snapshotWorkspaceCheckpoint({
+          checkpoints: this.#deps.checkpoints,
+          sandbox: checkpointSandboxFor(sandbox),
+          scope,
+        });
+        await ledger.appendTransition({
+          identity: scope,
+          payload: {
+            bytes: checkpoint.bytes,
+            checkpointId: checkpoint.checkpointId,
+            ...(checkpoint.checkpoint === undefined
+              ? {}
+              : { checkpoint: checkpoint.checkpoint }),
+            outcome: input.outcome,
+            reason: "Recovered the interrupted worker's terminal workspace.",
+          },
+          type: TERMINAL_EVENT[input.outcome],
+        });
+      }
+      if (leaseLost) {
+        throw new Error("The terminal recovery lost its run lease.");
+      }
+    } catch (error) {
+      logger.error("run.terminal.recovery.blocked", {
+        ...fields,
+        failure: describeFailure(error).message,
+        reason:
+          "The retained workspace must be checkpointed before retry is permitted.",
+        volume: workspaceVolumeName(scope),
+      });
+      throw error;
+    } finally {
+      if (sandbox !== undefined && !leaseLost) {
+        await this.#teardown({
+          fields,
+          retainedReason:
+            "terminal recovery retains the workspace until cleanup can be confirmed",
+          sandbox,
+          scope,
+          snapshot: false,
+        });
+        if (checkpoint !== undefined) {
+          try {
+            await removeWorkspaceVolume(scope);
+          } catch (error) {
+            logger.error("run.volume.cleanup.failed", {
+              ...fields,
+              checkpointId: checkpoint.checkpointId,
+              failure: describeFailure(error).message,
+              volume: workspaceVolumeName(scope),
+            });
+          }
+        }
+      }
+      await keeper.stop();
+    }
+    if (leaseLost) {
+      throw new Error("The terminal recovery lost its run lease.");
+    }
+    const ended = await store.finishRun({
+      holder: config.holder,
+      leaseId: input.lease.leaseId,
+      runId: scope.runId,
+      status: input.outcome,
+    });
+    logger.warn("run.terminal.recovered", {
+      ...fields,
+      checkpointId: checkpoint?.checkpointId ?? null,
+      ended,
+      outcome: input.outcome,
+    });
+    return ended ? input.outcome : "failed";
+  }
+
+  async #recordedOutcome(
+    scope: RunScope
+  ): Promise<RunFinishStatus | undefined> {
+    let afterSequence = 0;
+    for (;;) {
+      // biome-ignore lint/performance/noAwaitInLoops: the next ledger cursor depends on the previous page
+      const events = await this.#deps.store.listRunEvents({
+        afterSequence,
+        limit: 200,
+        runId: scope.runId,
+        scope,
+      });
+      for (const event of events) {
+        const { outcome } = event.payload;
+        if (
+          (outcome === "cancelled" ||
+            outcome === "failed" ||
+            outcome === "succeeded") &&
+          event.type === TERMINAL_EVENT[outcome]
+        ) {
+          return outcome;
+        }
+        afterSequence = event.sequence;
+      }
+      if (events.length < 200) {
+        return;
+      }
+    }
   }
 
   /**
@@ -366,6 +576,16 @@ export class RunExecutor {
             )
         : Promise.resolve();
 
+    const steering = startRunSteering({
+      holder: config.holder,
+      leaseId: input.lease.leaseId,
+      logger,
+      onFailure: (reason) => requestStop("shutdown", reason),
+      requestContext: input.requestContext,
+      scope,
+      session: input.session,
+      store,
+    });
     keeper.start();
     try {
       await Promise.race([sending, stopRequested]);
@@ -427,6 +647,11 @@ export class RunExecutor {
       }
     } finally {
       clearInterval(cancellationPoll);
+      try {
+        await steering.stop();
+      } catch (error) {
+        failure = describeFailure(error);
+      }
       await keeper.stop();
       unsubscribeStop();
       unsubscribeEvents();
@@ -484,6 +709,7 @@ export class RunExecutor {
    * recorded once the run is actually ended here.
    */
   async #settle(input: {
+    baseCommit: string | null | undefined;
     driven: DriveResult;
     fields: LogFields;
     leaseId: string;
@@ -508,7 +734,7 @@ export class RunExecutor {
         runId: scope.runId,
         status: "failed",
       });
-      if (!ended) {
+      if (ended === false) {
         logger.warn("run.handed.off", {
           ...fields,
           reason: input.driven.reason,
@@ -542,6 +768,7 @@ export class RunExecutor {
     }
 
     const checkpoint = await this.#teardown({
+      baseCommit: input.baseCommit,
       fields,
       retainedReason:
         "the workspace checkpoint failed, so the volume holds the only copy of this run's work",
@@ -550,13 +777,17 @@ export class RunExecutor {
       snapshot: true,
     });
 
-    if (status === "succeeded") {
+    if (status === "succeeded" || checkpoint !== undefined) {
       await ledger.appendTransition({
         identity: scope,
         payload: {
           bytes: checkpoint?.bytes ?? null,
           checkpointId: checkpoint?.checkpointId ?? null,
+          ...(checkpoint?.checkpoint === undefined
+            ? {}
+            : { checkpoint: checkpoint.checkpoint }),
           outcome: status,
+          reason: reason ?? null,
         },
         type: TERMINAL_EVENT[status],
       });
@@ -596,6 +827,7 @@ export class RunExecutor {
    * after a failed snapshot is the only copy of the run's work.
    */
   async #teardown(input: {
+    baseCommit?: string | null | undefined;
     fields: LogFields;
     retainedReason: string;
     sandbox: WorkspaceSandbox | undefined;
@@ -612,10 +844,20 @@ export class RunExecutor {
     if (input.snapshot) {
       try {
         written = await snapshotWorkspaceCheckpoint({
+          ...(input.baseCommit === undefined
+            ? {}
+            : { baseCommit: input.baseCommit }),
           checkpoints: this.#deps.checkpoints,
           sandbox: checkpointSandboxFor(sandbox),
           scope,
         });
+        if (written.checkpoint?.status === "unavailable") {
+          logger.warn("run.checkpoint.diff.unavailable", {
+            ...fields,
+            checkpointId: written.checkpoint.checkpointId,
+            reason: written.checkpoint.reason,
+          });
+        }
       } catch (error) {
         logger.error("run.checkpoint.failed", {
           ...fields,
@@ -646,7 +888,16 @@ export class RunExecutor {
       return;
     }
 
-    await removeWorkspaceVolume(scope);
+    try {
+      await removeWorkspaceVolume(scope);
+    } catch (error) {
+      logger.error("run.volume.cleanup.failed", {
+        ...fields,
+        checkpointId: written.checkpointId,
+        failure: describeFailure(error).message,
+        volume: workspaceVolumeName(scope),
+      });
+    }
     return written;
   }
 }

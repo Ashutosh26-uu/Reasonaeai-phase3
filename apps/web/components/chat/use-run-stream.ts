@@ -8,6 +8,7 @@ import {
   RunLiveEventSchema,
 } from "@reasonateai/contracts/execution-protocol";
 import { useEffect, useRef, useState } from "react";
+import { runStreamEnded } from "./run-state";
 import {
   EMPTY_TIMELINE,
   foldDurable,
@@ -56,8 +57,20 @@ export function useRunStream(input: RunStreamInput) {
       return;
     }
     let closed = false;
+    const requestId = crypto.randomUUID();
+    let lastSequence = 0;
+    const diagnostic = (event: string) =>
+      JSON.stringify({
+        buildSessionId,
+        event,
+        lastSequence,
+        organizationId,
+        projectId,
+        requestId,
+        runId: pendingRunId,
+      });
     const source = new EventSource(
-      `/v1/build-sessions/${buildSessionId}/events?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`
+      `/v1/build-sessions/${buildSessionId}/events?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&requestId=${requestId}`
     );
     const durable = (frame: MessageEvent<string>) => {
       if (closed || selected.current !== identity) {
@@ -72,6 +85,7 @@ export function useRunStream(input: RunStreamInput) {
         return;
       }
       const event = parsed.data;
+      lastSequence = event.sequence;
       setState((current) => ({
         identity,
         timeline: foldDurable(
@@ -79,10 +93,7 @@ export function useRunStream(input: RunStreamInput) {
           event
         ),
       }));
-      if (
-        ["run.completed", "run.cancelled", "run.failed"].includes(event.type) &&
-        pendingRunId === event.runId
-      ) {
+      if (runStreamEnded([event], false) && pendingRunId === event.runId) {
         handlers.current.onEnded();
       }
     };
@@ -115,6 +126,7 @@ export function useRunStream(input: RunStreamInput) {
     source.onopen = () => {
       if (!closed) {
         setFollowing(true);
+        console.info(diagnostic("run.stream.connected"));
         handlers.current.onOpened();
       }
     };
@@ -123,6 +135,7 @@ export function useRunStream(input: RunStreamInput) {
         return;
       }
       setFollowing(false);
+      console.warn(diagnostic("run.stream.interrupted"));
       if (pendingRunId) {
         handlers.current.onInterrupted("Connection interrupted. Reconnecting…");
       }

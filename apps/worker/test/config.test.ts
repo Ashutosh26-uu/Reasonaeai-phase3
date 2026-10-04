@@ -5,6 +5,7 @@ const DATABASE_URL = "postgres://reasonate:reasonate@127.0.0.1:55432/reasonate";
 
 const DATABASE_URL_FIELD = /DATABASE_URL/;
 const MAX_RUNS_FIELD = /WORKER_MAX_RUNS_PER_POLL/;
+const CONCURRENT_RUNS_FIELD = /WORKER_MAX_CONCURRENT_RUNS/;
 const POLL_INTERVAL_FIELD = /WORKER_POLL_INTERVAL_MS/;
 const RENEW_INTERVAL_FIELD = /WORKER_RENEW_INTERVAL_MS/;
 const STOP_GRACE_FIELD = /WORKER_STOP_GRACE_MS/;
@@ -27,6 +28,7 @@ describe("worker configuration", () => {
       databaseUrl: DATABASE_URL,
       holder: "worker-1",
       leaseTtlMs: 30_000,
+      maxConcurrentRuns: 2,
       maxRunsPerPoll: 4,
       pollIntervalMs: 500,
       pollJitterMs: 50,
@@ -53,6 +55,12 @@ describe("worker configuration", () => {
   });
 
   it("refuses a value outside its bound", () => {
+    expect(() =>
+      readWorkerConfig({ DATABASE_URL, WORKER_MAX_CONCURRENT_RUNS: "9" })
+    ).toThrow(CONCURRENT_RUNS_FIELD);
+    expect(() =>
+      readWorkerConfig({ DATABASE_URL, WORKER_MAX_CONCURRENT_RUNS: "0" })
+    ).toThrow(CONCURRENT_RUNS_FIELD);
     expect(() =>
       readWorkerConfig({ DATABASE_URL, WORKER_MAX_RUNS_PER_POLL: "0" })
     ).toThrow(MAX_RUNS_FIELD);

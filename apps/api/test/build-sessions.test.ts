@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { SESSION_COOKIE } from "@reasonateai/contracts/auth";
+import { PLAN_ENTITLEMENTS } from "@reasonateai/contracts/entitlements";
 import {
   OrganizationIdSchema,
   ProjectIdSchema,
@@ -309,6 +310,214 @@ describeWithDatabase("build session routes", () => {
         text: "Review this screen",
       })
     );
+  });
+
+  it.each(["failed", "cancelled"] as const)(
+    "retries a %s generation with its stored prompt and images exactly once",
+    async (status) => {
+      const image = {
+        data: "data:image/png;base64,aGVsbG8=",
+        filename: "wireframe.png",
+        mediaType: "image/png",
+      };
+      const allocated = await handlers.allocate(
+        allocationRequest({
+          body: body({
+            attachments: [image],
+            message: "Build from this image",
+          }),
+        })
+      );
+      expect(allocated.status).toBe(202);
+      const { buildSession } = await allocated.json();
+      const holder = `retry-test-${randomUUID()}`;
+      const lease = await store.beginRun({
+        holder,
+        runId: buildSession.runId,
+        ttlMs: 60_000,
+      });
+      if (!lease) {
+        throw new Error("The retry source could not be leased.");
+      }
+      await store.finishRun({
+        holder,
+        leaseId: lease.leaseId,
+        runId: buildSession.runId,
+        status,
+      });
+      const request = {
+        cookie: ownerCookie,
+        idempotencyKey: `retry-${randomUUID()}`,
+        params: {
+          buildSessionId: buildSession.buildSessionId,
+          runId: buildSession.runId,
+        },
+        query: { organizationId, projectId },
+      };
+      const before = await store.usage.snapshot(organizationId);
+      const retried = await handlers.retryRun(context(request));
+      expect(retried.status).toBe(202);
+      const accepted = await retried.json();
+      expect(accepted.runId).not.toBe(buildSession.runId);
+      expect(accepted.buildSessionId).toBe(buildSession.buildSessionId);
+      const replay = await handlers.retryRun(context(request));
+      expect(replay.status).toBe(202);
+      expect(await replay.json()).toEqual(accepted);
+      const conflict = await handlers.retryRun(
+        context({ ...request, idempotencyKey: `retry-${randomUUID()}` })
+      );
+      expect(conflict.status).toBe(409);
+      expect((await store.usage.snapshot(organizationId)).runs).toBe(
+        before.runs + 1
+      );
+
+      const runnable = await store.listRunnableRuns({ limit: 1000 });
+      expect(runnable).toContainEqual(
+        expect.objectContaining({
+          runId: accepted.runId,
+          userAttachments: [image],
+          userMessage: "Build from this image",
+        })
+      );
+      const events = await store.listRunEvents({
+        afterSequence: 0,
+        limit: 20,
+        runId: accepted.runId,
+        scope: { organizationId, projectId },
+      });
+      expect(events[0]?.payload).toEqual({
+        buildSessionId: buildSession.buildSessionId,
+        retryOfRunId: buildSession.runId,
+      });
+      const history = await handlers.history(
+        context({
+          cookie: ownerCookie,
+          params: { buildSessionId: buildSession.buildSessionId },
+          query: { organizationId, projectId },
+        })
+      );
+      const historyText = await history.text();
+      expect(historyText).not.toContain(image.data);
+      expect(JSON.parse(historyText).messages).toContainEqual(
+        expect.objectContaining({
+          attachments: [
+            { filename: "wireframe.png", mediaType: "image/png", sizeBytes: 5 },
+          ],
+          runId: accepted.runId,
+          text: "Build from this image",
+        })
+      );
+    }
+  );
+
+  it("replays an accepted retry after its final quota slot was consumed", async () => {
+    const allocation = await handlers.allocate(
+      allocationRequest({
+        body: body({ message: "Retry when the response is lost" }),
+      })
+    );
+    expect(allocation.status).toBe(202);
+    const { buildSession } = await allocation.json();
+    await store.setRunStatus({
+      runId: buildSession.runId,
+      scope: { organizationId, projectId },
+      status: "failed",
+    });
+    const originalUsage = await store.usage.snapshot(organizationId);
+    const topUp = PLAN_ENTITLEMENTS.free.runsPerPeriod - originalUsage.runs - 1;
+    await store.usage.record({ amount: topUp, metric: "runs", organizationId });
+    try {
+      const request = {
+        cookie: ownerCookie,
+        idempotencyKey: `retry-last-slot-${randomUUID()}`,
+        params: {
+          buildSessionId: buildSession.buildSessionId,
+          runId: buildSession.runId,
+        },
+        query: { organizationId, projectId },
+      };
+      const accepted = await handlers.retryRun(context(request));
+      expect(accepted.status).toBe(202);
+      const acceptedBody = await accepted.json();
+      expect((await store.usage.snapshot(organizationId)).runs).toBe(
+        PLAN_ENTITLEMENTS.free.runsPerPeriod
+      );
+      const replay = await handlers.retryRun(context(request));
+      expect(replay.status).toBe(202);
+      expect(await replay.json()).toEqual(acceptedBody);
+      const denied = await handlers.retryRun(
+        context({
+          ...request,
+          idempotencyKey: `another-retry-${randomUUID()}`,
+        })
+      );
+      expect(denied.status).toBe(429);
+      expect((await store.usage.snapshot(organizationId)).runs).toBe(
+        PLAN_ENTITLEMENTS.free.runsPerPeriod
+      );
+    } finally {
+      await store.usage.record({
+        amount: -topUp,
+        metric: "runs",
+        organizationId,
+      });
+    }
+  });
+
+  it("rejects retry without authorization, matching scope, terminal failure, or an idempotency key", async () => {
+    const allocated = await handlers.allocate(allocationRequest());
+    const { buildSession } = await allocated.json();
+    const request = {
+      cookie: ownerCookie,
+      idempotencyKey: `retry-validation-${randomUUID()}`,
+      params: {
+        buildSessionId: buildSession.buildSessionId,
+        runId: buildSession.runId,
+      },
+      query: { organizationId, projectId },
+    };
+    expect(
+      (await handlers.retryRun(context({ ...request, cookie: undefined })))
+        .status
+    ).toBe(401);
+    expect(
+      (
+        await handlers.retryRun(
+          context({ ...request, cookie: await issueCookie(viewerUserId) })
+        )
+      ).status
+    ).toBe(403);
+    expect(
+      (
+        await handlers.retryRun(
+          context({ ...request, idempotencyKey: undefined })
+        )
+      ).status
+    ).toBe(400);
+    expect(
+      (
+        await handlers.retryRun(
+          context({
+            ...request,
+            params: { ...request.params, runId: randomUUID() },
+          })
+        )
+      ).status
+    ).toBe(404);
+    expect((await handlers.retryRun(context(request))).status).toBe(409);
+    expect(
+      (
+        await handlers.retryRun(
+          context({
+            ...request,
+            query: {
+              organizationId: foreignOrganizationId,
+              projectId: foreignProjectId,
+            },
+          })
+        )
+      ).status
+    ).toBe(403);
   });
 
   it("accepts a scoped cancellation request only from a builder", async () => {

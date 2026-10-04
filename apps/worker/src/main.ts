@@ -147,6 +147,7 @@ function main(): void {
     checkpointRoot: config.checkpointRoot,
     holder: config.holder,
     leaseTtlMs: config.leaseTtlMs,
+    maxConcurrentRuns: config.maxConcurrentRuns,
     maxRunsPerPoll: config.maxRunsPerPoll,
     model: config.model,
     pollIntervalMs: config.pollIntervalMs,

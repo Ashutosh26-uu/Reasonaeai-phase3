@@ -149,7 +149,14 @@ export type TranscriptEntry =
       duration?: number;
       legacy?: boolean;
     }
-  | { id: string; kind: "tool"; tool: ToolEntry };
+  | { id: string; kind: "tool"; tool: ToolEntry }
+  | {
+      id: string;
+      kind: "steering";
+      text: string;
+      status: "requested" | "delivered" | "failed";
+      reason?: string;
+    };
 export interface TranscriptTurn {
   entries: TranscriptEntry[];
   id: string;
@@ -364,6 +371,37 @@ function messageEntries(
 }
 
 /** One projection is used for initial history, streaming, and replay. */
+function steeringEntry(
+  event: RunEventEnvelope,
+  events: RunEventEnvelope[]
+): TranscriptEntry | undefined {
+  if (
+    !(
+      event.type === "run.steering.requested" &&
+      typeof event.payload.message === "string" &&
+      typeof event.payload.steeringId === "string"
+    )
+  ) {
+    return;
+  }
+  const outcome = events.findLast(
+    (candidate) =>
+      candidate.payload.steeringId === event.payload.steeringId &&
+      ["run.steering.delivered", "run.steering.failed"].includes(candidate.type)
+  );
+  const status =
+    outcome?.type === "run.steering.delivered" ? "delivered" : "requested";
+  return {
+    id: `${event.runId}:steering:${event.payload.steeringId}`,
+    kind: "steering",
+    status: outcome?.type === "run.steering.failed" ? "failed" : status,
+    text: event.payload.message,
+    ...(typeof outcome?.payload.reason === "string"
+      ? { reason: outcome.payload.reason }
+      : {}),
+  };
+}
+
 function projectRun(runId: string, run: RunTimeline): TranscriptEntry[] {
   const events = Object.values(run.events).sort(
     (a, b) => a.sequence - b.sequence
@@ -385,6 +423,10 @@ function projectRun(runId: string, run: RunTimeline): TranscriptEntry[] {
   }
   const seenTools = new Set<string>();
   for (const event of events) {
+    const steering = steeringEntry(event, events);
+    if (steering) {
+      ordered.push({ entries: [steering], sequence: event.sequence });
+    }
     const id = string(event.payload.toolCallId);
     const tool = tools.get(id);
     if (tool && !ownedTools.has(id) && !seenTools.has(id)) {

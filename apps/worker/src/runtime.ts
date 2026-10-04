@@ -1,4 +1,7 @@
-import type { AgentControllerEvent } from "@mastra/core/agent-controller";
+import type {
+  AgentControllerEvent,
+  Session,
+} from "@mastra/core/agent-controller";
 import type { RequestContext } from "@mastra/core/request-context";
 import { PostgresStore } from "@mastra/pg";
 import type { PromptAttachment } from "@reasonateai/contracts/execution";
@@ -34,6 +37,7 @@ export interface RunSession {
     requestContext: RequestContext;
     untilIdle?: boolean;
   }) => Promise<void>;
+  sendSignal?: Session["sendSignal"];
   subscribe: (listener: (event: AgentControllerEvent) => void) => () => void;
   suspensions: {
     register: (input: {

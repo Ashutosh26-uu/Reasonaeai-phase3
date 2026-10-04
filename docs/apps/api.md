@@ -63,6 +63,9 @@ GET    /v1/build-sessions/:buildSessionId                     read it in scope
 GET    /v1/projects/:projectId/conversations                  list a project's conversations
 GET    /v1/build-sessions/:buildSessionId/messages            read the conversation history
 POST   /v1/build-sessions/:buildSessionId/turns                append one turn
+POST   /v1/build-sessions/:buildSessionId/runs/:runId/retry     retry a failed or cancelled generation
+POST   /v1/build-sessions/:buildSessionId/runs/:runId/steering  request guidance for the active run
+GET    /v1/build-sessions/:buildSessionId/workspace/checkpoint-diff  read a saved turn's file diff
 GET    /v1/build-sessions/:buildSessionId/events               follow the run's events (SSE)
 POST   /v1/artifacts  · GET /v1/artifacts                        record and list artifact metadata
 POST   /v1/artifacts/:artifactId/access · GET .../download       signed access and byte delivery
@@ -71,6 +74,12 @@ POST   /v1/artifacts/:artifactId/access · GET .../download       signed access 
 ---
 
 ## The event stream
+
+Generation retry requires an `Idempotency-Key` header and authorized organization/project query scope, with no request body. Only failed or cancelled runs in the selected build session qualify. The new run reuses the server-stored prompt and attachments; history does not expose their raw bytes. Replaying an accepted retry does not reserve quota again, and concurrent retries create one new run. Reconnecting an event stream never submits a generation.
+
+Steering accepts a strict `{ message }` body and an `Idempotency-Key` header, with organization/project query scope resolved against the authenticated membership and build session. Admission requires an active, uncancelled run and allows at most ten messages per run. A 202 response reports requested/delivering/delivered/failed status, not guaranteed model consumption. Only the current worker lease owner delivers the command; requested and delivery-result events are replayable through the same scoped ledger. Ambiguous delivery after takeover is recorded as failed rather than repeated.
+
+Checkpoint diffs require organization/project, run ID, terminal-event sequence, and a literal file path. The route authorizes the build session, validates that exact saved worker checkpoint, verifies its private bundle digest/commit, and returns a bounded textual diff or an explicit binary/oversized/unavailable state. It does not diff the latest mutable workspace. See `docs/operations/workspace-interactions.md` for rollout and verification limits.
 
 One SSE route carries two channels of different authority.
 

@@ -142,6 +142,7 @@ Formatting and linting are owned by Ultracite/Biome. Do not add ESLint, Prettier
 - A mutable sandbox filesystem is restored from private Git checkpoints and durable project state. Immutable artifacts live in private tenant-scoped object storage behind validated manifests and short-lived authorized URLs. Parallel workers require task ownership and per-file mutation locks before sharing a workspace.
 - The public API exposes only company-owned authenticated product routes. Raw Mastra agent/controller routes, worker endpoints, sandbox control, and deployment control are private; browser commands use HTTPS JSON and browser progress uses replayable SSE.
 - Controller sessions are process-local convenience state. Restart recovery reconstructs them from durable build-session, run, approval, and thread records; never use a controller session as an authorization or recovery authority.
+- Worker concurrency is bounded and runs for the same project remain serialized by PostgreSQL. Recovery must preserve uncheckpointed workspace edits before a later run restores an older checkpoint; a missing recovery prerequisite must stay visible rather than silently overwriting work.
 
 ## Required patterns
 
