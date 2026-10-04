@@ -12,6 +12,7 @@ export interface WorkerOverride {
   /** Optional hard step cap. Omitted means no cap. */
   maxTurns?: number;
   model?: string;
+  tools?: AgentControllerSubagent["tools"];
 }
 
 export type WorkerOverrides = Record<string, WorkerOverride | undefined>;
@@ -53,6 +54,7 @@ export function materializeSubagent(
     id: definition.name,
     instructions: definition.prompt,
     name: displayNameFor(definition.name),
+    ...(override?.tools ? { tools: override.tools } : {}),
     ...(maxTurns === undefined ? {} : { maxSteps: maxTurns }),
     ...(modelId ? { defaultModelId: modelId } : {}),
   };

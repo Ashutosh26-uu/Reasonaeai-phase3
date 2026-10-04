@@ -46,6 +46,10 @@ export interface TestToolOptions {
   workspaceRoot?: string;
 }
 
+export function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function buildTestCommand(input: {
   framework?: TestFramework | "auto" | undefined;
   testFile?: string;
@@ -172,7 +176,7 @@ export function createTestExecutionTool(options: TestToolOptions = {}) {
     id: "test_execution",
     inputSchema: z.strictObject({
       framework: z
-        .enum(["vitest", "jest", "node:test", "auto"])
+        .enum(["vitest", "jest", "node:test", "tap", "auto"])
         .default("auto")
         .optional(),
       testFile: z.string().min(1).optional(),

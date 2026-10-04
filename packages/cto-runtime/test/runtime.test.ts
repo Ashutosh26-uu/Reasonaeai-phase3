@@ -144,4 +144,31 @@ describe("ReasonateAI CTO composition", () => {
     const cappedOptions = await capped.mainAgent.getDefaultOptions();
     expect(cappedOptions.maxSteps).toBe(40);
   });
+
+  it("provides test_execution tool to both mainAgent and debugger subagent when enabled", async () => {
+    const runtime = createReasonateCtoRuntime({
+      enableTestRunner: true,
+      model: "openai/gpt-5-mini",
+      workspace,
+    });
+
+    const mainTools = await runtime.mainAgent.listTools();
+    expect(mainTools).toHaveProperty("test_execution");
+
+    // Check debugger subagent on controller configuration
+    const subagents =
+      (
+        runtime.controller as unknown as {
+          config: {
+            subagents?: Array<{
+              id: string;
+              tools?: Record<string, unknown>;
+            }>;
+          };
+        }
+      ).config.subagents ?? [];
+    const debuggerSubagent = subagents.find((s) => s.id === "debugger");
+    expect(debuggerSubagent).toBeDefined();
+    expect(debuggerSubagent?.tools).toHaveProperty("test_execution");
+  });
 });

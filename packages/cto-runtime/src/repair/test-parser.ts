@@ -4,6 +4,7 @@ import type {
   TestDiagnostic,
   TestFramework,
   TestReport,
+  TestStatus,
 } from "@reasonateai/contracts/repair";
 
 const ANSI_REGEX =
@@ -16,11 +17,13 @@ const SOURCE_LOC_REGEX =
 const EXPECTED_VAL_REGEX = /Expected(?:\s+value)?:\s*([^\n]+)/i;
 const RECEIVED_VAL_REGEX = /(?:Received|Actual)(?:\s+value)?:\s*([^\n]+)/i;
 const DIFF_REGEX =
-  /-\s+Expected\s*\n\+?\s*Received\s*\n\s*-\s+([^\n]+)\n\s*\+\s+([^\n]+)/i;
+  /-\s+Expected[^\n]*\n\+?\s*Received[^\n]*\n+[\s\S]*?-\s+([^\n]+)\n+\s*\+\s+([^\n]+)/i;
 const TO_EQUAL_REGEX =
-  /expected\s+([^\n]+?)\s+to\s+(?:deeply\s+)?equal\s+([^\n]+)/i;
+  /expected\s+([^\n]+?)\s+to\s+(?:deeply\s+)?(?:equal|be)\s+([^\n]+)/i;
 
 const TAP_RESULT_REGEX = /^(not ok|ok)\s+(\d+)\s*-\s*(.+)$/;
+const TAP_ERROR_MULTILINE_REGEX =
+  /error:\s*\|-?\s*\n([\s\S]+?)(?=\n\s*[a-zA-Z0-9_-]+:|\.\.\.|$)/i;
 const TAP_ERROR_REGEX = /error:\s*['"]?([^\n'"]+)['"]?/i;
 const TAP_EXPECTED_REGEX = /expected:\s*([^\n]+)/i;
 const TAP_ACTUAL_REGEX = /actual:\s*([^\n]+)/i;
@@ -28,6 +31,10 @@ const TAP_STACK_REGEX =
   /stack:\s*\|-?\s*\n([\s\S]+?)(?=\n\s*[a-zA-Z0-9_-]+:|\.\.\.|$)/i;
 const TAP_LOCATION_REGEX =
   /location:\s*['"]?([^\n'":]+):(\d+)(?::(\d+))?['"]?/i;
+const TAP_SKIP_DIRECTIVE_REGEX = /#\s*SKIP\b(.*)$/i;
+const TAP_TODO_DIRECTIVE_REGEX = /#\s*TODO\b(.*)$/i;
+const TAP_STRIP_SKIP_REGEX = /#\s*SKIP\b.*$/i;
+const TAP_STRIP_TODO_REGEX = /#\s*TODO\b.*$/i;
 
 const FAIL_LINE_REGEX = /FAIL\s+([^\s>]+)(?:\s*>\s*(.+))?/;
 const PASS_LINE_REGEX = /PASS\s+([^\s>]+)(?:\s*>\s*(.+))?/;
@@ -35,6 +42,16 @@ const SUMMARY_LINE_REGEX = /(\d+)\s+failed.*(\d+)\s+passed/i;
 
 export function stripAnsi(text: string): string {
   return text.replace(ANSI_REGEX, "");
+}
+
+export function safeRawOutput(text?: string): string | undefined {
+  if (!text) {
+    return undefined;
+  }
+  if (text.length <= 1_500_000) {
+    return text;
+  }
+  return `${text.slice(0, 1_500_000)}\n...[output truncated: exceeded 1.5MB limit]`;
 }
 
 export function cleanStackTrace(rawStack?: string): string | undefined {
@@ -234,24 +251,80 @@ interface JestOrVitestJsonOutput {
   testResults?: JestOrVitestTestFileResult[];
 }
 
-function tryParseJsonBlob(text: string): JestOrVitestJsonOutput | null {
-  const clean = stripAnsi(text);
+function findBraceIndices(
+  text: string,
+  pivotIdx: number
+): { closeIndices: number[]; openIndices: number[] } {
+  const openIndices: number[] = [];
+  for (let i = pivotIdx; i >= 0 && openIndices.length < 25; i -= 1) {
+    if (text[i] === "{") {
+      openIndices.push(i);
+    }
+  }
+
+  const closeIndices: number[] = [];
+  for (
+    let i = text.length - 1;
+    i >= pivotIdx && closeIndices.length < 25;
+    i -= 1
+  ) {
+    if (text[i] === "}") {
+      closeIndices.push(i);
+    }
+  }
+  return { closeIndices, openIndices };
+}
+
+function searchJsonBetweenBraces(
+  clean: string,
+  openIndices: number[],
+  closeIndices: number[]
+): JestOrVitestJsonOutput | null {
+  for (const startIdx of openIndices) {
+    for (const endIdx of closeIndices) {
+      if (startIdx >= endIdx) {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(clean.slice(startIdx, endIdx + 1));
+        if (parsed && typeof parsed === "object" && "testResults" in parsed) {
+          return parsed as JestOrVitestJsonOutput;
+        }
+      } catch {
+        // try next candidate pair
+      }
+    }
+  }
+  return null;
+}
+
+function tryParseSimpleJson(clean: string): JestOrVitestJsonOutput | null {
   const firstBrace = clean.indexOf("{");
   const lastBrace = clean.lastIndexOf("}");
   if (firstBrace === -1 || lastBrace <= firstBrace) {
     return null;
   }
 
-  const candidate = clean.slice(firstBrace, lastBrace + 1);
   try {
-    const parsed = JSON.parse(candidate);
+    const parsed = JSON.parse(clean.slice(firstBrace, lastBrace + 1));
     if (parsed && typeof parsed === "object" && "testResults" in parsed) {
       return parsed as JestOrVitestJsonOutput;
     }
   } catch {
-    // JSON parse error, ignore and fall through
+    return null;
   }
   return null;
+}
+
+function tryParseJsonBlob(text: string): JestOrVitestJsonOutput | null {
+  const clean = stripAnsi(text);
+  const testResultsIdx = clean.indexOf('"testResults"');
+  if (testResultsIdx === -1) {
+    return tryParseSimpleJson(clean);
+  }
+
+  const { closeIndices, openIndices } = findBraceIndices(clean, testResultsIdx);
+  return searchJsonBetweenBraces(clean, openIndices, closeIndices);
 }
 
 function buildFailedAssertionDiagnostic(
@@ -342,10 +415,34 @@ function parseFileExecutionFailure(
   };
 }
 
+function collectTestCaseDiagnostics(
+  assertionResults: JestOrVitestAssertionResult[] | undefined,
+  testFile: string,
+  tests: TestDiagnostic[]
+): { failedCount: number; passedCount: number; skippedCount: number } {
+  let passedCount = 0;
+  let failedCount = 0;
+  let skippedCount = 0;
+
+  for (const testCase of assertionResults ?? []) {
+    const diag = parseAssertionResult(testCase, testFile);
+    if (diag.status === "passed") {
+      passedCount += 1;
+    } else if (diag.status === "failed") {
+      failedCount += 1;
+    } else {
+      skippedCount += 1;
+    }
+    tests.push(diag);
+  }
+  return { failedCount, passedCount, skippedCount };
+}
+
 function parseJsonTestResults(
   json: JestOrVitestJsonOutput,
   framework: "vitest" | "jest",
-  rawOutput: string
+  rawOutput: string,
+  exitCode = 0
 ): TestReport {
   const tests: TestDiagnostic[] = [];
   let passedCount = 0;
@@ -365,22 +462,28 @@ function parseJsonTestResults(
       continue;
     }
 
-    for (const testCase of fileResult.assertionResults ?? []) {
-      const diag = parseAssertionResult(testCase, testFile);
-      if (diag.status === "passed") {
-        passedCount += 1;
-      } else if (diag.status === "failed") {
-        failedCount += 1;
-      } else {
-        skippedCount += 1;
-      }
-      tests.push(diag);
-    }
+    const counts = collectTestCaseDiagnostics(
+      fileResult.assertionResults,
+      testFile,
+      tests
+    );
+    passedCount += counts.passedCount;
+    failedCount += counts.failedCount;
+    skippedCount += counts.skippedCount;
+  }
+
+  if (exitCode !== 0 && failedCount === 0) {
+    const lines = rawOutput.split("\n");
+    tests.push(buildExecutionFallbackDiagnostic(rawOutput, lines));
+    failedCount = 1;
   }
 
   const totalCount =
     json.numTotalTests ?? passedCount + failedCount + skippedCount;
-  const passed = failedCount === 0 && (totalCount > 0 || tests.length === 0);
+  const passed =
+    exitCode === 0 &&
+    failedCount === 0 &&
+    (totalCount > 0 || tests.length === 0);
 
   return {
     durationMs: 0,
@@ -388,7 +491,7 @@ function parseJsonTestResults(
     framework,
     passed,
     passedCount,
-    rawOutput,
+    rawOutput: safeRawOutput(rawOutput),
     skippedCount,
     summary: `${passedCount} passed, ${failedCount} failed, ${totalCount} total`,
     tests,
@@ -400,12 +503,26 @@ function applyTapMessages(
   target: Partial<TestDiagnostic>,
   yamlText: string
 ): void {
-  const errorMatch: RegExpExecArray | null = TAP_ERROR_REGEX.exec(yamlText);
-  if (errorMatch !== null) {
-    const [, errorVal = ""] = errorMatch;
-    if (errorVal) {
-      target.message = errorVal.trim();
-      target.assertionFailure = errorVal.trim();
+  const multilineMatch = TAP_ERROR_MULTILINE_REGEX.exec(yamlText);
+  // biome-ignore lint/suspicious/noUnnecessaryConditions: RegExp.exec returns null at runtime on mismatch
+  if (multilineMatch?.[1]) {
+    const rawError = multilineMatch[1].trim();
+    const firstLine =
+      rawError
+        .split("\n")
+        .find((l) => l.trim().length > 0)
+        ?.trim() || "Test failed";
+    target.message = firstLine;
+    target.assertionFailure = rawError;
+  } else {
+    const errorMatch: RegExpExecArray | null = TAP_ERROR_REGEX.exec(yamlText);
+    if (errorMatch !== null) {
+      const [, errorVal = ""] = errorMatch;
+      const trimmed = errorVal.trim();
+      if (trimmed && trimmed !== "|-" && trimmed !== "|") {
+        target.message = trimmed;
+        target.assertionFailure = trimmed;
+      }
     }
   }
 
@@ -492,6 +609,8 @@ function parseTapSubtestHeader(trimmed: string): {
   return { suite: name };
 }
 
+const TAP_TEST_FILE_PATTERN = /\.(test|spec)\.[jt]sx?$|\.(test|spec)\.[mc]js$/i;
+
 function parseTapResultLine(
   trimmed: string,
   currentFile: string,
@@ -506,39 +625,72 @@ function parseTapResultLine(
     return null;
   }
   const title = testTitle.trim();
-  if (title === currentFile || title.endsWith(".ts") || title.endsWith(".js")) {
+  if (
+    title === currentFile ||
+    title === currentFile.replace(/\\/g, "/") ||
+    TAP_TEST_FILE_PATTERN.test(title)
+  ) {
     return null;
   }
-  const isFailed = okStatus === "not ok";
+
+  const skipMatch = title.match(TAP_SKIP_DIRECTIVE_REGEX);
+  const todoMatch = title.match(TAP_TODO_DIRECTIVE_REGEX);
+  let cleanTitle = title;
+  let status: TestStatus = okStatus === "not ok" ? "failed" : "passed";
+  let message = status === "failed" ? `Test failed: ${title}` : "Passed";
+
+  if (skipMatch) {
+    status = "skipped";
+    cleanTitle = title.replace(TAP_STRIP_SKIP_REGEX, "").trim();
+    message = skipMatch[1]?.trim()
+      ? `Skipped: ${skipMatch[1].trim()}`
+      : "Skipped";
+  } else if (todoMatch) {
+    status = "skipped";
+    cleanTitle = title.replace(TAP_STRIP_TODO_REGEX, "").trim();
+    message = todoMatch[1]?.trim() ? `Todo: ${todoMatch[1].trim()}` : "Todo";
+  }
+
+  const suite =
+    currentSuite && currentSuite !== cleanTitle ? currentSuite : undefined;
+
   return {
-    message: isFailed ? `Test failed: ${title}` : "Passed",
-    status: isFailed ? "failed" : "passed",
-    ...(currentSuite ? { suite: currentSuite } : {}),
+    message,
+    status,
+    ...(suite ? { suite } : {}),
     testFile: currentFile,
-    testTitle: title,
+    testTitle: cleanTitle,
   };
 }
 
 function summarizeTapReport(
   tests: TestDiagnostic[],
-  rawText: string
+  rawText: string,
+  exitCode = 0
 ): TestReport {
   const passedCount = tests.filter((t) => t.status === "passed").length;
-  const failedCount = tests.filter(
+  let failedCount = tests.filter(
     (t) => t.status === "failed" || t.status === "error"
   ).length;
   const skippedCount = tests.filter((t) => t.status === "skipped").length;
+
+  if (exitCode !== 0 && failedCount === 0) {
+    const lines = rawText.split("\n");
+    tests.push(buildExecutionFallbackDiagnostic(rawText, lines));
+    failedCount = 1;
+  }
+
   const totalCount = tests.length;
 
   return {
     durationMs: 0,
     failedCount,
     framework: "tap",
-    passed: failedCount === 0 && totalCount > 0,
+    passed: exitCode === 0 && failedCount === 0 && totalCount > 0,
     passedCount,
-    rawOutput: rawText,
+    rawOutput: safeRawOutput(rawText),
     skippedCount,
-    summary: `TAP: ${passedCount} passed, ${failedCount} failed, ${totalCount} total`,
+    summary: `TAP: ${passedCount} passed, ${failedCount} failed, ${skippedCount} skipped, ${totalCount} total`,
     tests,
     totalCount,
   };
@@ -573,7 +725,7 @@ function handleTapYamlLine(
   return true;
 }
 
-export function parseTapOutput(rawText: string): TestReport {
+export function parseTapOutput(rawText: string, exitCode = 0): TestReport {
   const clean = stripAnsi(rawText);
   const lines = clean.split("\n");
   const tests: TestDiagnostic[] = [];
@@ -628,7 +780,7 @@ export function parseTapOutput(rawText: string): TestReport {
     flush();
   }
 
-  return summarizeTapReport(tests, rawText);
+  return summarizeTapReport(tests, rawText, exitCode);
 }
 
 function parseHumanReadableFailure(
@@ -787,7 +939,7 @@ export function parseHumanReadableOutput(
     framework: "custom",
     passed: exitCode === 0 && failedCount === 0,
     passedCount,
-    rawOutput: rawText,
+    rawOutput: safeRawOutput(rawText),
     skippedCount: 0,
     summary: `${passedCount} passed, ${failedCount} failed, ${totalCount} total`,
     tests,
@@ -808,7 +960,7 @@ export function parseTestExecutionOutput(input: {
   const json = tryParseJsonBlob(combined);
   if (json) {
     const framework = input.framework === "jest" ? "jest" : "vitest";
-    return parseJsonTestResults(json, framework, combined);
+    return parseJsonTestResults(json, framework, combined, input.exitCode);
   }
 
   if (
@@ -817,7 +969,7 @@ export function parseTestExecutionOutput(input: {
     combined.includes("not ok ") ||
     combined.includes("ok 1")
   ) {
-    const tapReport = parseTapOutput(combined);
+    const tapReport = parseTapOutput(combined, input.exitCode);
     if (tapReport.tests.length > 0) {
       return tapReport;
     }

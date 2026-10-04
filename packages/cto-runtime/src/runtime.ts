@@ -349,6 +349,9 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
         ...(limits.debuggerMaxSteps === undefined
           ? {}
           : { maxTurns: limits.debuggerMaxSteps }),
+        ...(config.enableTestRunner
+          ? { tools: { test_execution: testExecutionTool } }
+          : {}),
       },
       scout: {
         ...(config.subagentModels?.scout

@@ -2,6 +2,7 @@ import type { RunEventType } from "@reasonateai/contracts/execution-protocol";
 import type { TestReport } from "@reasonateai/contracts/repair";
 import { describe, expect, it } from "vitest";
 import {
+  buildReproductionCommand,
   resolveOwningFile,
   SelfDebuggingOrchestrator,
 } from "../src/repair/orchestrator.js";
@@ -111,6 +112,54 @@ describe("SelfDebuggingOrchestrator", () => {
         testTitle: "helpers",
       });
       expect(file).toBe("src/helpers.ts");
+    });
+
+    it("infers src counterpart across monorepo packages and tests folder", () => {
+      const monorepoFile = resolveOwningFile({
+        message: "error",
+        status: "failed",
+        testFile: "packages/contracts/test/repair.test.ts",
+        testTitle: "contracts",
+      });
+      expect(monorepoFile).toBe("packages/contracts/src/repair.ts");
+
+      const pluralTestDirFile = resolveOwningFile({
+        message: "error",
+        status: "failed",
+        testFile: "tests/math.test.ts",
+        testTitle: "math",
+      });
+      expect(pluralTestDirFile).toBe("src/math.ts");
+    });
+  });
+
+  describe("buildReproductionCommand", () => {
+    it("builds framework-specific reproduction commands", () => {
+      expect(
+        buildReproductionCommand({
+          framework: "node:test",
+          testFile: "test/discount.test.js",
+          testTitle: "applies 20 percent discount",
+        })
+      ).toBe(
+        'node --test --test-reporter=tap --test-name-pattern="applies 20 percent discount" test/discount.test.js'
+      );
+
+      expect(
+        buildReproductionCommand({
+          framework: "jest",
+          testFile: "test/calc.test.js",
+          testTitle: "adds numbers",
+        })
+      ).toBe('pnpm exec jest -t "adds numbers" test/calc.test.js');
+
+      expect(
+        buildReproductionCommand({
+          framework: "vitest",
+          testFile: "test/unit.test.ts",
+          testTitle: "passes unit",
+        })
+      ).toBe('pnpm vitest run test/unit.test.ts -t "passes unit"');
     });
   });
 

@@ -238,6 +238,106 @@ not ok 1 - test/calculator.test.ts
       expect(failedTest?.location?.file).toBe("test/calculator.test.ts");
       expect(failedTest?.location?.line).toBe(25);
     });
+
+    it("parses multiline YAML error blocks in TAP without setting '|-' as message", () => {
+      const tap = `TAP version 13
+# Subtest: test/multiline.test.js
+    # Subtest: asserts deeply
+    not ok 1 - asserts deeply
+      ---
+      duration_ms: 1.9
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+
+        2 !== 3
+      code: 'ERR_ASSERTION'
+      expected: 3
+      actual: 2
+      stack: |-
+        at TestContext.<anonymous> (test/multiline.test.js:10:5)
+      ...
+    # Subtest: skipped test
+    ok 2 - skipped test # SKIP reason
+      ---
+      duration_ms: 0.2
+      ...
+    1..2
+not ok 1 - test/multiline.test.js
+  ---
+  duration_ms: 5.0
+  ...
+1..1`;
+
+      const report = parseTapOutput(tap, 1);
+      expect(report.passed).toBe(false);
+      expect(report.failedCount).toBe(1);
+      expect(report.skippedCount).toBe(1);
+      expect(report.passedCount).toBe(0);
+
+      const failedTest = report.tests.find((t) => t.status === "failed");
+      expect(failedTest).toBeDefined();
+      expect(failedTest?.message).toBe("Expected values to be strictly equal:");
+      expect(failedTest?.assertionFailure).toContain("2 !== 3");
+      expect(failedTest?.expected).toBe("3");
+      expect(failedTest?.actual).toBe("2");
+
+      const skippedTest = report.tests.find((t) => t.status === "skipped");
+      expect(skippedTest).toBeDefined();
+      expect(skippedTest?.testTitle).toBe("skipped test");
+      expect(skippedTest?.message).toBe("Skipped: reason");
+    });
+  });
+
+  describe("Robust JSON and diff parsing", () => {
+    it("parses Vitest JSON even when surrounded by console.log output with JSON", () => {
+      const mixed = `
+[info] Build completed
+console.log({ user: "test", debug: true })
+{"numTotalTests":1,"numPassedTests":1,"numFailedTests":0,"testResults":[{"name":"test/unit.test.ts","status":"passed","assertionResults":[{"title":"works","status":"passed"}]}]}
+console.log({ after: 123 })
+`;
+      const report = parseTestExecutionOutput({
+        exitCode: 0,
+        framework: "vitest",
+        stdout: mixed,
+      });
+
+      expect(report.passed).toBe(true);
+      expect(report.framework).toBe("vitest");
+      expect(report.totalCount).toBe(1);
+      expect(report.passedCount).toBe(1);
+    });
+
+    it("extracts expected and actual from Vitest/Jest diff with header counts and blank lines", () => {
+      const diff = `- Expected  - 1
++ Received  + 1
+
+- 4
++ 3`;
+      const values = extractExpectedActual(diff);
+      expect(values.expected).toBe("4");
+      expect(values.actual).toBe("3");
+    });
+
+    it("extracts expected and actual from 'expected X to be Y' assertions", () => {
+      const msg = "AssertionError: expected false to be true";
+      const values = extractExpectedActual(msg);
+      expect(values.actual).toBe("false");
+      expect(values.expected).toBe("true");
+    });
+
+    it("marks report failed when exitCode is non-zero even if JSON or TAP reported 0 test failures", () => {
+      const crashedTap = `TAP version 13
+ok 1 - passes initially
+1..1
+# Node process crashed with unhandled rejection`;
+
+      const report = parseTapOutput(crashedTap, 1);
+      expect(report.passed).toBe(false);
+      expect(report.failedCount).toBe(1);
+      expect(report.tests.some((t) => t.status === "failed")).toBe(true);
+    });
   });
 
   describe("Human-readable terminal fallback parsing", () => {

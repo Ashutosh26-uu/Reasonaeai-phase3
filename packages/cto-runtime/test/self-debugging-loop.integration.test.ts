@@ -85,11 +85,15 @@ test("applies zero discount", () => {
           cwd: tempWorkspace,
           encoding: "utf8",
         });
-        return parseTapOutput(`${stdout}\n${stderr}`);
+        return parseTapOutput(`${stdout}\n${stderr}`, 0);
       } catch (error: unknown) {
-        const err = error as { stderr?: string; stdout?: string };
+        const err = error as {
+          code?: number;
+          stderr?: string;
+          stdout?: string;
+        };
         const combined = `${err.stdout ?? ""}\n${err.stderr ?? ""}`;
-        return parseTapOutput(combined);
+        return parseTapOutput(combined, err.code ?? 1);
       }
     };
 
@@ -98,6 +102,12 @@ test("applies zero discount", () => {
       applyRepair: (brief) => {
         expect(brief.attemptNumber).toBe(1);
         expect(brief.failingTest.testTitle).toBe("applies 20 percent discount");
+        expect(brief.failingTest.message).not.toBe("|-");
+        expect(brief.failingTest.message).toContain(
+          "Expected values to be strictly equal"
+        );
+        expect(brief.failingTest.expected).toBe("80");
+        expect(brief.failingTest.actual).toBe("120");
         expect(brief.failureEnvelope.classification).toBe("assertion_failure");
 
         // Repair owning file

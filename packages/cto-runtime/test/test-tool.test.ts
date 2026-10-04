@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildTestCommand,
   createTestExecutionTool,
+  escapeRegex,
 } from "../src/repair/test-tool.js";
 
 const NO_EXECUTOR_RE = /No test command executor configured/;
@@ -65,6 +66,15 @@ describe("structured test execution tool", () => {
         "test/node.test.mjs",
       ]);
       expect(cmd.frameworkType).toBe("tap");
+    });
+
+    it("escapes regex special characters safely", () => {
+      expect(escapeRegex("adds 1 + 2 (returns 3)")).toBe(
+        "adds 1 \\+ 2 \\(returns 3\\)"
+      );
+      expect(escapeRegex("checks [user.id]?")).toBe(
+        "checks \\[user\\.id\\]\\?"
+      );
     });
   });
 

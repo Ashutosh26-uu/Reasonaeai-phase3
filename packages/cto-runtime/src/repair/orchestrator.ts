@@ -6,9 +6,11 @@ import type {
   FailureEnvelope,
   RepairOutcome,
   TestDiagnostic,
+  TestFramework,
   TestReport,
 } from "@reasonateai/contracts/repair";
 import { classifyTestFailure } from "./test-parser.js";
+import { escapeRegex } from "./test-tool.js";
 
 export interface RepairAttemptRecord {
   attemptNumber: number;
@@ -85,16 +87,32 @@ export type OrchestrationOutcome =
 const TEST_FILE_RE = /\.(test|spec)\.[jt]sx?$/;
 const STACK_SOURCE_FILE_RE =
   /(?:at\s+(?:.+?\s+\()?)?([a-zA-Z0-9_\-./\\]+\.[jt]sx?):/i;
-const TEST_DIR_PREFIX_RE = /^test\//;
+const TEST_DIR_PATTERN = /(^|\/)tests?\//;
 const TEST_EXT_DOT_RE = /\.test\./;
 const SPEC_EXT_DOT_RE = /\.spec\./;
 
+export function buildReproductionCommand(params: {
+  framework?: TestFramework;
+  testFile: string;
+  testTitle: string;
+}): string {
+  const { framework, testFile, testTitle } = params;
+  const normalizedFile = testFile.replace(/\\/g, "/");
+  if (framework === "node:test" || framework === "tap") {
+    return `node --test --test-reporter=tap --test-name-pattern="${testTitle}" ${normalizedFile}`;
+  }
+  if (framework === "jest") {
+    return `pnpm exec jest -t "${testTitle}" ${normalizedFile}`;
+  }
+  return `pnpm vitest run ${normalizedFile} -t "${testTitle}"`;
+}
+
 export function resolveOwningFile(diagnostic: TestDiagnostic): string {
-  if (
-    diagnostic.location?.file &&
-    !TEST_FILE_RE.test(diagnostic.location.file)
-  ) {
-    return diagnostic.location.file;
+  if (diagnostic.location?.file) {
+    const locFile = diagnostic.location.file.replace(/\\/g, "/");
+    if (!TEST_FILE_RE.test(locFile)) {
+      return locFile;
+    }
   }
 
   if (diagnostic.stackFrame) {
@@ -111,15 +129,16 @@ export function resolveOwningFile(diagnostic: TestDiagnostic): string {
     }
   }
 
-  const inferred = diagnostic.testFile
-    .replace(TEST_DIR_PREFIX_RE, "src/")
+  const normalizedTestFile = diagnostic.testFile.replace(/\\/g, "/");
+  const inferred = normalizedTestFile
+    .replace(TEST_DIR_PATTERN, "$1src/")
     .replace(TEST_EXT_DOT_RE, ".")
     .replace(SPEC_EXT_DOT_RE, ".");
-  if (inferred !== diagnostic.testFile) {
+  if (inferred !== normalizedTestFile) {
     return inferred;
   }
 
-  return diagnostic.testFile;
+  return normalizedTestFile;
 }
 
 export class SelfDebuggingOrchestrator {
@@ -245,7 +264,7 @@ Task: Inspect and edit ${owningFile} using existing conventions to repair the ro
 
     const isolatedReport = await this.#config.runTests({
       testFile: primaryDiagnostic.testFile,
-      testNamePattern: primaryDiagnostic.testTitle,
+      testNamePattern: escapeRegex(primaryDiagnostic.testTitle),
     });
 
     if (!isolatedReport.passed || isolatedReport.failedCount > 0) {
@@ -375,9 +394,11 @@ Task: Inspect and edit ${owningFile} using existing conventions to repair the ro
       (t) => t.status === "failed" || t.status === "error"
     );
 
+    const defaultSummary =
+      initialReport.summary || "Test suite execution failed";
     const primaryDiagnostic: TestDiagnostic = failingDiagnostics[0] ?? {
-      assertionFailure: initialReport.summary,
-      message: initialReport.summary,
+      assertionFailure: defaultSummary,
+      message: defaultSummary,
       status: "failed",
       testFile: "tests",
       testTitle: "Suite failure",
@@ -386,7 +407,11 @@ Task: Inspect and edit ${owningFile} using existing conventions to repair the ro
     const classification = classifyTestFailure(primaryDiagnostic);
     const owningFile = resolveOwningFile(primaryDiagnostic);
     const defectId = randomUUID() as DefectId;
-    const reproductionCommand = `pnpm vitest run ${primaryDiagnostic.testFile} -t "${primaryDiagnostic.testTitle}"`;
+    const reproductionCommand = buildReproductionCommand({
+      framework: initialReport.framework,
+      testFile: primaryDiagnostic.testFile,
+      testTitle: primaryDiagnostic.testTitle,
+    });
     const summary = `${classification} in ${primaryDiagnostic.testTitle}: ${primaryDiagnostic.assertionFailure ?? primaryDiagnostic.message}`;
 
     const envelope: FailureEnvelope = {
