@@ -61,7 +61,8 @@ async function harness(
 
 describe("path argument normalisation", () => {
   it("strips the noise a model wraps a path in", () => {
-    expect(normalizePathArgument('  "@src/app.ts"  ')).toBe("src/app.ts");
+    expect(normalizePathArgument('  "@/src/app.ts"  ')).toBe("src/app.ts");
+    expect(normalizePathArgument("@scope/app.ts")).toBe("@scope/app.ts");
     expect(normalizePathArgument("file:///tmp/x.ts")).toBe("tmp/x.ts");
   });
 

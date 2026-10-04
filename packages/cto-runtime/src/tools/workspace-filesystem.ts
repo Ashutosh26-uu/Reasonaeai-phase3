@@ -1,7 +1,7 @@
 import { posix } from "node:path";
-
 import type { FileContent, WorkspaceFilesystem } from "@mastra/core/workspace";
 import { Filesystem, NotFoundError, type WriteResult } from "./hashline/fs.js";
+import { resolveWorkspacePath } from "./workspace-path.js";
 
 function isMissing(error: unknown): boolean {
   return (
@@ -27,16 +27,7 @@ export class WorkspaceHashlineFilesystem extends Filesystem {
   }
 
   override canonicalPath(path: string): string {
-    const target = path.startsWith("/")
-      ? posix.normalize(path)
-      : posix.resolve(this.#root, path);
-    const relative = posix.relative(this.#root, target);
-
-    if (relative === ".." || relative.startsWith("../")) {
-      throw new Error("The patch path escapes the verified workspace.");
-    }
-
-    return target;
+    return resolveWorkspacePath(path, this.#root);
   }
 
   override async readText(path: string): Promise<string> {

@@ -1,0 +1,287 @@
+import { randomUUID } from "node:crypto";
+import {
+  BuildSessionIdSchema,
+  PreviewIdSchema,
+} from "@reasonateai/contracts/execution";
+import {
+  OrganizationIdSchema,
+  ProjectIdSchema,
+} from "@reasonateai/contracts/identity";
+import { createInMemoryPreviewRepository } from "@reasonateai/project-state/previews";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createPreviewService,
+  PREVIEW_PUBLIC_PATH_PREFIX,
+} from "../src/mastra/preview-service.js";
+
+// Mock child_process execFile to test Docker interactions in isolation
+const dockerExecMock = vi.fn();
+vi.mock("node:child_process", () => ({
+  execFile: (
+    cmd: string,
+    args: string[],
+    callback: (
+      error: Error | null,
+      result?: { stdout: string; stderr: string }
+    ) => void
+  ) => {
+    dockerExecMock(cmd, args, callback);
+  },
+}));
+
+describe("preview service - persistence and restart recovery", () => {
+  const orgId = OrganizationIdSchema.parse(randomUUID());
+  const projId = ProjectIdSchema.parse(randomUUID());
+  const sessionId = BuildSessionIdSchema.parse(randomUUID());
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("records preview lifecycle transitions in the persistent store", async () => {
+    const store = createInMemoryPreviewRepository();
+    const service = createPreviewService({
+      previewStore: store,
+    });
+
+    // Mock docker calls for initial sweep
+    dockerExecMock.mockImplementation((_cmd, _args, cb) => {
+      cb(null, { stderr: "", stdout: "" });
+    });
+
+    const view = await service.start({
+      buildSessionId: sessionId,
+      organizationId: orgId,
+      projectId: projId,
+    });
+
+    expect(view.status).toBe("starting");
+    expect(view.url).toBe(`${PREVIEW_PUBLIC_PATH_PREFIX}/${view.previewId}/`);
+
+    // Verify stored row in persistent repository
+    const stored = await store.get(view.previewId);
+    expect(stored).toBeDefined();
+    expect(stored?.previewId).toBe(view.previewId);
+    expect(stored?.buildSessionId).toBe(sessionId);
+    expect(stored?.organizationId).toBe(orgId);
+    expect(stored?.projectId).toBe(projId);
+    expect(stored?.status).toBe("starting");
+
+    // Manually mark ready in store to simulate successful container boot
+    await store.update(view.previewId, {
+      hostPort: 32_500,
+      status: "ready",
+    });
+
+    // Target call touches and reads status
+    const target = await service.target(view.previewId);
+    expect(target).toBeDefined();
+    expect(target?.organizationId).toBe(orgId);
+
+    // Stopping marks stopped in store
+    const stopped = await service.stop(view.previewId);
+    expect(stopped?.status).toBe("stopped");
+
+    const storedAfterStop = await store.get(view.previewId);
+    expect(storedAfterStop?.status).toBe("stopped");
+  });
+
+  it("lazily hydrates preview from persistent store across cold restarts", async () => {
+    const store = createInMemoryPreviewRepository();
+    const previewId = PreviewIdSchema.parse(randomUUID());
+
+    // Populate a live preview directly in the persistent store
+    await store.record({
+      buildSessionId: sessionId,
+      containerName: `reasonate-sbx-preview-${previewId}`,
+      hostPort: 39_001,
+      organizationId: orgId,
+      previewId,
+      projectId: projId,
+      sandboxId: `preview-${previewId}`,
+      status: "ready",
+    });
+
+    // Mock fetch for port probe
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation((input) => {
+        const url = String(input);
+        if (url.includes("39001")) {
+          return Promise.resolve(new Response("OK", { status: 200 }));
+        }
+        return Promise.reject(new Error("connect ECONNREFUSED 127.0.0.1"));
+      });
+
+    // Fresh API instance with empty in-memory maps
+    const service = createPreviewService({
+      previewStore: store,
+    });
+
+    // Target call hydrates from store without error
+    const target = await service.target(previewId);
+    expect(target).toBeDefined();
+    expect(target?.organizationId).toBe(orgId);
+    expect(target?.projectId).toBe(projId);
+    expect(target?.hostPort).toBe(39_001);
+    expect(target?.status).toBe("ready");
+
+    // Status call also hydrates successfully
+    const statusReport = await service.status(previewId);
+    expect(statusReport).toBeDefined();
+    expect(statusReport?.view.previewId).toBe(previewId);
+    expect(statusReport?.view.port).toBe(39_001);
+    expect(statusReport?.view.status).toBe("ready");
+
+    fetchSpy.mockRestore();
+  });
+
+  it("recovers running healthy preview and retires dead/expired previews across restart", async () => {
+    const store = createInMemoryPreviewRepository();
+    const livePreviewId = PreviewIdSchema.parse(randomUUID());
+    const deadPreviewId = PreviewIdSchema.parse(randomUUID());
+    const expiredPreviewId = PreviewIdSchema.parse(randomUUID());
+
+    const liveContainer = `reasonate-sbx-preview-${livePreviewId}`;
+    const deadContainer = `reasonate-sbx-preview-${deadPreviewId}`;
+    const expiredContainer = `reasonate-sbx-preview-${expiredPreviewId}`;
+    const orphanContainer = `reasonate-sbx-preview-${randomUUID()}`;
+
+    const now = 1_000_000;
+
+    // 1. Live preview: recent, running, serving
+    await store.record({
+      buildSessionId: BuildSessionIdSchema.parse(randomUUID()),
+      containerName: liveContainer,
+      hostPort: 34_100,
+      organizationId: orgId,
+      previewId: livePreviewId,
+      projectId: projId,
+      sandboxId: `preview-${livePreviewId}`,
+      status: "ready",
+    });
+    await store.touch(livePreviewId, new Date(now - 1000));
+
+    // 2. Dead preview: recent, but container exited
+    await store.record({
+      buildSessionId: BuildSessionIdSchema.parse(randomUUID()),
+      containerName: deadContainer,
+      hostPort: 34_200,
+      organizationId: orgId,
+      previewId: deadPreviewId,
+      projectId: projId,
+      sandboxId: `preview-${deadPreviewId}`,
+      status: "ready",
+    });
+    await store.touch(deadPreviewId, new Date(now - 1000));
+
+    // 3. Expired preview: idle > 15m (16 minutes ago)
+    await store.record({
+      buildSessionId: BuildSessionIdSchema.parse(randomUUID()),
+      containerName: expiredContainer,
+      hostPort: 34_300,
+      organizationId: orgId,
+      previewId: expiredPreviewId,
+      projectId: projId,
+      sandboxId: `preview-${expiredPreviewId}`,
+      status: "ready",
+    });
+    await store.touch(expiredPreviewId, new Date(now - 16 * 60 * 1000));
+
+    const removedContainers: string[] = [];
+    const recoveredPreviews: string[] = [];
+    const retiredPreviews: string[] = [];
+
+    // Mock fetch for port probe
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation((input) => {
+        const url = String(input);
+        if (url.includes("34100")) {
+          return Promise.resolve(new Response("OK", { status: 200 }));
+        }
+        return Promise.reject(new Error("connect ECONNREFUSED 127.0.0.1"));
+      });
+
+    // Mock Docker CLI executions
+    dockerExecMock.mockImplementation((_cmd, args: string[], cb) => {
+      if (args[0] === "inspect") {
+        const [, , , container] = args;
+        if (container === liveContainer) {
+          cb(null, { stderr: "", stdout: "true\n" });
+          return;
+        }
+        cb(null, { stderr: "", stdout: "false\n" });
+        return;
+      }
+
+      if (args[0] === "port") {
+        cb(null, { stderr: "", stdout: "127.0.0.1:34100\n" });
+        return;
+      }
+
+      if (args[0] === "rm") {
+        const name = args.at(-1);
+        if (name) {
+          removedContainers.push(name);
+        }
+        cb(null, { stderr: "", stdout: "" });
+        return;
+      }
+
+      if (args[0] === "ps") {
+        // Return all preview containers on the host
+        const list = [
+          liveContainer,
+          deadContainer,
+          expiredContainer,
+          orphanContainer,
+        ].join("\n");
+        cb(null, { stderr: "", stdout: `${list}\n` });
+        return;
+      }
+
+      cb(null, { stderr: "", stdout: "" });
+    });
+
+    const service = createPreviewService({
+      nowMs: () => now,
+      onOrphansRemoved: () => undefined,
+      onPreviewRecovered: (id) => recoveredPreviews.push(id),
+      onPreviewRetired: (id) => retiredPreviews.push(id),
+      previewStore: store,
+    });
+
+    const result = await service.recover();
+
+    // Verification
+    expect(result.recovered).toBe(1);
+    expect(recoveredPreviews).toContain(livePreviewId);
+
+    // Dead and expired containers were removed
+    expect(removedContainers).toContain(deadContainer);
+    expect(removedContainers).toContain(expiredContainer);
+
+    // True orphan container was swept
+    expect(removedContainers).toContain(orphanContainer);
+
+    // Live container was PRESERVED (never passed to docker rm)
+    expect(removedContainers).not.toContain(liveContainer);
+
+    // Store states updated
+    const liveStored = await store.get(livePreviewId);
+    expect(liveStored?.status).toBe("ready");
+
+    const deadStored = await store.get(deadPreviewId);
+    expect(deadStored?.status).toBe("failed");
+
+    const expiredStored = await store.get(expiredPreviewId);
+    expect(expiredStored?.status).toBe("stopped");
+
+    fetchSpy.mockRestore();
+  });
+});

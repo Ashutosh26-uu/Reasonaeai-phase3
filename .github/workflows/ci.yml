@@ -1,0 +1,147 @@
+# Continuous integration for every pull request and every push to the default
+# branch. It runs the repository gates from `AGENTS.md` on a clean,
+# frozen-lockfile installation against real PostgreSQL and Redis, then starts
+# the built API artifact and exercises its health endpoint and its raw-route
+# denial. Dependency and secret scanning run as their own job so a scan failure
+# is reported as a scan failure rather than as a test failure.
+#
+# Deployment progression (preview, staging, production) is not performed here:
+# it requires environment-scoped identities and a release provider, which the
+# repository does not yet have.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  DATABASE_URL: postgres://reasonate:reasonate@127.0.0.1:55432/reasonate
+  REDIS_URL: redis://127.0.0.1:56379
+
+jobs:
+  verify:
+    name: Gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: reasonate
+          POSTGRES_PASSWORD: reasonate
+          POSTGRES_USER: reasonate
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U reasonate -d reasonate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 56379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          cache: pnpm
+          node-version-file: .nvmrc
+
+      # The lockfile is the build input. A manifest that disagrees with it fails
+      # here rather than resolving a different dependency set than the one the
+      # commit reviewed.
+      - name: Install from the frozen lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Format and lint
+        run: pnpm check
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      # Tests run with DATABASE_URL and REDIS_URL exported above, so the
+      # database- and Redis-backed suites execute instead of skipping.
+      - name: Test
+        run: pnpm test
+
+      # The sandbox image the integration tests and checkpoints use.
+      - name: Pull the sandbox image
+        run: docker pull node:22
+
+      # The checkpoint smoke starts a real container, snapshots it, destroys it
+      # with its volume, and restores it into a fresh one.
+      - name: Smoke sandbox checkpoints
+        run: pnpm --filter @reasonateai/api smoke:checkpoint
+
+      # The built artifact is what deploys, so it is started and exercised
+      # rather than only compiled. The health endpoint proves it serves, and the
+      # raw Mastra agent route proves the ingress denial is still in place.
+      - name: Smoke the built API
+        env:
+          PORT: 4111
+        run: |
+          node apps/api/.mastra/output/index.mjs >/tmp/api.log 2>&1 &
+          api_pid=$!
+          trap 'kill "$api_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:4111/health >/tmp/health.json 2>/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          cat /tmp/health.json
+          grep -q '"success":true' /tmp/health.json
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4111/api/agents)" = 404
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4111/api/agent-controllers)" = 404
+
+  scan:
+    name: Dependency and secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks scans the commits this branch adds, so it needs the base
+          # history rather than the default single-commit checkout.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          cache: pnpm
+          node-version-file: .nvmrc
+
+      - name: Install from the frozen lockfile
+        run: pnpm install --frozen-lockfile
+
+      # A high or critical advisory in the production dependency tree blocks the pull
+      # request until it is fixed or explicitly risk-accepted in the tracker.
+      - name: Audit dependencies
+        run: pnpm audit --prod --audit-level high
+
+      # Scan for committed secrets across git history
+      - name: Scan for committed secrets
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
+            detect --source /repo --no-banner --redact --verbose

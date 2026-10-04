@@ -51,7 +51,7 @@ const DEFAULT_MAX_INLINE_BYTES = 60_000;
 const DEFAULT_MAX_INLINE_LINES = 2000;
 
 const UNICODE_SPACE_RE = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
-const AT_PREFIX_RE = /^@(?=[^@])/;
+const AT_PREFIX_RE = /^@[/\\]/;
 const FILE_URL_RE = /^file:\/\/(?:\/)?/i;
 const ESCAPED_SEPARATOR_RE = /\\(?=[\\ ])/g;
 const TRAILING_SLASHES_RE = /[/\\]+$/;
@@ -112,7 +112,7 @@ const HTTP_URL_RE = /^https?:\/\//i;
  * Normalize a path argument before it is resolved.
  *
  * Models produce paths out of surrounding prose, so the common noise is removed:
- * a leading `@`, a `file://` prefix, escaped and non-breaking spaces, and
+ * an explicit `@/` shortcut, a `file://` prefix, escaped and non-breaking spaces, and
  * matching surrounding quotes. Each is a real near-miss that would otherwise
  * become "file not found" for a file that plainly exists.
  */

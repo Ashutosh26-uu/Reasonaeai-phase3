@@ -46,6 +46,18 @@ Reference behavior was checked against [Mastra signals](https://mastra.ai/docs/h
 
 The user requested committing all local follow-up work for preservation and previously stopped extended verification. The follow-up is recorded on `codex/workspace-interactions-checkpoints` as work in progress, including regression tests and `/.context/evidence/recovery-queue.png`. The screenshot documents the queue layout while waiting for a worker; it is not evidence of successful model execution. Final integrated gates and authenticated acceptance remain pending. Reconcile the branch with current `main` and update draft PR #20 before release. The generated `apps/web/next-env.d.ts` development-path change is retained locally and in the recovery copy rather than included in the product change; TTS and user servers remain untouched.
 
+## Main integration — October 4, 2026
+
+Integrate `main` at `95f3227` into the published feature branch without rewriting its history. Preserve the preview repository/export/migration and API startup recovery from PR #25 together with steering/retry routes and project-aware scheduling. Retain the CI and volume reclamation from PRs #23/#24 and the shared sandbox path contract from PR #26. The phase-document conflict is resolved by keeping workspace acceptance in progress and recording PR #26 as merged with passing CI. The generated Next.js development-path file remains outside the commit. Verification results for this combined snapshot are recorded below as they become available; earlier snapshot results remain historical evidence.
+
+- `pnpm check`: passed, 343 files.
+- `pnpm typecheck`: passed, all ten workspace tasks.
+- `pnpm --filter @reasonateai/web exec vitest run`: passed, 85 tests across twelve files.
+- Focused CTO path/read/write/edit suite: passed, 93 tests across five files.
+- `pnpm --filter @reasonateai/cto-runtime build`: passed. The first worker check found the old local build missing the newly merged workspace-path export; rebuilding resolved package loading.
+- Worker config/scheduling check: six config tests passed; three database-backed scheduling tests were skipped locally because no test `DATABASE_URL` was supplied. The new recovery and store/API integration regressions must run against GitHub CI's private PostgreSQL/Redis/Docker services rather than user data.
+- No product server, live project run, or TTS checkout was started or changed by verification. Full CI and authenticated acceptance remain pending.
+
 ## Verification evidence — October 3, 2026
 
 | Check | Result |

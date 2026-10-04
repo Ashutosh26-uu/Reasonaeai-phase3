@@ -19,6 +19,10 @@
     "./mastra": {
       "types": "./src/mastra-adapter.ts",
       "import": "./dist/mastra-adapter.js"
+    },
+    "./reclaim": {
+      "types": "./src/reclaim.ts",
+      "import": "./dist/reclaim.js"
     }
   },
   "scripts": {

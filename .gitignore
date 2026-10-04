@@ -11,3 +11,10 @@ coverage/
 .mastra/
 mastra.duckdb*
 .notion/
+
+# Mastra DuckDB observability store (runtime state, recreated on start)
+*.duckdb
+*.duckdb.wal
+
+# Local dev/test SQLite databases
+mastra.db*

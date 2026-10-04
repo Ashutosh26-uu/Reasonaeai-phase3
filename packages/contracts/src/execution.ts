@@ -18,6 +18,18 @@ export type SandboxEnvironmentId = z.infer<typeof SandboxEnvironmentIdSchema>;
 export const DeploymentIdSchema = z.uuid().brand<"DeploymentId">();
 export type DeploymentId = z.infer<typeof DeploymentIdSchema>;
 
+export const PreviewIdSchema = z.uuid().brand<"PreviewId">();
+export type PreviewId = z.infer<typeof PreviewIdSchema>;
+
+export const previewStatuses = [
+  "starting",
+  "ready",
+  "failed",
+  "stopped",
+] as const;
+export const PreviewStatusSchema = z.enum(previewStatuses);
+export type PreviewStatus = z.infer<typeof PreviewStatusSchema>;
+
 export const BuildSessionStatusSchema = z.enum([
   "provisioning",
   "ready",

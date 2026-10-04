@@ -19,7 +19,7 @@
  */
 
 import { realpathSync } from "node:fs";
-import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, posix, relative, resolve, sep } from "node:path";
 
 import type { RequestContext } from "@mastra/core/request-context";
 import { createTool } from "@mastra/core/tools";
@@ -241,6 +241,68 @@ class NodeWorkspaceFilesystem extends NodeFilesystem {
   }
 }
 
+async function applyExactReplacement(
+  args: EditRequestArgs,
+  options: EditToolOptions,
+  filesystem: Filesystem,
+  snapshots: ReadSnapshotStore,
+  cwd: string
+): Promise<ApplyEditRequestResult> {
+  const { newString, oldString, path: filePath } = args;
+  if (
+    filePath === undefined ||
+    oldString === undefined ||
+    newString === undefined
+  ) {
+    return {
+      error: "provide patch or path, oldString, and newString",
+      ok: false,
+    };
+  }
+  const resolved = filesystem.canonicalPath(
+    options.filesystem ? filePath : resolve(cwd, filePath)
+  );
+  if (!(await filesystem.exists(resolved))) {
+    return { error: `File not found: ${resolved}`, ok: false };
+  }
+  const content = await filesystem.readText(resolved);
+  const edited = applyEdit(content, oldString, newString);
+  // `applyEdit` returns either the new text or the reason it refused.
+  if (edited.error || edited.content === undefined) {
+    const reason =
+      edited.error ??
+      "No changes made - the replacement didn't modify the file.";
+    const displayPath = options.filesystem
+      ? posix.relative(cwd, resolved) || "."
+      : relative(cwd, resolved);
+    return {
+      error: `${reason} [${displayPath}]`,
+      ok: false,
+    };
+  }
+  const newContent = edited.content;
+  await filesystem.writeText(resolved, newContent);
+  await snapshots.record(
+    resolved,
+    newContent,
+    newContent.split(LINE_SPLIT_RE).map((_, index) => index + 1)
+  );
+  const fileName = basename(resolved);
+  const displayRelPath = options.filesystem
+    ? posix.relative(cwd, resolved) || fileName
+    : relative(cwd, resolved) || fileName;
+  const output = createTwoFilesPatch(
+    `a/${displayRelPath}`,
+    `b/${displayRelPath}`,
+    content,
+    newContent,
+    undefined,
+    undefined,
+    { context: 3 }
+  );
+  return { ok: true, output };
+}
+
 /**
  * Apply one edit request. Patch mode reports one line per section; exact
  * replacement mode refuses a missing file, refuses an unmatched or ambiguous
@@ -255,7 +317,7 @@ export async function applyEditRequest(
     : resolve(options.cwd ?? process.cwd());
   const filesystem = options.filesystem ?? new NodeWorkspaceFilesystem(cwd);
   const snapshots = options.snapshots ?? new ReadSnapshotStore();
-  const { newString, oldString, patch, path: filePath } = args;
+  const { patch } = args;
   try {
     if (patch) {
       const patcher = new Patcher({
@@ -263,7 +325,9 @@ export async function applyEditRequest(
         fs: filesystem,
         snapshots: snapshots.store,
       });
-      const result = await patcher.apply(Patch.parse(patch, { cwd }));
+      const result = await patcher.apply(
+        Patch.parse(patch, options.filesystem ? {} : { cwd })
+      );
       const lines = result.sections.map((section) => {
         const at = section.firstChangedLine
           ? ` at line ${section.firstChangedLine}`
@@ -272,50 +336,13 @@ export async function applyEditRequest(
       });
       return { ok: true, output: lines.join("\n") };
     }
-    if (
-      filePath === undefined ||
-      oldString === undefined ||
-      newString === undefined
-    ) {
-      return {
-        error: "provide patch or path, oldString, and newString",
-        ok: false,
-      };
-    }
-    const resolved = filesystem.canonicalPath(resolve(cwd, filePath));
-    if (!(await filesystem.exists(resolved))) {
-      return { error: `File not found: ${resolved}`, ok: false };
-    }
-    const content = await filesystem.readText(resolved);
-    const edited = applyEdit(content, oldString, newString);
-    // `applyEdit` returns either the new text or the reason it refused.
-    if (edited.error || edited.content === undefined) {
-      const reason =
-        edited.error ??
-        "No changes made - the replacement didn't modify the file.";
-      return {
-        error: `${reason} [${relative(cwd, resolved)}]`,
-        ok: false,
-      };
-    }
-    const newContent = edited.content;
-    await filesystem.writeText(resolved, newContent);
-    await snapshots.record(
-      resolved,
-      newContent,
-      newContent.split(LINE_SPLIT_RE).map((_, index) => index + 1)
+    return await applyExactReplacement(
+      args,
+      options,
+      filesystem,
+      snapshots,
+      cwd
     );
-    const fileName = basename(resolved);
-    const output = createTwoFilesPatch(
-      `a/${fileName}`,
-      `b/${fileName}`,
-      content,
-      newContent,
-      undefined,
-      undefined,
-      { context: 3 }
-    );
-    return { ok: true, output };
   } catch (error) {
     return {
       cause: error,

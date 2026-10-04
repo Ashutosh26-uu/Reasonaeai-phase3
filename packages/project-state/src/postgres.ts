@@ -69,6 +69,8 @@ import {
   createMembershipRepository,
   type MembershipRepository,
 } from "./memberships.js";
+import { PREVIEW_MIGRATION_SQL } from "./preview-schema.js";
+import { createPreviewRepository, type PreviewRepository } from "./previews.js";
 import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
 import { PROJECT_STATE_MIGRATION_SQL } from "./schema.js";
 import { AUTH_SESSION_MIGRATION_SQL } from "./session-schema.js";
@@ -501,6 +503,7 @@ export interface ProjectStateStore {
   memberships: MembershipRepository;
   migrate: () => Promise<void>;
   outbox: OutboxRepository;
+  previews: PreviewRepository;
   rateLimiter: RateLimiter;
   recordArtifact: (
     manifest: ArtifactManifest,
@@ -735,6 +738,7 @@ export function createProjectStateStore(config: {
   const audit = createAuditRepository(pool);
   const magicLinks = createMagicLinkRepository(pool);
   const users = createUserRepository(pool);
+  const previews = createPreviewRepository(pool);
 
   async function withTransaction<T>(
     run: (client: PoolClient) => Promise<T>
@@ -2217,6 +2221,7 @@ export function createProjectStateStore(config: {
             await client.query(AUTH_SESSION_MIGRATION_SQL);
             await client.query(MEMBERSHIP_MIGRATION_SQL);
             await client.query(USAGE_MIGRATION_SQL);
+            await client.query(PREVIEW_MIGRATION_SQL);
             // Both reference the organization, project, and user tables above,
             // so they are applied after them in this same transaction.
             await client.query(AUTH_TOKEN_MIGRATION_SQL);
@@ -2238,6 +2243,7 @@ export function createProjectStateStore(config: {
       await attemptMigration(1);
     },
     outbox: { claim: claimOutbox },
+    previews,
     rateLimiter,
     recordArtifact,
     recordDeployment,

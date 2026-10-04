@@ -95,7 +95,106 @@ describe("SandboxFilesystem", () => {
     });
 
     await expect(filesystem.readFile("../../host-secret")).rejects.toThrow(
-      "escapes the build-session workspace"
+      "escapes the verified workspace"
+    );
+    await expect(filesystem.readFile("/../../host-secret")).rejects.toThrow(
+      "escapes the verified workspace"
+    );
+    await expect(
+      filesystem.readFile("/workspace/../../host-secret")
+    ).rejects.toThrow("escapes the verified workspace");
+  });
+
+  it("normalizes explicit shortcut, full workspace, and Windows-style paths to the workspace root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "reasonate-sandbox-fs-"));
+    const filesystem = new SandboxFilesystem({
+      id: "test-filesystem",
+      root: "/workspace",
+      sandbox: testSandbox(root),
+    });
+
+    // Write using explicit shortcut
+    await filesystem.writeFile("@/src/index.ts", "console.log('hello');\n", {
+      recursive: true,
+    });
+
+    // Read using relative path
+    expect(
+      await filesystem.readFile("src/index.ts", { encoding: "utf8" })
+    ).toBe("console.log('hello');\n");
+
+    // Read using full workspace path
+    expect(
+      await filesystem.readFile("/workspace/src/index.ts", { encoding: "utf8" })
+    ).toBe("console.log('hello');\n");
+
+    // Read using Windows backslash
+    expect(
+      await filesystem.readFile("src\\index.ts", { encoding: "utf8" })
+    ).toBe("console.log('hello');\n");
+
+    // Read using explicit shortcut
+    expect(
+      await filesystem.readFile("@/src/index.ts", { encoding: "utf8" })
+    ).toBe("console.log('hello');\n");
+
+    // Read using Windows drive letter with workspace
+    expect(
+      await filesystem.readFile("C:\\workspace\\src\\index.ts", {
+        encoding: "utf8",
+      })
+    ).toBe("console.log('hello');\n");
+
+    // Read using Windows drive letter with absolute workspace path
+    expect(
+      await filesystem.readFile("C:\\workspace\\src\\index.ts", {
+        encoding: "utf8",
+      })
+    ).toBe("console.log('hello');\n");
+  });
+});
+
+describe("workspace path contract across filesystem operations", () => {
+  it("preserves scoped names through creation, listing, metadata, copy, move, append, and delete", async () => {
+    const root = await mkdtemp(join(tmpdir(), "reasonate-sandbox-fs-"));
+    const filesystem = new SandboxFilesystem({
+      id: "path-contract",
+      root: "/workspace",
+      sandbox: testSandbox(root),
+    });
+    await filesystem.writeFile("scope.txt", "other", { recursive: true });
+    await filesystem.writeFile("@scope.txt", "first", { recursive: true });
+    await filesystem.copyFile("@/@scope.txt", "C:\\workspace\\@copy.txt");
+    await filesystem.moveFile("file:///workspace/%40copy.txt", "@moved.txt");
+    await filesystem.appendFile("@/@moved.txt", " second");
+    expect(await filesystem.readFile("@moved.txt", { encoding: "utf8" })).toBe(
+      "first second"
+    );
+    expect(await filesystem.stat("@/@moved.txt")).toMatchObject({
+      name: "@moved.txt",
+    });
+    expect(await filesystem.readdir("@/")).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "@scope.txt" })])
+    );
+    await filesystem.deleteFile("file:///workspace/%40moved.txt");
+    expect(await filesystem.exists("@moved.txt")).toBe(false);
+    expect(await filesystem.readFile("scope.txt", { encoding: "utf8" })).toBe(
+      "other"
+    );
+    expect(await filesystem.readFile("@scope.txt", { encoding: "utf8" })).toBe(
+      "first"
+    );
+    await expect(filesystem.readFile("/scope.txt")).rejects.toThrow(
+      "escapes the verified workspace"
+    );
+    await expect(
+      filesystem.copyFile("@scope.txt", "/copy.txt")
+    ).rejects.toThrow("escapes the verified workspace");
+    await expect(
+      filesystem.moveFile("@scope.txt", "C:\\moved.txt")
+    ).rejects.toThrow("escapes the verified workspace");
+    await expect(filesystem.deleteFile("/scope.txt")).rejects.toThrow(
+      "escapes the verified workspace"
     );
   });
 });

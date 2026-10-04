@@ -28,6 +28,10 @@
       "types": "./src/run-live-stream.ts",
       "import": "./dist/run-live-stream.js"
     },
+    "./previews": {
+      "types": "./src/previews.ts",
+      "import": "./dist/previews.js"
+    },
     "./schema": {
       "types": "./src/schema.ts",
       "import": "./dist/schema.js"

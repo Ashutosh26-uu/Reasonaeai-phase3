@@ -99,6 +99,26 @@ export class DockerSandbox implements ISandbox {
     this.id = config.id;
   }
 
+  readonly attach = async (): Promise<boolean> => {
+    try {
+      const { stdout } = await execFileAsync("docker", [
+        "inspect",
+        "--format",
+        "{{.State.Running}}",
+        this.containerName,
+      ]);
+      if (stdout.trim() === "true") {
+        this.status = "running";
+        return true;
+      }
+      this.status = "stopped";
+      return false;
+    } catch {
+      this.status = "stopped";
+      return false;
+    }
+  };
+
   readonly init = async (): Promise<void> => {
     await mkdir(this.hostWorkspaceDir, { recursive: true });
 
@@ -393,6 +413,19 @@ export class DockerSandboxProvider implements ISandboxProvider {
     const config = SandboxConfigSchema.parse(rawConfig);
     const sandbox = new DockerSandbox(config);
     await sandbox.init();
+    this.sandboxes.set(config.id, sandbox);
+    return sandbox;
+  };
+
+  readonly attach = async (
+    rawConfig: z.input<typeof SandboxConfigSchema>
+  ): Promise<ISandbox | null> => {
+    const config = SandboxConfigSchema.parse(rawConfig);
+    const sandbox = new DockerSandbox(config);
+    const alive = await sandbox.attach();
+    if (!alive) {
+      return null;
+    }
     this.sandboxes.set(config.id, sandbox);
     return sandbox;
   };

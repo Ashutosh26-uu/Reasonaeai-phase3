@@ -12,6 +12,7 @@ import type {
   WorkspaceSandbox,
   WriteOptions,
 } from "@mastra/core/workspace";
+import { resolveWorkspacePath } from "@reasonateai/cto-runtime/tools/workspace-path";
 
 type SandboxFileOperation =
   | "append"
@@ -152,14 +153,7 @@ export class SandboxFilesystem implements WorkspaceFilesystem {
   }
 
   #path(path: string): string {
-    const target = path.startsWith("/")
-      ? posix.normalize(path)
-      : posix.resolve(this.#root, path);
-    const relative = posix.relative(this.#root, target);
-    if (relative === ".." || relative.startsWith("../")) {
-      throw new Error("The path escapes the build-session workspace.");
-    }
-    return target;
+    return resolveWorkspacePath(path, this.#root);
   }
 
   async #call(
