@@ -1,0 +1,252 @@
+/* Suggestion Bubbles - Google AI Studio style compact bubbles row */
+
+.container {
+  position: relative;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: min(100%, 760px);
+  margin: 0 auto 10px;
+  animation: fadeIn 200ms ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.scrollArea {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  padding: 2px 2px 4px;
+  margin: 0;
+  list-style: none;
+  flex: 1;
+  min-width: 0;
+}
+
+.item {
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.scrollArea::-webkit-scrollbar {
+  display: none;
+}
+
+.bubble {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 4px;
+  justify-content: space-between;
+  width: 200px;
+  height: 64px;
+  min-height: 64px;
+  padding: 6px 10px;
+  overflow: hidden;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  user-select: none;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  transition:
+    transform 120ms ease,
+    background-color 150ms ease,
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.bubble:hover {
+  background: var(--raised);
+  border-color: var(--line-strong);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  transform: translateY(-1px);
+}
+
+.bubble:active {
+  transform: translateY(0);
+  scale: 0.98;
+}
+
+.bubble:focus-visible {
+  outline: 2px solid var(--ink-3);
+  outline-offset: 2px;
+}
+
+.bubble:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  transform: none;
+}
+
+.title {
+  z-index: 1;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -webkit-line-clamp: 2;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.25;
+  color: var(--ink);
+}
+
+.badgeRow {
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-top: auto;
+}
+
+.badge {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  padding: 1.5px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  border-radius: 999px;
+}
+
+/* Category-specific badge accent styles (Dark default) */
+.badgeAi {
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.16);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.badgeDesign {
+  color: #e9d5ff;
+  background: rgba(168, 85, 247, 0.16);
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+.badgeFeature {
+  color: #7dd3fc;
+  background: rgba(14, 165, 233, 0.16);
+  border: 1px solid rgba(14, 165, 233, 0.3);
+}
+
+.badgeQuality {
+  color: #86efac;
+  background: rgba(16, 185, 129, 0.16);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+/* Accessible high-contrast colors for Light Mode */
+:root[data-theme="light"] .badgeAi {
+  color: #1d4ed8;
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.28);
+}
+
+:root[data-theme="light"] .badgeDesign {
+  color: #7e22ce;
+  background: rgba(168, 85, 247, 0.1);
+  border-color: rgba(168, 85, 247, 0.28);
+}
+
+:root[data-theme="light"] .badgeFeature {
+  color: #0369a1;
+  background: rgba(14, 165, 233, 0.1);
+  border-color: rgba(14, 165, 233, 0.28);
+}
+
+:root[data-theme="light"] .badgeQuality {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.28);
+}
+
+/* Watermark background icon positioned at bottom-right corner */
+.watermark {
+  position: absolute;
+  right: 6px;
+  bottom: 3px;
+  z-index: 0;
+  width: 26px;
+  height: 26px;
+  color: var(--ink-2);
+  pointer-events: none;
+  opacity: 0.12;
+  transition:
+    opacity 150ms ease,
+    transform 150ms ease;
+}
+
+.bubble:hover .watermark {
+  opacity: 0.22;
+  transform: scale(1.05);
+}
+
+.actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  align-items: center;
+}
+
+.actionButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--ink-2);
+  cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease,
+    border-color 150ms ease;
+}
+
+.actionButton:hover {
+  color: var(--ink);
+  background: var(--raised);
+  border-color: var(--line-strong);
+}
+
+.actionButton:focus-visible {
+  outline: 2px solid var(--ink-3);
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .bubble {
+    gap: 3px;
+    width: 170px;
+    height: 60px;
+    min-height: 60px;
+    padding: 5px 8px;
+  }
+  .title {
+    font-size: 11px;
+    line-height: 1.2;
+  }
+}
