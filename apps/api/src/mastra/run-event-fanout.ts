@@ -39,6 +39,10 @@ export interface RunEventSubscriptionInput {
    */
   lastDelivered: number;
   listener: (event: RunEventEnvelope) => void;
+  /** Close the follower so it reconnects and replays the authoritative ledger. */
+  onDisconnect: (
+    reason: "durable_transport" | "live_transport" | "shutdown"
+  ) => void;
   /**
    * Called with the first sequence the listener is missing when the topic
    * cannot bridge from `lastDelivered` to the event that just arrived. Backfill
@@ -71,6 +75,7 @@ interface TopicListener {
   closed: boolean;
   lastDelivered: number;
   listener: (event: RunEventEnvelope) => void;
+  onDisconnect: RunEventSubscriptionInput["onDisconnect"];
   onGap: (fromSequence: number) => void;
   onLive?: (event: RunLiveEvent) => void;
 }
@@ -99,6 +104,24 @@ export function createRunEventFanout(
   const openStream = config.subscribe ?? subscribeToRunEvents;
   const openLiveStream = config.subscribeLive ?? subscribeToRunLiveEvents;
   const topics = new Map<string, Topic>();
+
+  function disconnect(
+    runId: string,
+    topic: Topic,
+    reason: Parameters<RunEventSubscriptionInput["onDisconnect"]>[0]
+  ): void {
+    if (topics.get(runId) === topic) {
+      topics.delete(runId);
+    }
+    topic.abort.abort();
+    topic.live.abort();
+    const listeners = [...topic.listeners];
+    topic.listeners.clear();
+    for (const entry of listeners) {
+      entry.closed = true;
+      entry.onDisconnect(reason);
+    }
+  }
 
   /** Hands one event to every listener, skipping what each already has. */
   function deliver(topic: Topic, event: RunEventEnvelope): void {
@@ -148,12 +171,10 @@ export function createRunEventFanout(
         deliver(topic, event);
       }
     } catch {
-      // A transport failure must not reject into the process. Listeners keep
-      // their durable replay path, and the next listener for this run opens a
-      // fresh subscription.
+      // Disconnect followers; an open but silent socket cannot recover itself.
     } finally {
-      if (topics.get(runId) === topic) {
-        topics.delete(runId);
+      if (!topic.abort.signal.aborted) {
+        disconnect(runId, topic, "durable_transport");
       }
     }
   }
@@ -178,18 +199,19 @@ export function createRunEventFanout(
         deliverLive(topic, event);
       }
     } catch {
-      // Same reasoning as the durable pump: a live transport failure costs a
-      // partial view, never a run, and the next listener retries.
+      // The browser reconnects both topics and retains its visible partial text.
     } finally {
       topic.livePumping = false;
+      if (!topic.live.signal.aborted) {
+        disconnect(runId, topic, "live_transport");
+      }
     }
   }
 
   return {
     close: () => {
-      for (const topic of topics.values()) {
-        topic.abort.abort();
-        topic.live.abort();
+      for (const [runId, topic] of topics) {
+        disconnect(runId, topic, "shutdown");
       }
       topics.clear();
     },
@@ -212,6 +234,7 @@ export function createRunEventFanout(
         closed: false,
         lastDelivered: input.lastDelivered,
         listener: input.listener,
+        onDisconnect: input.onDisconnect,
         onGap: input.onGap,
         onLive: input.onLive,
       };

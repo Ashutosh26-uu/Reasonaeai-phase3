@@ -25,6 +25,7 @@ const MIN_POLL_INTERVAL_MS = 200;
 const MAX_POLL_INTERVAL_MS = 300_000;
 const MAX_POLL_JITTER_MS = 60_000;
 const MAX_RUNS_PER_POLL = 32;
+const MAX_CONCURRENT_RUNS = 8;
 const MIN_SHUTDOWN_GRACE_MS = 1000;
 const MAX_SHUTDOWN_GRACE_MS = 300_000;
 const MIN_STOP_GRACE_MS = 100;
@@ -35,6 +36,7 @@ const DEFAULT_RENEW_INTERVAL_MS = 15_000;
 const DEFAULT_POLL_INTERVAL_MS = 1000;
 const DEFAULT_POLL_JITTER_MS = 250;
 const DEFAULT_MAX_RUNS_PER_POLL = 1;
+const DEFAULT_MAX_CONCURRENT_RUNS = 2;
 const DEFAULT_SHUTDOWN_GRACE_MS = 30_000;
 const DEFAULT_STOP_GRACE_MS = 5000;
 
@@ -59,6 +61,8 @@ export interface WorkerConfig {
   holder: string;
   leaseTtlMs: number;
   logLevel: WorkerLogLevel;
+  /** Independent projects that may hold a sandbox in this process at once. */
+  maxConcurrentRuns: number;
   maxRunsPerPoll: number;
   model: string;
   pollIntervalMs: number;
@@ -84,6 +88,12 @@ const WorkerEnvironmentSchema = z.object({
     .max(MAX_LEASE_TTL_MS)
     .optional(),
   WORKER_LOG_LEVEL: z.enum(["debug", "error", "info", "warn"]).optional(),
+  WORKER_MAX_CONCURRENT_RUNS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_CONCURRENT_RUNS)
+    .optional(),
   WORKER_MAX_RUNS_PER_POLL: z.coerce
     .number()
     .int()
@@ -182,6 +192,8 @@ export function readWorkerConfig(
     holder: settings.WORKER_HOLDER ?? generatedHolder(),
     leaseTtlMs,
     logLevel: settings.WORKER_LOG_LEVEL ?? "info",
+    maxConcurrentRuns:
+      settings.WORKER_MAX_CONCURRENT_RUNS ?? DEFAULT_MAX_CONCURRENT_RUNS,
     maxRunsPerPoll:
       settings.WORKER_MAX_RUNS_PER_POLL ?? DEFAULT_MAX_RUNS_PER_POLL,
     model: settings.MASTRA_MODEL ?? DEFAULT_MODEL,

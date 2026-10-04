@@ -56,4 +56,13 @@ describe("composer primary action", () => {
     expect(saving).toContain('aria-label="Send message"');
     expect(saving).not.toContain('aria-label="Stop run"');
   });
+  it("shows a disabled arrow once Stop has been requested", () => {
+    const html = renderToStaticMarkup(
+      <Composer {...props} hasConversation pending stopping />
+    );
+    expect(html).toContain('aria-label="Stopping run"');
+    expect(html).toContain("lucide-arrow-up");
+    expect(html).not.toContain("lucide-square");
+    expect(html).toContain("disabled");
+  });
 });

@@ -12,15 +12,17 @@ import type { StopSignal } from "./stop-signal.js";
  * The worker discovers work by asking PostgreSQL for runnable runs and claiming
  * one under a lease; Redis is only ever the live transport for the events those
  * claims produce. Polling is bounded on every axis that could grow: a poll
- * claims at most `maxRunsPerPoll` candidates, only one run executes at a time,
+ * starts at most `maxRunsPerPoll` candidates and holds at most
+ * `maxConcurrentRuns` independent projects at a time,
  * the interval is fixed plus jitter so two workers do not synchronize their
  * reads, and consecutive database failures back off with a doubling delay up to
  * a ceiling instead of hammering a database that is already refusing.
  *
- * One run at a time is deliberate rather than a simplification: the sandbox
+ * One run per project is deliberate: the sandbox
  * identity is derived from organization, project, and build session, so two
  * concurrent runs of one build session would contend for one container name and
- * one workspace volume. Parallelism belongs at the worker-fleet level.
+ * one workspace volume. Each run has its own controller; a suspended question
+ * retains its own lease without blocking discovery for another project.
  */
 
 const MAX_BACKOFF_DOUBLINGS = 4;
@@ -36,11 +38,12 @@ export interface RunWorkerDeps {
 }
 
 export class RunWorker {
-  #active: Promise<void> | undefined;
+  readonly #active = new Map<string, Promise<void>>();
   readonly #deps: RunWorkerDeps;
   #failures = 0;
   #stopReason: string | undefined;
   #timer: NodeJS.Timeout | undefined;
+  #polling: Promise<void> | undefined;
 
   constructor(deps: RunWorkerDeps) {
     this.#deps = deps;
@@ -62,16 +65,34 @@ export class RunWorker {
     this.#stopReason = STOP_REASON;
     clearTimeout(this.#timer);
     this.#timer = undefined;
-    await this.#active;
+    await this.#polling;
+    await Promise.all(this.#active.values());
   }
 
   /** One pass over the runnable runs. Public so a test can drive it directly. */
   async poll(): Promise<void> {
+    if (this.#polling !== undefined) {
+      return await this.#polling;
+    }
+    const polling = this.#discover();
+    this.#polling = polling;
+    try {
+      await polling;
+    } finally {
+      this.#polling = undefined;
+    }
+  }
+
+  async #discover(): Promise<void> {
     const { config, executor, logger, stopSignal, store } = this.#deps;
+    const slots = config.maxConcurrentRuns - this.#active.size;
+    if (slots <= 0 || this.stopping || stopSignal.reason !== undefined) {
+      return;
+    }
 
     try {
       const candidates = await store.listRunnableRuns({
-        limit: config.maxRunsPerPoll,
+        limit: Math.min(config.maxRunsPerPoll, slots),
       });
       this.#failures = 0;
 
@@ -81,6 +102,15 @@ export class RunWorker {
         }
 
         const fields = runLogFields(candidateScope(candidate));
+        const projectKey = `${candidate.organizationId}:${candidate.projectId}`;
+        if (this.#active.has(projectKey)) {
+          continue;
+        }
+        logger.info("run.attempt.started", {
+          ...fields,
+          activeRuns: this.#active.size + 1,
+          maxConcurrentRuns: config.maxConcurrentRuns,
+        });
         const attempt = executor.execute(candidate, stopSignal).then(
           (outcome) => {
             logger.info("run.attempt.finished", { ...fields, outcome });
@@ -92,10 +122,10 @@ export class RunWorker {
             });
           }
         );
-        this.#active = attempt;
-        // biome-ignore lint/performance/noAwaitInLoops: one run at a time is the point; the sandbox identity is per build session
-        await attempt;
-        this.#active = undefined;
+        const tracked = attempt.finally(() => {
+          this.#active.delete(projectKey);
+        });
+        this.#active.set(projectKey, tracked);
       }
     } catch (error) {
       this.#failures += 1;

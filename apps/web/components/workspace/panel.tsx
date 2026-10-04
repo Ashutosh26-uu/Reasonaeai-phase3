@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { request } from "@/lib/product-api";
+import { FileContentPreview } from "./file-content";
 import styles from "./panel.module.css";
 import {
   movePreviewHistory,
@@ -114,7 +115,7 @@ function FileView({ file }: { file: FileResponse | null }) {
         <span>{workspaceFilePath(file.path)}</span>
         {file.truncated && <span className="files-truncated">truncated</span>}
       </div>
-      <pre className="files-code">{file.text}</pre>
+      <FileContentPreview key={file.path} path={file.path} text={file.text} />
     </>
   );
 }

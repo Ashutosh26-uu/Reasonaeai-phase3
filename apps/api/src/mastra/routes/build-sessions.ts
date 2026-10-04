@@ -32,12 +32,14 @@ import {
   type Permission,
   type ProjectId,
   ProjectIdSchema,
+  type RunId,
   RunIdSchema,
   type UserPrincipal,
 } from "@reasonateai/contracts/identity";
 import {
   type BuildSessionAllocation,
   ConversationBusyError,
+  ConversationRetryUnavailableError,
   type ProjectStateStore,
 } from "@reasonateai/project-state/postgres";
 import { z } from "zod";
@@ -60,6 +62,8 @@ export const RUN_CANCELLATION_PATH =
   "/v1/build-sessions/:buildSessionId/runs/:runId/cancel";
 export const RUN_ANSWER_PATH =
   "/v1/build-sessions/:buildSessionId/runs/:runId/answers";
+export const RUN_RETRY_PATH =
+  "/v1/build-sessions/:buildSessionId/runs/:runId/retry";
 
 /**
  * The subset of a Hono `Context` these handlers use. Declaring it structurally
@@ -132,26 +136,36 @@ async function parseConversationTurn(
   return parsed.data;
 }
 
-async function appendAcceptedConversationTurn(input: {
-  attachments: PromptAttachment[];
-  buildSessionId: BuildSessionId;
-  idempotencyKey: string;
-  message: string;
-  requestId: string;
-  scope: { organizationId: OrganizationId; projectId: ProjectId };
-  store: ProjectStateStore;
-}) {
+async function appendAcceptedConversationTurn(
+  input: {
+    buildSessionId: BuildSessionId;
+    idempotencyKey: string;
+    requestId: string;
+    scope: { organizationId: OrganizationId; projectId: ProjectId };
+    store: ProjectStateStore;
+  } & (
+    | { attachments: PromptAttachment[]; message: string; retryRunId?: never }
+    | { attachments?: never; message?: never; retryRunId: RunId }
+  )
+) {
   let accepted: Awaited<
     ReturnType<ProjectStateStore["appendConversationTurn"]>
   >;
   try {
-    accepted = await input.store.appendConversationTurn({
-      attachments: input.attachments,
-      buildSessionId: input.buildSessionId,
-      idempotencyKey: input.idempotencyKey,
-      message: input.message,
-      scope: input.scope,
-    });
+    accepted = input.retryRunId
+      ? await input.store.retryConversationRun({
+          buildSessionId: input.buildSessionId,
+          idempotencyKey: input.idempotencyKey,
+          runId: input.retryRunId,
+          scope: input.scope,
+        })
+      : await input.store.appendConversationTurn({
+          attachments: input.attachments,
+          buildSessionId: input.buildSessionId,
+          idempotencyKey: input.idempotencyKey,
+          message: promptMessage(input.message),
+          scope: input.scope,
+        });
   } catch (error) {
     await input.store.usage.record({
       amount: -RUN_SLOT,
@@ -159,7 +173,10 @@ async function appendAcceptedConversationTurn(input: {
       organizationId: input.scope.organizationId,
       runId: null,
     });
-    if (error instanceof ConversationBusyError) {
+    if (
+      error instanceof ConversationBusyError ||
+      error instanceof ConversationRetryUnavailableError
+    ) {
       return apiErrorResponse({
         code: "conflict",
         message: error.message,
@@ -207,6 +224,32 @@ function parseConversationTurnScope(context: HandlerContext) {
       projectId: projectId.data,
     },
   };
+}
+
+async function retryAcceptedConversationTurn(input: {
+  buildSessionId: BuildSessionId;
+  idempotencyKey: string;
+  requestId: string;
+  retryRunId: RunId;
+  scope: { organizationId: OrganizationId; projectId: ProjectId };
+  store: ProjectStateStore;
+}) {
+  const replayRunId = await input.store.getConversationRetry({
+    buildSessionId: input.buildSessionId,
+    idempotencyKey: input.idempotencyKey,
+    runId: input.retryRunId,
+    scope: input.scope,
+  });
+  if (replayRunId) {
+    return { created: false, runId: replayRunId };
+  }
+  const refusal = await admitRun({
+    entitlements: PLAN_ENTITLEMENTS[defaultPlan],
+    organizationId: input.scope.organizationId,
+    requestId: input.requestId,
+    store: input.store,
+  });
+  return refusal ?? (await appendAcceptedConversationTurn(input));
 }
 
 const BuildSessionParamsSchema = z.strictObject({
@@ -985,6 +1028,83 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
       return c.json(
         { buildSession: BuildSessionSchema.parse(buildSession) },
         200
+      );
+    },
+
+    /** Retry is explicit; reconnecting a stream never submits another run. */
+    retryRun: async (c: HandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+      const principal = await deps.resolvePrincipal({
+        cookieHeader: c.req.header("cookie"),
+      });
+      if (!principal) {
+        return apiErrorResponse({
+          code: "unauthenticated",
+          message: "A valid browser session is required.",
+          requestId: rid,
+        });
+      }
+      const turnScope = parseConversationTurnScope(c);
+      const sourceRunId = RunIdSchema.safeParse(c.req.param("runId"));
+      if (!(turnScope && sourceRunId.success)) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message:
+            "A run, idempotency key, conversation, and project scope are required.",
+          requestId: rid,
+        });
+      }
+      const { buildSessionId, idempotencyKey, scope } = turnScope;
+      const decision = await authorizeProjectAction({
+        action: "agent:run",
+        deps,
+        ...scope,
+        principal,
+      });
+      if (!decision.allowed) {
+        return apiErrorResponse({
+          code: "forbidden",
+          message: "You are not authorized to retry this generation.",
+          requestId: rid,
+        });
+      }
+      const store = deps.store();
+      const [session, source] = await Promise.all([
+        store.getBuildSession(scope, buildSessionId),
+        store.getRun({ ...scope, runId: sourceRunId.data }),
+      ]);
+      if (!(session && source) || source.buildSessionId !== buildSessionId) {
+        return apiErrorResponse({
+          code: "not_found",
+          message: "No such generation in this conversation.",
+          requestId: rid,
+        });
+      }
+      if (source.status !== "failed" && source.status !== "cancelled") {
+        return apiErrorResponse({
+          code: "conflict",
+          message: "Only a failed or cancelled generation can be retried.",
+          requestId: rid,
+        });
+      }
+      const accepted = await retryAcceptedConversationTurn({
+        buildSessionId,
+        idempotencyKey,
+        requestId: rid,
+        retryRunId: sourceRunId.data,
+        scope,
+        store,
+      });
+      if (accepted instanceof Response) {
+        return accepted;
+      }
+      return c.json(
+        ConversationTurnAcceptedSchema.parse({
+          buildSessionId,
+          runId: accepted.runId,
+          sequence: 1,
+        }),
+        202
       );
     },
   };

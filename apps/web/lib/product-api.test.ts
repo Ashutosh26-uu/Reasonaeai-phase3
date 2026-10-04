@@ -28,7 +28,10 @@ describe("authenticated product requests", () => {
       expect.objectContaining({
         body: audio,
         credentials: "same-origin",
-        headers: { [CSRF_HEADER]: "test-csrf" },
+        headers: expect.objectContaining({
+          [CSRF_HEADER]: "test-csrf",
+          "x-request-id": expect.any(String),
+        }),
       })
     );
   });
@@ -52,11 +55,48 @@ describe("authenticated product requests", () => {
     expect(transport).toHaveBeenCalledWith(
       "/v1/example",
       expect.objectContaining({
-        headers: {
+        headers: expect.objectContaining({
           "content-type": "application/json",
           [CSRF_HEADER]: "test-csrf",
-        },
+        }),
       })
     );
+  });
+  it("explains a missing running route and logs correlation without message content", async () => {
+    vi.stubGlobal("document", { cookie: `${CSRF_COOKIE}=private-csrf` });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("404 Not Found", { status: 404 }))
+    );
+    const report = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+    try {
+      await expect(
+        request(
+          "/v1/example/steering?organizationId=scoped",
+          (value) => value,
+          {
+            body: JSON.stringify({ message: "private steering content" }),
+            method: "POST",
+          }
+        )
+      ).rejects.toMatchObject({
+        message: expect.stringContaining("latest branch"),
+        requestId: expect.any(String),
+        status: 404,
+      });
+      const diagnostic = JSON.parse(report.mock.calls[0]?.[0] as string);
+      expect(diagnostic).toMatchObject({
+        event: "product.request.failed",
+        path: "/v1/example/steering",
+        requestId: expect.any(String),
+        status: 404,
+      });
+      expect(JSON.stringify(diagnostic)).not.toContain("private");
+      expect(JSON.stringify(diagnostic)).not.toContain("organizationId");
+    } finally {
+      report.mockRestore();
+    }
   });
 });

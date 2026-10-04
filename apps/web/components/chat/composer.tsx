@@ -1,7 +1,6 @@
 "use client";
 
 import type { ProjectSummary } from "@reasonateai/contracts/auth";
-import type { PromptAttachment } from "@reasonateai/contracts/execution";
 import { BorderBeam } from "border-beam";
 import {
   ArrowUp,
@@ -34,6 +33,14 @@ import {
   usePromptInputAttachments,
 } from "@/components/ai-elements/prompt-input";
 import styles from "./composer.module.css";
+import {
+  MAX_QUEUED_MESSAGES,
+  type PromptSubmissionInput,
+} from "./message-queue";
+import { QueuedMessageRow } from "./queued-messages";
+import { useMessageQueue } from "./use-message-queue";
+
+export type { PromptSubmissionInput } from "./message-queue";
 
 /**
  * What the line under the card says: an error, what the microphone is doing, or
@@ -43,12 +50,14 @@ function ComposerHint({
   error,
   pending,
   projectSelected,
+  queueing,
   recording,
   transcribing,
 }: {
   error: string;
   pending: boolean;
   projectSelected: boolean;
+  queueing: boolean;
   recording: boolean;
   transcribing: boolean;
 }) {
@@ -69,6 +78,14 @@ function ComposerHint({
     return <span>Choose a project to start a conversation.</span>;
   }
   if (pending) {
+    if (!queueing) {
+      return (
+        <span>
+          Enter to steer the active run. Attachments stay queued for a
+          follow-up.
+        </span>
+      );
+    }
     return (
       <span>
         Your CTO is working. This message sends when the run finishes.
@@ -149,27 +166,25 @@ export interface ComposerProps {
   onChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => void;
   onCreateProject: (name: string) => Promise<boolean>;
   onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  onOpenSideChat?: (input: PromptSubmissionInput) => Promise<boolean>;
   onProjectSelect: (projectId: string) => void;
   /** Sends text guidance into the active run through the authorized API. */
-  onSteer?: (input: {
-    attachments: PromptAttachment[];
-    message: string;
-  }) => Promise<boolean>;
+  onSteer?: (input: PromptSubmissionInput) => Promise<boolean>;
   /** Stops the active CTO run while its response is streaming. */
   onStop: () => void;
-  onSubmit: (input: {
-    attachments: PromptAttachment[];
-    message: string;
-  }) => Promise<boolean>;
+  onSubmit: (input: PromptSubmissionInput) => Promise<boolean>;
   /** Turns recorded audio into text, or reports why it cannot. */
   onTranscribe: (audio: Blob) => Promise<string>;
   /** Opens the separate voice conversation surface. */
   onVoiceMode?: () => void;
   pending: boolean;
+  pendingRunId?: string | null;
   placeholder: string;
+  preventAutoQueueDispatch?: boolean;
   projectId: string;
   projectPickerDisabled: boolean;
   projects: ProjectSummary[];
+  queueScopeKey?: string;
   stopping: boolean;
 }
 
@@ -419,6 +434,36 @@ function dataUrlSize(data: string): number {
   return Math.floor((encoded.length * 3) / 4) - padding;
 }
 
+function readPromptAttachments(input: PromptInputMessage) {
+  const promptAttachments = input.files.map((file) => {
+    if (!file.url.startsWith("data:")) {
+      throw new Error(`Could not read ${file.filename ?? "an attachment"}.`);
+    }
+    if (file.filename && file.filename.length > 255) {
+      throw new Error("A file name is too long to attach.");
+    }
+    if (dataUrlSize(file.url) > MAX_ATTACHMENT_BYTES) {
+      throw new Error(`${file.filename ?? "A file"} is larger than 4 MB.`);
+    }
+    return {
+      data: file.url,
+      filename: file.filename ?? "attachment",
+      mediaType: file.mediaType || "application/octet-stream",
+    };
+  });
+  const totalBytes = promptAttachments.reduce(
+    (total, attachment) => total + dataUrlSize(attachment.data),
+    0
+  );
+  if (totalBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
+    throw new Error("Attachments must total 12 MB or less.");
+  }
+  if (promptAttachments.length > MAX_ATTACHMENTS) {
+    throw new Error(`Attach up to ${MAX_ATTACHMENTS} files.`);
+  }
+  return promptAttachments;
+}
+
 function PromptAttachmentPreview() {
   const { files, remove } = usePromptInputAttachments();
 
@@ -464,6 +509,9 @@ function PromptSendButton({
     submitProps.onStop = onStop;
     submitProps.status = "streaming";
     label = stopping ? "Stopping run" : "Stop run";
+    if (stopping) {
+      submitProps.status = "submitted";
+    }
   } else if (busy) {
     submitProps.status = "submitted";
   }
@@ -475,7 +523,7 @@ function PromptSendButton({
       disabled={pending ? stopping : busy || !(draft.trim() || files.length)}
       {...submitProps}
     >
-      {pending ? (
+      {pending && !stopping ? (
         <Square aria-hidden="true" size={14} />
       ) : (
         <ArrowUp aria-hidden="true" size={17} />
@@ -486,11 +534,9 @@ function PromptSendButton({
 
 function PromptAttachButton({
   busy,
-  pending,
   onErrorClear,
 }: {
   busy: boolean;
-  pending: boolean;
   onErrorClear: () => void;
 }) {
   const { openFileDialog } = usePromptInputAttachments();
@@ -502,7 +548,7 @@ function PromptAttachButton({
     <PromptInputButton
       aria-label="Attach files"
       className={`prompt-mic ${styles.attach}`}
-      disabled={busy || pending}
+      disabled={busy}
       onClick={open}
     >
       <Plus aria-hidden="true" size={20} />
@@ -510,10 +556,22 @@ function PromptAttachButton({
   );
 }
 
-function PromptQueueButton({ disabled }: { disabled: boolean }) {
+function PromptQueueButton({
+  disabled,
+  draft,
+  queueing,
+}: {
+  disabled: boolean;
+  draft: string;
+  queueing: boolean;
+}) {
+  const { files } = usePromptInputAttachments();
   const queue = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
     event.currentTarget.form?.requestSubmit();
   }, []);
+  if (!(draft.trim() || files.length)) {
+    return null;
+  }
   return (
     <PromptInputButton
       className={styles.queueButton}
@@ -522,7 +580,7 @@ function PromptQueueButton({ disabled }: { disabled: boolean }) {
       type="button"
     >
       <CornerDownLeft aria-hidden="true" size={14} />
-      Queue
+      {queueing ? "Queue" : "Steer"}
     </PromptInputButton>
   );
 }
@@ -572,78 +630,6 @@ function PromptPrimaryAction({
       pending={pending}
       stopping={stopping}
     />
-  );
-}
-
-interface QueuedMessage {
-  message: string;
-  projectId: string;
-}
-
-function queueValidationError(
-  input: PromptInputMessage,
-  projectId: string,
-  queued: QueuedMessage | null
-) {
-  if (!projectId) {
-    return "Choose a project before queuing a message.";
-  }
-  if (input.files.length > 0) {
-    return "Attachments can be sent after the run finishes. Remove them to queue text guidance.";
-  }
-  if (queued) {
-    return "A message is already queued. Edit, steer, or remove it first.";
-  }
-  return input.text.trim() ? "" : "Write a message to queue.";
-}
-
-function QueuedMessageRow({
-  queued,
-  pending,
-  sending,
-  error,
-  steerDisabled,
-  onSend,
-  onEdit,
-  onRemove,
-}: {
-  queued: QueuedMessage;
-  pending: boolean;
-  sending: boolean;
-  error: string;
-  steerDisabled: boolean;
-  onSend: () => void;
-  onEdit: () => void;
-  onRemove: () => void;
-}) {
-  let label = pending ? "Queued for after this turn" : "Ready to send";
-  if (sending) {
-    label = "Sending…";
-  }
-  return (
-    <fieldset aria-label="Queued message" className={styles.queued}>
-      <div className={styles.queuedText}>
-        <span>{label}</span>
-        <p title={queued.message}>{queued.message}</p>
-        {error && <p role="alert">{error}</p>}
-      </div>
-      <div className={styles.queuedActions}>
-        <button disabled={steerDisabled} onClick={onSend} type="button">
-          {pending ? "Steer" : "Send now"}
-        </button>
-        <button disabled={sending} onClick={onEdit} type="button">
-          Edit
-        </button>
-        <button
-          aria-label="Remove queued message"
-          disabled={sending}
-          onClick={onRemove}
-          type="button"
-        >
-          <X aria-hidden="true" size={14} />
-        </button>
-      </div>
-    </fieldset>
   );
 }
 
@@ -911,10 +897,14 @@ export function Composer({
   onKeyDown,
   onSubmit,
   onSteer,
+  onOpenSideChat,
+  preventAutoQueueDispatch = false,
+  queueScopeKey,
   onStop,
   onTranscribe,
   onVoiceMode,
   pending,
+  pendingRunId = null,
   stopping,
   placeholder,
 }: ComposerProps) {
@@ -924,14 +914,22 @@ export function Composer({
     "idle"
   );
   const [attachmentError, setAttachmentError] = useState("");
-  const [queued, setQueued] = useState<QueuedMessage | null>(null);
-  const [queueError, setQueueError] = useState("");
-  const [dispatching, setDispatching] = useState(false);
-  const queuedRef = useRef<QueuedMessage | null>(null);
-  const autoAttempted = useRef<QueuedMessage | null>(null);
-  const dispatchingRef = useRef<boolean>(false);
-  const latestDraft = useRef(draft);
-  latestDraft.current = draft;
+  const queue = useMessageQueue({
+    busy,
+    onOpenSideChat,
+    onSteer,
+    onSubmit,
+    pending,
+    pendingRunId,
+    preventAutoQueueDispatch,
+    projectId,
+    scopeKey: queueScopeKey ?? projectId,
+    stopping,
+  });
+  const stopAndPauseQueue = useCallback(() => {
+    queue.pause();
+    onStop();
+  }, [onStop, queue.pause]);
   const root = useRef<HTMLDivElement>(null);
 
   const setDraft = useCallback(
@@ -940,85 +938,6 @@ export function Composer({
   );
 
   const voice = useVoiceCapture({ draft, onTranscribe, setDraft });
-
-  const updateQueue = useCallback((message: QueuedMessage | null) => {
-    autoAttempted.current = null;
-    queuedRef.current = message;
-    setQueued(message);
-  }, []);
-
-  const dispatchQueue = useCallback(async () => {
-    const message = queuedRef.current;
-    if (!message || dispatchingRef.current || busy) {
-      return;
-    }
-    if (message.projectId !== projectId) {
-      setQueueError("Return to the queued message’s project to send it.");
-      return;
-    }
-    const send = pending ? onSteer : onSubmit;
-    if (!send) {
-      setQueueError(
-        "Steering is unavailable. This message will send when the run finishes."
-      );
-      return;
-    }
-    dispatchingRef.current = true;
-    setDispatching(true);
-    setQueueError("");
-    try {
-      const sent = await send({ attachments: [], message: message.message });
-      if (!sent) {
-        throw new Error("The queued message was not sent. Try again.");
-      }
-      updateQueue(null);
-      // The parent may clear its draft after sending; keep newer writing intact.
-      setDraft(latestDraft.current);
-    } catch (cause) {
-      setQueueError(
-        cause instanceof Error
-          ? cause.message
-          : "Could not send the queued message. Try again."
-      );
-    } finally {
-      dispatchingRef.current = false;
-      setDispatching(false);
-    }
-  }, [busy, onSteer, onSubmit, pending, projectId, setDraft, updateQueue]);
-
-  useEffect(() => {
-    if (
-      queued &&
-      !pending &&
-      !busy &&
-      !dispatching &&
-      autoAttempted.current !== queued
-    ) {
-      autoAttempted.current = queued;
-      dispatchQueue();
-    }
-  }, [busy, dispatching, dispatchQueue, pending, queued]);
-
-  const removeQueued = useCallback(() => {
-    updateQueue(null);
-    setQueueError("");
-  }, [updateQueue]);
-
-  const editQueued = useCallback(() => {
-    if (!queued) {
-      return;
-    }
-    const restored = [queued.message, draft].filter(Boolean).join("\n\n");
-    if (restored.length > limit) {
-      setQueueError(
-        "Finish your current draft before editing this queued message."
-      );
-      return;
-    }
-    setDraft(restored);
-    removeQueued();
-    document.getElementById("prompt")?.focus();
-  }, [draft, limit, queued, removeQueued, setDraft]);
 
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1099,68 +1018,50 @@ export function Composer({
 
   const handleSubmit = useCallback(
     async (input: PromptInputMessage) => {
-      if (busy || dispatchingRef.current) {
+      if (busy || queue.sendingId) {
         throw new Error("Wait for the current request to finish.");
       }
-      if (pending) {
-        const error = queueValidationError(input, projectId, queuedRef.current);
-        if (error) {
-          setAttachmentError(error);
-          throw new Error(error);
+      try {
+        const promptAttachments = readPromptAttachments(input);
+        if (!(input.text.trim() || promptAttachments.length)) {
+          throw new Error("Write a message or attach a file.");
         }
-        updateQueue({ message: input.text.trim(), projectId });
-        setQueueError("");
         setAttachmentError("");
-        setDraft("");
-        return;
-      }
-      const promptAttachments = input.files.map((file) => {
-        if (!file.url.startsWith("data:")) {
-          throw new Error(
-            `Could not read ${file.filename ?? "an attachment"}.`
-          );
+        if (pending) {
+          const id = queue.enqueue({
+            attachments: promptAttachments,
+            message: input.text.trim(),
+          });
+          setDraft("");
+          if (!queue.queueing) {
+            await queue.dispatch(id);
+          }
+          return;
         }
-        if (file.filename && file.filename.length > 255) {
-          setAttachmentError("A file name is too long to attach.");
-          throw new Error("A file name is too long to attach.");
+        const sent = await onSubmit({
+          attachments: promptAttachments,
+          message: input.text.trim(),
+        });
+        if (!sent) {
+          throw new Error("The message was not sent. Please try again.");
         }
-        if (dataUrlSize(file.url) > MAX_ATTACHMENT_BYTES) {
-          setAttachmentError(
-            `${file.filename ?? "A file"} is larger than 4 MB.`
-          );
-          throw new Error(`${file.filename ?? "A file"} is larger than 4 MB.`);
-        }
-        return {
-          data: file.url,
-          filename: file.filename ?? "attachment",
-          mediaType: file.mediaType || "application/octet-stream",
-        };
-      });
-      const totalBytes = promptAttachments.reduce(
-        (total, attachment) => total + dataUrlSize(attachment.data),
-        0
-      );
-      if (totalBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
-        setAttachmentError("Attachments must total 12 MB or less.");
-        throw new Error("Attachments must total 12 MB or less.");
-      }
-      if (promptAttachments.length > MAX_ATTACHMENTS) {
-        setAttachmentError(`Attach up to ${MAX_ATTACHMENTS} files.`);
-        throw new Error(`Attach up to ${MAX_ATTACHMENTS} files.`);
-      }
-      if (!(input.text.trim() || promptAttachments.length)) {
-        throw new Error("Write a message or attach a file.");
-      }
-      setAttachmentError("");
-      const sent = await onSubmit({
-        attachments: promptAttachments,
-        message: input.text.trim(),
-      });
-      if (!sent) {
-        throw new Error("The message was not sent. Please try again.");
+      } catch (cause) {
+        setAttachmentError(
+          cause instanceof Error ? cause.message : "Could not send the message."
+        );
+        throw cause;
       }
     },
-    [busy, onSubmit, pending, projectId, setDraft, updateQueue]
+    [
+      busy,
+      onSubmit,
+      pending,
+      queue.dispatch,
+      queue.enqueue,
+      queue.queueing,
+      queue.sendingId,
+      setDraft,
+    ]
   );
 
   const handleAttachmentError = useCallback(
@@ -1191,19 +1092,48 @@ export function Composer({
           onMention={mention}
           onRetryFiles={loadFiles}
         />
-        {queued && (
-          <QueuedMessageRow
-            error={queueError}
-            onEdit={editQueued}
-            onRemove={removeQueued}
-            onSend={dispatchQueue}
-            pending={pending}
-            queued={queued}
-            sending={dispatching}
-            steerDisabled={
-              busy || dispatching || stopping || (pending && !onSteer)
-            }
-          />
+        {queue.visible.length > 0 && (
+          <section aria-label="Queued messages" className={styles.queued}>
+            <ul>
+              {queue.visible.map((queued) => (
+                <QueuedMessageRow
+                  error={
+                    queue.error?.id === queued.id
+                      ? queue.error.message
+                      : undefined
+                  }
+                  key={queued.id}
+                  limit={limit}
+                  onEdit={queue.edit}
+                  onOpenSideChat={
+                    onOpenSideChat
+                      ? (id) => queue.dispatch(id, true)
+                      : undefined
+                  }
+                  onRemove={queue.remove}
+                  onSend={queue.dispatch}
+                  onToggleQueueing={queue.toggleQueueing}
+                  pending={pending}
+                  queued={queued}
+                  queueing={queue.queueing}
+                  sending={queue.sendingId === queued.id}
+                  steerDisabled={
+                    busy ||
+                    Boolean(queue.sendingId) ||
+                    stopping ||
+                    (pending &&
+                      !queued.delivery &&
+                      (!onSteer || queued.attachments.length > 0))
+                  }
+                />
+              ))}
+            </ul>
+            {queue.paused && (
+              <p className={styles.queueNote}>
+                Queue paused. Send a message when you are ready.
+              </p>
+            )}
+          </section>
         )}
         <VoiceBeam
           active={listening}
@@ -1246,11 +1176,17 @@ export function Composer({
                   <PromptAttachButton
                     busy={busy}
                     onErrorClear={clearAttachmentError}
-                    pending={pending}
                   />
-                  {pending && projectId && draft.trim() && (
+                  {pending && projectId && (
                     <PromptQueueButton
-                      disabled={busy || dispatching || queued !== null}
+                      disabled={
+                        busy ||
+                        Boolean(queue.sendingId) ||
+                        queue.total >= MAX_QUEUED_MESSAGES ||
+                        stopping
+                      }
+                      draft={draft}
+                      queueing={queue.queueing}
                     />
                   )}
                 </PromptInputTools>
@@ -1299,7 +1235,7 @@ export function Composer({
                     busy={busy}
                     draft={draft}
                     hasConversation={hasConversation}
-                    onStop={onStop}
+                    onStop={stopAndPauseQueue}
                     onVoiceMode={onVoiceMode}
                     pending={pending}
                     stopping={stopping}
@@ -1314,7 +1250,7 @@ export function Composer({
         </VoiceBeam>
         <div className={styles.context}>
           <ProjectPicker
-            disabled={projectPickerDisabled || queued !== null || dispatching}
+            disabled={projectPickerDisabled || Boolean(queue.sendingId)}
             onCreateProject={onCreateProject}
             onSelect={onProjectSelect}
             projectId={projectId}
@@ -1343,6 +1279,7 @@ export function Composer({
             error={attachmentError || voice.error}
             pending={pending}
             projectSelected={projectId.length > 0}
+            queueing={queue.queueing}
             recording={voice.recording}
             transcribing={voice.transcribing}
           />

@@ -482,6 +482,63 @@ describeWithDatabase("run dispatch", () => {
     ).toBeDefined();
   });
 
+  it("excludes a blocked project before applying the discovery limit", async () => {
+    const occupied = await queuedRun();
+    const independent = await queuedRun();
+    const lease = await store.beginRun({
+      holder: "worker-occupied-project",
+      runId: occupied.allocation.buildSession.runId,
+      ttlMs: 60_000,
+    });
+    if (!lease) {
+      throw new Error("The occupied project could not be leased.");
+    }
+    const blocked = await store.allocateBuildSession({
+      idempotencyKey: randomUUID(),
+      scope: occupied.scope,
+      userSessionId,
+    });
+    const blockedRunId = blocked.buildSession.runId;
+    fixtureRuns.push(blockedRunId);
+    await pool.query(
+      `update runs set created_at = '1970-01-01T00:00:00Z' where run_id = $1`,
+      [blockedRunId]
+    );
+    await pool.query(
+      `update runs set created_at = '1971-01-01T00:00:00Z' where run_id = $1`,
+      [independent.allocation.buildSession.runId]
+    );
+    expect(
+      (await store.listRunnableRuns({ limit: 1 })).map((run) => run.runId)
+    ).toEqual([independent.allocation.buildSession.runId]);
+    await store.finishRun({
+      holder: "worker-occupied-project",
+      leaseId: lease.leaseId,
+      runId: occupied.allocation.buildSession.runId,
+      status: "succeeded",
+    });
+    expect(
+      (await store.listRunnableRuns({ limit: 1 })).map((run) => run.runId)
+    ).toEqual([blockedRunId]);
+    const blockedLease = await store.beginRun({
+      holder: "worker-unblocked-project",
+      runId: blockedRunId,
+      ttlMs: 60_000,
+    });
+    if (!blockedLease) {
+      throw new Error("The released project remained blocked.");
+    }
+    await store.finishRun({
+      holder: "worker-unblocked-project",
+      leaseId: blockedLease.leaseId,
+      runId: blockedRunId,
+      status: "cancelled",
+    });
+    await pool.query(`update runs set status = 'cancelled' where run_id = $1`, [
+      independent.allocation.buildSession.runId,
+    ]);
+  });
+
   it("refuses to read a run outside the caller's organization or project", async () => {
     const { allocation, scope } = await queuedRun();
     const { runId } = allocation.buildSession;

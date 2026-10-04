@@ -1,4 +1,12 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { readWorkerConfig } from "../src/config.js";
 import { createStopSignal } from "../src/stop-signal.js";
 import { RunWorker } from "../src/worker.js";
@@ -136,5 +144,112 @@ describeWithDatabase("run worker poll loop", () => {
       runId: allocated.candidate.runId,
       status: "failed",
     });
+  });
+
+  it("starts an independent project while a question is unanswered and respects capacity", async () => {
+    const first = await fixture();
+    const second = await fixture();
+    const third = await fixture();
+    const fixtures = [first, second, third];
+    const fixtureRunIds = new Set(fixtures.map((item) => item.candidate.runId));
+    const store = {
+      ...harness.store,
+      listRunnableRuns: async ({ limit }: { limit: number }) =>
+        (await harness.store.listRunnableRuns({ limit: 64 }))
+          .filter((run) => fixtureRunIds.has(run.runId))
+          .slice(0, limit),
+    };
+    const scripted = scriptedRuntime();
+    const stopSignal = createStopSignal();
+    const worker = new RunWorker({
+      config: config(),
+      executor: createExecutor({
+        harness,
+        holder: "worker-fairness",
+        runtime: scripted.runtime,
+        store,
+      }),
+      logger: harness.logger,
+      stopSignal,
+      store,
+    });
+    try {
+      await worker.poll();
+      const firstSession = await scripted.waitForSession();
+      await firstSession.started;
+      firstSession.complete([
+        {
+          args: { question: "Which region?" },
+          resumeSchema: "string",
+          suspendPayload: { question: "Which region?" },
+          toolCallId: "fairness-question",
+          toolName: "ask_user",
+          type: "tool_suspended",
+        },
+        { reason: "suspended", type: "agent_end" },
+      ]);
+      await vi.waitFor(
+        async () => {
+          const run = await harness.store.getRun({
+            ...first.scope,
+            runId: first.candidate.runId,
+          });
+          expect(run?.status).toBe("awaiting_approval");
+        },
+        { timeout: 15_000 }
+      );
+
+      await Promise.all([worker.poll(), worker.poll()]);
+      await vi.waitFor(() => expect(scripted.sessions).toHaveLength(2));
+      const [, secondSession] = scripted.sessions;
+      if (!secondSession) {
+        throw new Error("The independent project did not start.");
+      }
+      await secondSession.started;
+      await worker.poll();
+      expect(scripted.sessions).toHaveLength(2);
+      expect(
+        (
+          await harness.store.getRun({
+            ...third.scope,
+            runId: third.candidate.runId,
+          })
+        )?.status
+      ).toBe("queued");
+
+      secondSession.complete([{ reason: "complete", type: "agent_end" }]);
+      await vi.waitFor(
+        async () => {
+          expect(
+            (
+              await harness.store.getRun({
+                ...second.scope,
+                runId: second.candidate.runId,
+              })
+            )?.status
+          ).toBe("completed");
+        },
+        { timeout: 15_000 }
+      );
+      await worker.poll();
+      await vi.waitFor(() => expect(scripted.sessions).toHaveLength(3));
+      const [, , thirdSession] = scripted.sessions;
+      if (!thirdSession) {
+        throw new Error("The released slot did not accept queued work.");
+      }
+      await thirdSession.started;
+      thirdSession.complete([{ reason: "complete", type: "agent_end" }]);
+    } finally {
+      stopSignal.request("test shutdown");
+      await worker.stop();
+    }
+    expect(
+      (
+        await harness.store.getRun({
+          ...first.scope,
+          runId: first.candidate.runId,
+        })
+      )?.status
+    ).toBe("cancelled");
   });
 });

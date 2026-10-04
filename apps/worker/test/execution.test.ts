@@ -17,7 +17,13 @@ import {
   it,
   vi,
 } from "vitest";
+import {
+  checkpointSandboxFor,
+  restoreLatestCheckpoint,
+} from "../src/checkpoint.js";
+import { candidateScope, createRunRequestContext } from "../src/run-context.js";
 import { createStopSignal } from "../src/stop-signal.js";
+import { resolveBuildSandbox } from "../src/workspace.js";
 import {
   allocateRunFixture,
   containerCount,
@@ -834,5 +840,372 @@ describeWithDatabase("run execution", () => {
     expect((await ledger(harness, allocated)).at(-1)?.type).toBe(
       "run.cancelled"
     );
+  });
+
+  it("settles cancellation when checkpointed volume cleanup is refused", async () => {
+    const scripted = scriptedRuntime();
+    const executor = createExecutor({
+      harness,
+      holder: "worker-cleanup-cancel",
+      runtime: scripted.runtime,
+    });
+    const allocated = await fixture();
+    const stopSignal = createStopSignal();
+    const attempt = executor.execute(allocated.candidate, stopSignal);
+    const session = await scripted.waitForSession();
+    await session.started;
+    const blockerName = `reasonate-cleanup-test-${randomUUID()}`;
+    let blockerStarted = false;
+    try {
+      execFileSync("docker", [
+        "run",
+        "--detach",
+        "--rm",
+        "--name",
+        blockerName,
+        "--network",
+        "none",
+        "--mount",
+        `type=volume,source=${allocated.volume},target=/workspace,readonly`,
+        "node:22",
+        "sleep",
+        "120",
+      ]);
+      blockerStarted = true;
+      stopSignal.request("test cancellation with busy volume");
+      expect(await attempt).toBe("cancelled");
+      expect(await runStatus(harness, allocated)).toBe("cancelled");
+      expect(
+        await leaseRow(harness, allocated.candidate.runId)
+      ).toBeUndefined();
+      expect(await volumeCount(allocated.volume)).toBe(1);
+      expect(
+        harness
+          .logs()
+          .some(
+            (line) =>
+              line.includes("run.volume.cleanup.failed") &&
+              line.includes(allocated.candidate.runId)
+          )
+      ).toBe(true);
+      expect(
+        (await ledger(harness, allocated)).at(-1)?.payload.checkpointId
+      ).toEqual(expect.any(String));
+    } finally {
+      stopSignal.request("test cleanup");
+      await attempt;
+      if (blockerStarted) {
+        execFileSync("docker", ["rm", "--force", blockerName]);
+      }
+    }
+  });
+
+  it("reconciles a durable worker cancellation after a crash without reviving its unanswered question", async () => {
+    const allocated = await fixture();
+    await harness.store.beginRun({
+      holder: "worker-before-crash",
+      runId: allocated.candidate.runId,
+      ttlMs: 100,
+    });
+    await harness.store.appendRunEvent({
+      controllerRunId: "controller-before-crash",
+      payload: {
+        kind: "tool_suspended",
+        toolCallId: "cancelled-question",
+        toolName: "ask_user",
+      },
+      runId: allocated.candidate.runId,
+      scope: allocated.scope,
+      type: "approval.requested",
+    });
+    await harness.store.appendRunEvent({
+      payload: { outcome: "cancelled", reason: "the previous worker stopped" },
+      runId: allocated.candidate.runId,
+      scope: allocated.scope,
+      type: "run.cancelled",
+    });
+    execFileSync("docker", ["volume", "create", allocated.volume]);
+    await new Promise<void>((resolve) => setTimeout(resolve, 200));
+    const candidate = (
+      await harness.store.listRunnableRuns({ limit: 64 })
+    ).find((run) => run.runId === allocated.candidate.runId);
+    if (!candidate) {
+      throw new Error("The interrupted run could not be reclaimed.");
+    }
+    expect(await runStatus(harness, allocated)).toBe("awaiting_approval");
+    const scripted = scriptedRuntime();
+    const unavailableCheckpoints = {
+      ...harness.checkpoints,
+      write: () => Promise.reject(new Error("Checkpoint store unavailable")),
+    };
+    await expect(
+      createExecutor({
+        harness: { ...harness, checkpoints: unavailableCheckpoints },
+        holder: "worker-blocked-recovery",
+        runtime: scripted.runtime,
+      }).execute(candidate, createStopSignal())
+    ).rejects.toThrow("Checkpoint store unavailable");
+    expect(await runStatus(harness, allocated)).toBe("awaiting_approval");
+    expect(await volumeCount(allocated.volume)).toBe(1);
+    await expect(
+      harness.store.retryConversationRun({
+        buildSessionId: allocated.buildSessionId,
+        idempotencyKey: randomUUID(),
+        runId: candidate.runId,
+        scope: allocated.scope,
+      })
+    ).rejects.toThrow();
+    await harness.pool.query(
+      `update run_leases set expires_at = now() - interval '1 second' where run_id = $1`,
+      [candidate.runId]
+    );
+    const executor = createExecutor({
+      harness,
+      holder: "worker-after-crash",
+      runtime: scripted.runtime,
+    });
+    expect(await executor.execute(candidate, createStopSignal())).toBe(
+      "cancelled"
+    );
+    expect(scripted.initCalls()).toBe(0);
+    expect(scripted.sessions).toHaveLength(0);
+    expect(await runStatus(harness, allocated)).toBe("cancelled");
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeUndefined();
+    expect(await volumeCount(allocated.volume)).toBe(0);
+    expect(
+      harness
+        .logs()
+        .some(
+          (line) =>
+            line.includes("run.terminal.recovered") &&
+            line.includes(candidate.runId)
+        )
+    ).toBe(true);
+  });
+
+  it("checkpoints interrupted tracked edits before a terminal retry restores the workspace", async () => {
+    const allocated = await fixture("Create notes");
+    const first = scriptedRuntime();
+    const firstAttempt = createExecutor({
+      harness,
+      holder: "worker-original",
+      runtime: first.runtime,
+    }).execute(allocated.candidate, createStopSignal());
+    const firstSession = await first.waitForSession();
+    await firstSession.started;
+    writeWorkspaceFile(allocated.volume, "notes.txt", "original\n");
+    firstSession.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await firstAttempt).toBe("succeeded");
+    const interrupted = await harness.store.appendConversationTurn({
+      buildSessionId: allocated.buildSessionId,
+      idempotencyKey: randomUUID(),
+      message: "Revise notes",
+      scope: allocated.scope,
+    });
+    const interruptedCandidate = (
+      await harness.store.listRunnableRuns({ limit: 64 })
+    ).find((run) => run.runId === interrupted.runId);
+    if (!interruptedCandidate) {
+      throw new Error("The interrupted turn is not runnable.");
+    }
+    await harness.store.beginRun({
+      holder: "worker-crashed",
+      runId: interrupted.runId,
+      ttlMs: 60_000,
+    });
+    const scope = candidateScope(interruptedCandidate);
+    const sandbox = await resolveBuildSandbox({
+      requestContext: createRunRequestContext(scope),
+    });
+    await sandbox.start?.();
+    await restoreLatestCheckpoint({
+      checkpoints: harness.checkpoints,
+      sandbox: checkpointSandboxFor(sandbox),
+      scope,
+    });
+    writeWorkspaceFile(allocated.volume, "notes.txt", "recovered edit\n");
+    await harness.store.appendRunEvent({
+      payload: {
+        outcome: "cancelled",
+        reason: "the worker crashed after recording cancellation",
+      },
+      runId: interrupted.runId,
+      scope: allocated.scope,
+      type: "run.cancelled",
+    });
+    await harness.pool.query(
+      `update run_leases set expires_at = now() - interval '1 second' where run_id = $1`,
+      [interrupted.runId]
+    );
+    const recovered = scriptedRuntime();
+    expect(
+      await createExecutor({
+        harness,
+        holder: "worker-recovery",
+        runtime: recovered.runtime,
+      }).execute(interruptedCandidate, createStopSignal())
+    ).toBe("cancelled");
+    expect(recovered.initCalls()).toBe(0);
+    const retry = await harness.store.retryConversationRun({
+      buildSessionId: allocated.buildSessionId,
+      idempotencyKey: randomUUID(),
+      runId: interrupted.runId,
+      scope: allocated.scope,
+    });
+    const retryCandidate = (
+      await harness.store.listRunnableRuns({ limit: 64 })
+    ).find((run) => run.runId === retry.runId);
+    if (!retryCandidate) {
+      throw new Error("The retry is not runnable.");
+    }
+    const retryRuntime = scriptedRuntime();
+    const retryStop = createStopSignal();
+    const retryAttempt = createExecutor({
+      harness,
+      holder: "worker-retry",
+      runtime: retryRuntime.runtime,
+    }).execute(retryCandidate, retryStop);
+    const retrySession = await retryRuntime.waitForSession();
+    await retrySession.started;
+    try {
+      const container = execFileSync(
+        "docker",
+        ["ps", "-q", "--filter", `volume=${allocated.volume}`],
+        { encoding: "utf8" }
+      ).trim();
+      expect(
+        execFileSync(
+          "docker",
+          ["exec", container, "cat", "/workspace/notes.txt"],
+          { encoding: "utf8" }
+        )
+      ).toBe("recovered edit\n");
+      retrySession.complete([{ reason: "complete", type: "agent_end" }]);
+      expect(await retryAttempt).toBe("succeeded");
+    } finally {
+      retryStop.request("test cleanup");
+      await retryAttempt;
+    }
+  });
+
+  it("preserves tracked edits on retry after ordinary cancellation checkpoint failure", async () => {
+    const allocated = await fixture();
+    const original = scriptedRuntime();
+    const originalAttempt = createExecutor({
+      harness,
+      holder: "worker-retry-original",
+      runtime: original.runtime,
+    }).execute(allocated.candidate, createStopSignal());
+    const originalSession = await original.waitForSession();
+    await Promise.race([
+      originalSession.started,
+      originalAttempt.then((outcome) => {
+        throw new Error(
+          `Original ended before starting: ${outcome}\n${harness.logs().slice(-8).join("\n")}`
+        );
+      }),
+    ]);
+    writeWorkspaceFile(allocated.volume, "notes.txt", "original\n");
+    originalSession.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await originalAttempt).toBe("succeeded");
+    const cancelled = await harness.store.appendConversationTurn({
+      buildSessionId: allocated.buildSessionId,
+      idempotencyKey: randomUUID(),
+      message: "Revise notes",
+      scope: allocated.scope,
+    });
+    const cancelledCandidate = (
+      await harness.store.listRunnableRuns({ limit: 64 })
+    ).find((run) => run.runId === cancelled.runId);
+    if (!cancelledCandidate) {
+      throw new Error("The cancellation fixture is not runnable.");
+    }
+    const cancellation = scriptedRuntime();
+    const cancelStop = createStopSignal();
+    const unavailable = {
+      ...harness,
+      checkpoints: {
+        ...harness.checkpoints,
+        write: () => Promise.reject(new Error("Checkpoint store unavailable")),
+      },
+    };
+    const cancelAttempt = createExecutor({
+      harness: unavailable,
+      holder: "worker-cancel-checkpoint-failure",
+      runtime: cancellation.runtime,
+    }).execute(cancelledCandidate, cancelStop);
+    const cancelSession = await cancellation.waitForSession();
+    await Promise.race([
+      cancelSession.started,
+      cancelAttempt.then((outcome) => {
+        throw new Error(
+          `Cancellation ended before starting: ${outcome}\n${harness.logs().slice(-8).join("\n")}`
+        );
+      }),
+    ]);
+    writeWorkspaceFile(
+      allocated.volume,
+      "notes.txt",
+      "preserved cancellation edit\n"
+    );
+    cancelStop.request("test cancellation");
+    expect(await cancelAttempt).toBe("cancelled");
+    expect(await volumeCount(allocated.volume)).toBe(1);
+    const retry = await harness.store.retryConversationRun({
+      buildSessionId: allocated.buildSessionId,
+      idempotencyKey: randomUUID(),
+      runId: cancelled.runId,
+      scope: allocated.scope,
+    });
+    const candidate = (
+      await harness.store.listRunnableRuns({ limit: 64 })
+    ).find((run) => run.runId === retry.runId);
+    if (!candidate) {
+      throw new Error("The retry fixture is not runnable.");
+    }
+    const runtime = scriptedRuntime();
+    const stop = createStopSignal();
+    const attempt = createExecutor({
+      harness,
+      holder: "worker-retained-retry",
+      runtime: runtime.runtime,
+    }).execute(candidate, stop);
+    const session = await runtime.waitForSession();
+    await Promise.race([
+      session.started,
+      attempt.then((outcome) => {
+        throw new Error(
+          `Retry ended before starting: ${outcome}\n${harness.logs().slice(-8).join("\n")}`
+        );
+      }),
+    ]);
+    try {
+      const container = execFileSync(
+        "docker",
+        ["ps", "-q", "--filter", `volume=${allocated.volume}`],
+        { encoding: "utf8" }
+      ).trim();
+      expect(
+        execFileSync(
+          "docker",
+          ["exec", container, "cat", "/workspace/notes.txt"],
+          { encoding: "utf8" }
+        )
+      ).toBe("preserved cancellation edit\n");
+      session.complete([{ reason: "complete", type: "agent_end" }]);
+      expect(await attempt).toBe("succeeded");
+      expect(
+        harness
+          .logs()
+          .some(
+            (line) =>
+              line.includes("run.workspace.recovered") &&
+              line.includes(candidate.runId)
+          )
+      ).toBe(true);
+    } finally {
+      stop.request("test cleanup");
+      await attempt;
+    }
   });
 });

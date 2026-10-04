@@ -136,14 +136,10 @@ export async function snapshotWorkspaceCheckpoint(input: {
  * is not a leak.
  */
 export async function removeWorkspaceVolume(scope: RunScope): Promise<void> {
-  try {
-    await execFileAsync("docker", [
-      "volume",
-      "rm",
-      "-f",
-      workspaceVolumeName(scope),
-    ]);
-  } catch {
-    // Best-effort: the container may never have started, or Docker is absent.
-  }
+  await execFileAsync("docker", [
+    "volume",
+    "rm",
+    "-f",
+    workspaceVolumeName(scope),
+  ]);
 }

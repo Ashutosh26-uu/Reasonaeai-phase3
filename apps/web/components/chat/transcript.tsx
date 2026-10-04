@@ -50,7 +50,7 @@ export interface TranscriptProps {
   live: boolean;
   messages: ConversationMessage[];
   onEdit: (text: string) => void;
-  onRetry: (text: string) => void;
+  onRetry: (text: string, sourceRunId?: string) => void;
   pending: boolean;
   timeline: Timeline;
 }
@@ -82,11 +82,16 @@ function CopyAction({ text }: { text: string }) {
 function RetryAction({
   onRetry,
   text,
+  sourceRunId,
 }: {
-  onRetry: (text: string) => void;
+  onRetry: (text: string, sourceRunId?: string) => void;
   text: string;
+  sourceRunId?: string | undefined;
 }) {
-  const retry = useCallback(() => onRetry(text), [onRetry, text]);
+  const retry = useCallback(
+    () => onRetry(text, sourceRunId),
+    [sourceRunId, onRetry, text]
+  );
   return (
     <MessageAction
       label="Retry request"
@@ -298,6 +303,13 @@ export function Transcript({
     <Conversation className="transcript">
       <ConversationContent className="transcript-inner">
         {turns.map((turn) => {
+          const interrupted = Object.values(
+            timeline.runs[turn.id]?.events ?? {}
+          ).some(
+            (event) =>
+              (event.type === "run.failed" || event.type === "run.cancelled") &&
+              typeof event.payload.outcome === "string"
+          );
           const checkpoint = turnCheckpoint(
             Object.values(timeline.runs[turn.id]?.events ?? {})
           );
@@ -335,11 +347,15 @@ export function Transcript({
                 </Message>
               )}
               {renderEntries(turn.entries)}
-              {answer && (
+              {(answer || interrupted) && (
                 <MessageActions>
-                  <CopyAction text={answer} />
-                  {!pending && turn.user && (
-                    <RetryAction onRetry={onRetry} text={turn.user.text} />
+                  {answer && <CopyAction text={answer} />}
+                  {!pending && interrupted && turn.user && (
+                    <RetryAction
+                      onRetry={onRetry}
+                      sourceRunId={turn.user.runId}
+                      text={turn.user.text}
+                    />
                   )}
                 </MessageActions>
               )}

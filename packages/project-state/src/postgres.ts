@@ -100,6 +100,59 @@ export class ConversationBusyError extends Error {
   }
 }
 
+export class ConversationRetryUnavailableError extends Error {
+  constructor() {
+    super(
+      "Only a failed or cancelled run in this conversation can be retried."
+    );
+    this.name = "ConversationRetryUnavailableError";
+  }
+}
+
+function conversationRetryKey(input: { idempotencyKey: string; runId: RunId }) {
+  return JSON.stringify(["retry", input.runId, input.idempotencyKey]);
+}
+
+async function resolveConversationPrompt(
+  client: PoolClient,
+  input: {
+    attachments?: PromptAttachment[];
+    buildSessionId: BuildSessionId;
+    message: string;
+    retryRunId?: RunId;
+    scope: TenantScope;
+  }
+) {
+  if (!input.retryRunId) {
+    return { attachments: input.attachments ?? [], message: input.message };
+  }
+  const source = await client.query<{
+    user_message: string | null;
+    user_attachments: unknown;
+  }>(
+    `select user_message, user_attachments from runs
+      where run_id = $1 and build_session_id = $2
+        and organization_id = $3 and project_id = $4
+        and status in ('failed', 'cancelled') for update`,
+    [
+      input.retryRunId,
+      input.buildSessionId,
+      input.scope.organizationId,
+      input.scope.projectId,
+    ]
+  );
+  const [original] = source.rows;
+  if (!original || original.user_message === null) {
+    throw new ConversationRetryUnavailableError();
+  }
+  return {
+    attachments: PromptAttachmentSchema.array().parse(
+      original.user_attachments ?? []
+    ),
+    message: original.user_message,
+  };
+}
+
 export interface OutboxRecord {
   outboxId: string;
   payload: RunEventEnvelope;
@@ -390,6 +443,12 @@ export interface ProjectStateStore {
    * outside that tenant scope is not found rather than filtered afterwards, so
    * a caller cannot learn that another tenant's run exists.
    */
+  getConversationRetry: (input: {
+    buildSessionId: BuildSessionId;
+    idempotencyKey: string;
+    runId: RunId;
+    scope: TenantScope;
+  }) => Promise<RunId | undefined>;
   getRun: (input: {
     organizationId: OrganizationId;
     projectId: ProjectId;
@@ -494,6 +553,12 @@ export interface ProjectStateStore {
     buildSessionId: BuildSessionId;
     requestedByUserId: UserId;
   }) => Promise<boolean>;
+  retryConversationRun: (input: {
+    buildSessionId: BuildSessionId;
+    idempotencyKey: string;
+    runId: RunId;
+    scope: TenantScope;
+  }) => Promise<{ runId: RunId; created: boolean }>;
   sessions: SessionRepository;
   setRunStatus: (input: {
     runId: RunId;
@@ -805,6 +870,7 @@ export function createProjectStateStore(config: {
     buildSessionId: BuildSessionId;
     idempotencyKey: string;
     message: string;
+    retryRunId?: RunId;
     scope: TenantScope;
   }): Promise<{ runId: RunId; created: boolean }> {
     return await withTransaction(async (client) => {
@@ -822,10 +888,17 @@ export function createProjectStateStore(config: {
         throw new Error("Conversation not found in this project.");
       }
 
-      const replay = await client.query<{ run_id: string }>(
-        `select run_id from conversation_turn_keys
-          where organization_id = $1 and project_id = $2
-            and build_session_id = $3 and idempotency_key = $4`,
+      const replay = await client.query<{
+        run_id: string;
+        retry_source: string | null;
+      }>(
+        `select keys.run_id, event.payload->>'retryOfRunId' as retry_source
+           from conversation_turn_keys keys
+           left join run_events event on event.run_id = keys.run_id
+             and event.organization_id = keys.organization_id
+             and event.project_id = keys.project_id and event.sequence = 1
+          where keys.organization_id = $1 and keys.project_id = $2
+            and keys.build_session_id = $3 and keys.idempotency_key = $4`,
         [
           input.scope.organizationId,
           input.scope.projectId,
@@ -834,6 +907,12 @@ export function createProjectStateStore(config: {
         ]
       );
       if (replay.rows[0]) {
+        if (
+          input.retryRunId &&
+          replay.rows[0].retry_source !== input.retryRunId
+        ) {
+          throw new ConversationRetryUnavailableError();
+        }
         return {
           created: false,
           runId: RunIdSchema.parse(replay.rows[0].run_id),
@@ -854,6 +933,11 @@ export function createProjectStateStore(config: {
         throw new ConversationBusyError();
       }
 
+      const { message, attachments } = await resolveConversationPrompt(
+        client,
+        input
+      );
+
       const runId = RunIdSchema.parse(randomUUID());
       await client.query(
         `insert into runs
@@ -864,8 +948,8 @@ export function createProjectStateStore(config: {
           input.scope.organizationId,
           input.scope.projectId,
           input.buildSessionId,
-          input.message,
-          JSON.stringify(input.attachments ?? []),
+          message,
+          JSON.stringify(attachments),
         ]
       );
       await client.query(
@@ -886,13 +970,61 @@ export function createProjectStateStore(config: {
         ]
       );
       await insertRunEvent(client, {
-        payload: { buildSessionId: input.buildSessionId },
+        payload: {
+          buildSessionId: input.buildSessionId,
+          ...(input.retryRunId ? { retryOfRunId: input.retryRunId } : {}),
+        },
         runId,
         scope: input.scope,
         type: "run.queued",
       });
       return { created: true, runId };
     });
+  }
+
+  async function retryConversationRun(input: {
+    buildSessionId: BuildSessionId;
+    idempotencyKey: string;
+    runId: RunId;
+    scope: TenantScope;
+  }) {
+    return await appendConversationTurn({
+      buildSessionId: input.buildSessionId,
+      idempotencyKey: conversationRetryKey(input),
+      message: "",
+      retryRunId: input.runId,
+      scope: input.scope,
+    });
+  }
+
+  async function getConversationRetry(input: {
+    buildSessionId: BuildSessionId;
+    idempotencyKey: string;
+    runId: RunId;
+    scope: TenantScope;
+  }): Promise<RunId | undefined> {
+    const replay = await pool.query<{ run_id: string }>(
+      `select keys.run_id from conversation_turn_keys keys
+         join runs r on r.run_id = keys.run_id
+           and r.build_session_id = keys.build_session_id
+           and r.organization_id = keys.organization_id
+           and r.project_id = keys.project_id
+         join run_events event on event.run_id = keys.run_id
+           and event.organization_id = keys.organization_id
+           and event.project_id = keys.project_id and event.sequence = 1
+        where keys.organization_id = $1 and keys.project_id = $2
+          and keys.build_session_id = $3 and keys.idempotency_key = $4
+          and event.type = 'run.queued' and event.payload->>'retryOfRunId' = $5`,
+      [
+        input.scope.organizationId,
+        input.scope.projectId,
+        input.buildSessionId,
+        conversationRetryKey(input),
+        input.runId,
+      ]
+    );
+    const [row] = replay.rows;
+    return row ? RunIdSchema.parse(row.run_id) : undefined;
   }
 
   async function listConversations(
@@ -1226,6 +1358,13 @@ export function createProjectStateStore(config: {
           and se.organization_id = r.organization_id
           and se.project_id = r.project_id
         where r.status <> all($2::text[])
+          and not exists (
+            select 1 from runs occupied
+             where occupied.organization_id = r.organization_id
+               and occupied.project_id = r.project_id
+               and occupied.run_id <> r.run_id
+               and occupied.status in ('running', 'awaiting_approval')
+          )
           and (r.status <> 'awaiting_approval'
             or (r.pending_tool_call_id is not null and r.pending_mastra_run_id is not null))
           and not exists (
@@ -2041,6 +2180,7 @@ export function createProjectStateStore(config: {
     createProject,
     finishRun,
     getBuildSession,
+    getConversationRetry,
     getRun,
     isRunCancellationRequested,
     listArtifacts,
@@ -2105,6 +2245,7 @@ export function createProjectStateStore(config: {
     renameOrganization,
     renewRunLease,
     requestRunCancellation,
+    retryConversationRun,
     sessions,
     setRunStatus,
     steering,

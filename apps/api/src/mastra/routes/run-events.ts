@@ -24,12 +24,14 @@ import type { HandlerContext } from "./build-sessions";
 export const RUN_EVENTS_PATH = "/v1/build-sessions/:buildSessionId/events";
 
 const EVENTS_PAGE_SIZE = 200;
+export const RUN_EVENTS_HEARTBEAT_MS = 10_000;
 
 const EventsParamsSchema = z.strictObject({ buildSessionId: z.uuid() });
 const EventsQuerySchema = z.strictObject({
   after: z.coerce.number().int().min(0).optional(),
   organizationId: z.uuid(),
   projectId: z.uuid(),
+  requestId: z.uuid().optional(),
 });
 
 const DENIAL_BY_REASON: Record<string, ApiErrorCode> = {
@@ -74,10 +76,23 @@ export function formatServerSentLiveEvent(event: RunLiveEvent): string {
 export interface RunEventRouteDeps {
   /** Overridden by tests to drive live delivery without a live transport. */
   fanout?: RunEventFanout;
+  report?: (entry: RunStreamDiagnostic) => void;
   resolvePrincipal: (input: {
     cookieHeader: string | undefined;
   }) => Promise<UserPrincipal | undefined>;
   store: () => ProjectStateStore;
+}
+
+export interface RunStreamDiagnostic {
+  at: string;
+  buildSessionId: string;
+  event: "run.stream.opened" | "run.stream.closed" | "run.stream.failed";
+  lastSequence: number;
+  organizationId: string;
+  projectId: string;
+  reason: string;
+  requestId: string;
+  runId: string;
 }
 
 export function createRunEventHandlers(deps: RunEventRouteDeps) {
@@ -95,7 +110,10 @@ export function createRunEventHandlers(deps: RunEventRouteDeps) {
      * instead of each polling the ledger on its own timer.
      */
     stream: async (c: HandlerContext): Promise<Response> => {
-      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+      const rid =
+        c.req.header("x-request-id") ??
+        c.req.query("requestId") ??
+        crypto.randomUUID();
 
       const principal = await deps.resolvePrincipal({
         cookieHeader: c.req.header("cookie"),
@@ -115,6 +133,7 @@ export function createRunEventHandlers(deps: RunEventRouteDeps) {
         after: c.req.query("after"),
         organizationId: c.req.query("organizationId"),
         projectId: c.req.query("projectId"),
+        requestId: c.req.query("requestId"),
       });
 
       if (!(params.success && query.success)) {
@@ -195,23 +214,54 @@ export function createRunEventHandlers(deps: RunEventRouteDeps) {
       const abortSignal = c.req.raw?.signal;
 
       let stop: (() => void) | undefined;
-      const onAbort = () => stop?.();
+      let finishStream: (() => void) | undefined;
+      const onAbort = () => finishStream?.();
 
       const body = new ReadableStream<Uint8Array>({
         cancel() {
           stop?.();
         },
         start(controller) {
-          let closed = false;
+          const lifecycle: { closed: boolean } = { closed: false };
           let lastSent = cursor;
           let subscription: RunEventSubscription | undefined;
+          let heartbeat: ReturnType<typeof setInterval> | undefined;
           // Live delivery and gap backfill both write, and a gap is discovered
           // in the middle of a delivery burst, so every write is chained: the
           // stream must never emit a later sequence ahead of an earlier one.
           let pending: Promise<void> = Promise.resolve();
+          const report = (
+            event: RunStreamDiagnostic["event"],
+            reason: string
+          ) => {
+            const entry: RunStreamDiagnostic = {
+              at: new Date().toISOString(),
+              buildSessionId: buildSession.buildSessionId,
+              event,
+              lastSequence: lastSent,
+              organizationId,
+              projectId,
+              reason,
+              requestId: rid,
+              runId,
+            };
+            if (deps.report) {
+              deps.report(entry);
+            } else if (event === "run.stream.failed") {
+              console.warn(JSON.stringify(entry));
+            } else {
+              console.info(JSON.stringify(entry));
+            }
+          };
+          const fail = (reason: string) => {
+            if (!lifecycle.closed) {
+              report("run.stream.failed", reason);
+              finish();
+            }
+          };
 
           const write = (chunk: string) => {
-            if (!closed) {
+            if (!lifecycle.closed) {
               controller.enqueue(encoder.encode(chunk));
             }
           };
@@ -233,7 +283,7 @@ export function createRunEventHandlers(deps: RunEventRouteDeps) {
           const readLedger = async () => {
             // Paging is cursor-dependent: each page resumes after the previous
             // page's last sequence, so the reads cannot overlap.
-            for (;;) {
+            while (!lifecycle.closed) {
               // biome-ignore lint/performance/noAwaitInLoops: cursor-dependent pagination
               const batch = await deps.store().listRunEvents({
                 afterSequence: lastSent,
@@ -251,21 +301,41 @@ export function createRunEventHandlers(deps: RunEventRouteDeps) {
           };
 
           const enqueue = (task: () => Promise<void> | void) => {
-            pending = pending.then(task).catch(() => undefined);
+            pending = pending
+              .then(() => {
+                if (!lifecycle.closed) {
+                  return task();
+                }
+              })
+              .catch(() => fail("ledger_or_write"));
           };
 
           stop = () => {
-            closed = true;
+            if (lifecycle.closed) {
+              return;
+            }
+            lifecycle.closed = true;
+            clearInterval(heartbeat);
             abortSignal?.removeEventListener("abort", onAbort);
             subscription?.close();
+            report("run.stream.closed", "connection_closed");
           };
+
+          const finish = () => {
+            if (lifecycle.closed) {
+              return;
+            }
+            stop?.();
+            controller.close();
+          };
+          finishStream = finish;
 
           const begin = async () => {
             // Replay everything the client missed before going live: the ledger
             // covers the run up to now, so the transport only has to carry what
             // happens next.
             await readLedger();
-            if (closed) {
+            if (lifecycle.closed) {
               return;
             }
             subscription = fanout.subscribe({
@@ -274,6 +344,7 @@ export function createRunEventHandlers(deps: RunEventRouteDeps) {
               listener: (event) => {
                 enqueue(() => emit(event));
               },
+              onDisconnect: (reason) => fail(reason),
               onGap: () => {
                 // The listener attached after these events flowed, so the
                 // transport cannot hand them over; the ledger can.
@@ -294,15 +365,20 @@ export function createRunEventHandlers(deps: RunEventRouteDeps) {
 
           abortSignal?.addEventListener("abort", onAbort, { once: true });
           if (abortSignal?.aborted) {
-            stop();
-            controller.close();
+            finish();
             return;
           }
 
-          begin().catch(() => {
-            closed = true;
-            controller.close();
-          });
+          // Comments flush headers and keep idle model/queue periods below the
+          // proxy's socket timeout without changing the durable replay cursor.
+          write(": connected\n\n");
+          report("run.stream.opened", "authorized");
+          heartbeat = setInterval(
+            () => write(": keepalive\n\n"),
+            RUN_EVENTS_HEARTBEAT_MS
+          );
+          heartbeat.unref();
+          begin().catch(() => fail("ledger_replay"));
         },
       });
 

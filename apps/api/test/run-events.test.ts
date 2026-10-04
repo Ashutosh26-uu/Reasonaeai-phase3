@@ -26,12 +26,13 @@ import {
 import { subscribeToRunEvents } from "@reasonateai/project-state/run-event-stream";
 import { Pool } from "pg";
 import { createClient, type RedisClientType } from "redis";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { resolveSessionPrincipal } from "../src/mastra/principal";
 import type { HandlerContext } from "../src/mastra/routes/build-sessions";
 import {
   createRunEventHandlers,
   formatServerSentEvent,
+  RUN_EVENTS_HEARTBEAT_MS,
 } from "../src/mastra/routes/run-events";
 import {
   createRunEventFanout,
@@ -190,6 +191,7 @@ function createTopicHarness() {
   interface TopicState<T> {
     buffer: T[];
     closed: boolean;
+    failure?: Error;
     wake: (() => void) | undefined;
   }
 
@@ -275,6 +277,9 @@ function createTopicHarness() {
     return Promise.resolve({
       async *[Symbol.asyncIterator]() {
         for (;;) {
+          if (state.failure) {
+            throw state.failure;
+          }
           const next = state.buffer.shift();
           if (next) {
             yield next;
@@ -303,6 +308,15 @@ function createTopicHarness() {
     });
 
   return {
+    fail: (runId: string, channel: "durable" | "live") => {
+      const state =
+        channel === "durable" ? live.get(runId) : liveFrames.get(runId);
+      if (!state) {
+        throw new Error("Expected an open transport subscription.");
+      }
+      state.failure = new Error("Transport disconnected");
+      state.wake?.();
+    },
     /** How many live subscriptions a run opened. */
     liveOpens: (runId: string) => liveOpens.get(runId) ?? 0,
     /** How many live subscriptions a run released. */
@@ -548,6 +562,127 @@ describeWithDatabase("run event stream", () => {
       await stream.cancel();
     }
   });
+
+  it("flushes headers and keeps quiet streams alive without advancing the replay cursor", async () => {
+    const buildSession = await allocate();
+    const head = await ledgerHead(buildSession.runId);
+    const response = await handlers.stream(
+      streamRequest({
+        buildSessionId: buildSession.buildSessionId,
+        lastEventId: String(head),
+      })
+    );
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error("Expected a streaming body");
+    }
+    try {
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe(
+        ": connected\n\n"
+      );
+      await settle();
+      // Install fake timers before opening a second stream, so its actual
+      // heartbeat interval is controlled while database setup remains real.
+      vi.useFakeTimers();
+      const secondResponse = await handlers.stream(
+        streamRequest({
+          buildSessionId: buildSession.buildSessionId,
+          lastEventId: String(head),
+        })
+      );
+      const second = secondResponse.body?.getReader();
+      if (!second) {
+        throw new Error("Expected a streaming body");
+      }
+      try {
+        await second.read();
+        await vi.advanceTimersByTimeAsync(RUN_EVENTS_HEARTBEAT_MS);
+        expect(new TextDecoder().decode((await second.read()).value)).toBe(
+          ": keepalive\n\n"
+        );
+        await second.cancel();
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        await second.cancel();
+        vi.useRealTimers();
+      }
+      const progress = await publishNext(buildSession.runId, "after idle");
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain(
+        `id: ${progress.sequence}\n`
+      );
+    } finally {
+      vi.useRealTimers();
+      await reader.cancel();
+    }
+  });
+
+  it.each(["durable", "live"] as const)(
+    "closes failed %s followers and replays missed events on reconnect",
+    async (channel) => {
+      const buildSession = await allocate();
+      const head = await ledgerHead(buildSession.runId);
+      const streams = await Promise.all(
+        [0, 1].map(async () => {
+          const response = await handlers.stream(
+            streamRequest({
+              buildSessionId: buildSession.buildSessionId,
+              lastEventId: String(head),
+            })
+          );
+          const reader = response.body?.getReader();
+          if (!reader) {
+            throw new Error("Expected a streaming body");
+          }
+          await reader.read();
+          return reader;
+        })
+      );
+      await settle();
+      const acknowledged = await publishNext(
+        buildSession.runId,
+        "before disconnect"
+      );
+      for (const reader of streams) {
+        // biome-ignore lint/performance/noAwaitInLoops: wait until every follower has delivered
+        expect(new TextDecoder().decode((await reader.read()).value)).toContain(
+          `id: ${acknowledged.sequence}\n`
+        );
+      }
+      await settle();
+      topics.fail(buildSession.runId, channel);
+      for (const reader of streams) {
+        // biome-ignore lint/performance/noAwaitInLoops: each follower must terminate
+        expect((await reader.read()).done).toBe(true);
+      }
+      expect(topics.releases(buildSession.runId)).toBe(1);
+      expect(topics.liveReleases(buildSession.runId)).toBe(1);
+      await store.appendRunEvent({
+        payload: { step: "missed" },
+        runId: buildSession.runId,
+        scope,
+        type: "agent.progress",
+      });
+      const resumed = openStream(
+        await handlers.stream(
+          streamRequest({
+            buildSessionId: buildSession.buildSessionId,
+            lastEventId: String(acknowledged.sequence),
+          })
+        )
+      );
+      try {
+        expect((await resumed.nextData()).data.payload).toEqual({
+          step: "missed",
+        });
+        await settle();
+        const progress = await publishNext(buildSession.runId, "recovered");
+        expect((await resumed.nextData()).id).toBe(progress.sequence);
+        expect(topics.opens(buildSession.runId)).toBe(2);
+      } finally {
+        await resumed.cancel();
+      }
+    }
+  );
 
   it("resumes strictly after the cursor a reconnecting client sends", async () => {
     const buildSession = await allocate();

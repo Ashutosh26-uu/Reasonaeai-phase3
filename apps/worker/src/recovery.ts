@@ -7,6 +7,29 @@ import {
 import { workspaceVolumeName } from "./workspace.js";
 
 const execFileAsync = promisify(execFile);
+const MISSING_VOLUME = /no such volume/i;
+
+/** Missing workspaces are distinct from an unavailable Docker daemon. */
+export async function recoveredWorkspaceExists(
+  scope: RunScope
+): Promise<boolean> {
+  try {
+    await execFileAsync("docker", [
+      "volume",
+      "inspect",
+      workspaceVolumeName(scope),
+    ]);
+    return true;
+  } catch (cause) {
+    if (cause instanceof Error && MISSING_VOLUME.test(cause.message)) {
+      return false;
+    }
+    throw new Error(
+      "Could not inspect the interrupted run's workspace volume.",
+      { cause }
+    );
+  }
+}
 
 /** Reattach the durable workspace volume without restoring an older checkpoint over it. */
 export async function prepareRecoveredSandbox(scope: RunScope): Promise<void> {
@@ -19,6 +42,11 @@ export async function prepareRecoveredSandbox(scope: RunScope): Promise<void> {
     });
   }
 
+  await stopRecoveredSandbox(scope);
+}
+
+/** Stop the expired owner's container while preserving its named workspace. */
+export async function stopRecoveredSandbox(scope: RunScope): Promise<void> {
   const container = sandboxIdFor(scope);
   try {
     await execFileAsync("docker", ["container", "inspect", container]);

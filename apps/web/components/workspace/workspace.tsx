@@ -39,7 +39,7 @@ import {
 import { Composer } from "@/components/chat/composer";
 import { EmptyState } from "@/components/chat/empty-state";
 import { QuestionCard } from "@/components/chat/question-card";
-import { runStreamEnded } from "@/components/chat/run-state";
+import { runProgressLabel, runStreamEnded } from "@/components/chat/run-state";
 import { pendingQuestion, projectTranscript } from "@/components/chat/timeline";
 import { Transcript } from "@/components/chat/transcript";
 import { useRunStream } from "@/components/chat/use-run-stream";
@@ -54,6 +54,15 @@ const MODEL = "deepseek-flash";
 const EMPTY_EVENTS: RunEventEnvelope[] = [];
 const PANEL_WIDTH_STORAGE_KEY = "reasonateai-workspace-panel-width";
 const DEFAULT_PANEL_WIDTH = 40;
+
+function conversationHeading(
+  conversation: ConversationSummary | undefined,
+  selected: string
+) {
+  return (
+    conversation?.title ?? (selected ? "Conversation" : "New conversation")
+  );
+}
 
 function useWorkspacePanelResize() {
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
@@ -418,6 +427,7 @@ function ConversationHeader({
   selectedProject,
   working,
   settling,
+  progressLabel,
 }: {
   conversationId: string;
   heading: string;
@@ -427,6 +437,7 @@ function ConversationHeader({
   selectedProject: boolean;
   working: boolean;
   settling: boolean;
+  progressLabel: string;
 }) {
   return (
     <header className="pane-head">
@@ -437,7 +448,7 @@ function ConversationHeader({
           <span aria-hidden="true">·</span>
           <span data-state={working ? "working" : "ready"}>
             {settling ? "Saving checkpoint…" : null}
-            {!settling && (working ? "Working" : "Ready")}
+            {!settling && (working ? progressLabel : "Ready")}
           </span>
         </div>
       </div>
@@ -496,6 +507,9 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   const selectedHistory = useRef(historyIdentity);
   selectedHistory.current = historyIdentity;
   const historyRequest = useRef(0);
+  const projectIdentity = `${organizationId}:${projectId}`;
+  const selectedProjectIdentity = useRef(projectIdentity);
+  selectedProjectIdentity.current = projectIdentity;
   const [draft, setDraft] = useState("");
   const [voiceOpen, setVoiceOpen] = useState(false);
   const steeringAttempt = useRef<{
@@ -503,8 +517,12 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     message: string;
     key: string;
   } | null>(null);
+  const retryAttempt = useRef<{ runId: string; key: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [stoppingRunId, setStoppingRunId] = useState<string | null>(null);
+  const [queuePausedConversation, setQueuePausedConversation] = useState<
+    string | null
+  >(null);
   const [answerDraft, setAnswerDraft] = useState("");
   const [answering, setAnswering] = useState(false);
   const [answeredToolCallId, setAnsweredToolCallId] = useState<string | null>(
@@ -531,6 +549,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   useEffect(() => {
     if (pendingRunId === null) {
       setStoppingRunId(null);
+      setNotice((current) => (current === "Stopping the run…" ? "" : current));
     }
   }, [pendingRunId]);
 
@@ -561,8 +580,12 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     }
     const result = await request(
       `/v1/projects/${projectId}/conversations?organizationId=${encodeURIComponent(organizationId)}`,
-      (value) => ConversationListSchema.parse(value).conversations
+      (value) => ConversationListSchema.parse(value).conversations,
+      { signal: AbortSignal.timeout(10_000) }
     );
+    if (selectedProjectIdentity.current !== `${organizationId}:${projectId}`) {
+      return [];
+    }
     setConversations(result);
     setConversationsByProject((current) => ({
       ...current,
@@ -660,7 +683,11 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
    * A reconnect clears the interruption: the browser retries on its own, and a
    * notice that outlives the outage reports a state that is no longer true.
    */
-  const onOpened = useCallback(() => setNotice(""), []);
+  const onOpened = useCallback(() => {
+    if (!stoppingRunId) {
+      setNotice("");
+    }
+  }, [stoppingRunId]);
 
   /**
    * One committed message, keyed by the ledger event that recorded it — the same
@@ -687,7 +714,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     );
   }, [conversationId, pendingRunId, settle]);
 
-  const { live, timeline } = useRunStream({
+  const { following, live, timeline } = useRunStream({
     active: active
       ? { buildSessionId: active.buildSessionId, pendingRunId }
       : undefined,
@@ -698,6 +725,61 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     organizationId,
     projectId,
   });
+  // Streaming owns live text. A bounded, sequential reconciliation also checks
+  // authoritative status so a missing terminal frame cannot strand Stop.
+  useEffect(() => {
+    if (!pendingRunId) {
+      return;
+    }
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const interval = following && !stoppingRunId ? 15_000 : 5000;
+    const reconcile = async () => {
+      try {
+        await loadConversations();
+        if (disposed) {
+          return;
+        }
+        await loadHistory();
+        if (!disposed) {
+          setNotice((current) =>
+            current === "Could not refresh progress. Retrying…" ? "" : current
+          );
+        }
+      } catch {
+        if (!disposed) {
+          setNotice("Could not refresh progress. Retrying…");
+          console.warn(
+            JSON.stringify({
+              buildSessionId: conversationId,
+              event: "run.reconciliation.failed",
+              organizationId,
+              projectId,
+              runId: pendingRunId,
+            })
+          );
+        }
+      } finally {
+        if (!disposed) {
+          timer = setTimeout(reconcile, interval);
+        }
+      }
+    };
+    timer = setTimeout(reconcile, interval);
+    return () => {
+      disposed = true;
+      clearTimeout(timer);
+    };
+  }, [
+    conversationId,
+    following,
+    loadConversations,
+    loadHistory,
+    organizationId,
+    pendingRunId,
+    projectId,
+    stoppingRunId,
+  ]);
   const question = pendingRunId
     ? pendingQuestion(timeline, pendingRunId)
     : undefined;
@@ -771,15 +853,71 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     []
   );
 
+  const acceptRun = useCallback(
+    (
+      accepted: Pick<ConversationSummary, "buildSessionId"> & {
+        runId: ConversationSummary["latestRunId"];
+        createdAt?: string;
+      }
+    ) => {
+      if (
+        selectedProjectIdentity.current !== `${organizationId}:${projectId}`
+      ) {
+        return;
+      }
+      const update = (existing: ConversationSummary[]) => {
+        const previous = existing.find(
+          (item) => item.buildSessionId === accepted.buildSessionId
+        );
+        const now = new Date().toISOString();
+        const summary: ConversationSummary = {
+          buildSessionId: accepted.buildSessionId,
+          createdAt: previous?.createdAt ?? accepted.createdAt ?? now,
+          latestRunId: accepted.runId,
+          pendingRunId: accepted.runId,
+          status: "ready",
+          title: previous?.title ?? null,
+          updatedAt: now,
+        };
+        return [
+          summary,
+          ...existing.filter(
+            (item) => item.buildSessionId !== summary.buildSessionId
+          ),
+        ];
+      };
+      setConversations(update);
+      setConversationsByProject((current) => ({
+        ...current,
+        [projectId]: update(current[projectId] ?? []),
+      }));
+      setQueuePausedConversation(null);
+    },
+    [organizationId, projectId]
+  );
+
+  const refreshAcceptedTurn = useCallback(async () => {
+    try {
+      await loadConversations();
+      await loadHistory();
+    } catch {
+      setNotice("Message accepted. Reconnecting to its progress…");
+    }
+  }, [loadConversations, loadHistory]);
+
   const sendTurn = useCallback(
-    async (message: string, attachments: PromptAttachment[] = []) => {
+    async (
+      message: string,
+      attachments: PromptAttachment[] = [],
+      requestId?: string
+    ) => {
       setSubmitting(true);
       setError("");
       setNotice("");
       try {
-        const idempotencyKey = crypto.randomUUID();
+        const idempotencyKey = requestId ?? crypto.randomUUID();
         if (conversationId) {
-          await request(
+          const accepted = await request(
             `/v1/build-sessions/${conversationId}/turns?${scopeQuery(organizationId, projectId)}`,
             ConversationTurnAcceptedSchema.parse,
             {
@@ -788,6 +926,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
               method: "POST",
             }
           );
+          acceptRun(accepted);
         } else {
           const allocated = await request(
             "/v1/build-sessions",
@@ -804,9 +943,9 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
             }
           );
           setConversationId(allocated.buildSession.buildSessionId);
+          acceptRun(allocated.buildSession);
         }
-        await loadConversations();
-        await loadHistory();
+        await refreshAcceptedTurn();
         return true;
       } catch (cause) {
         setError(describeError(cause, "Could not send the message."));
@@ -815,11 +954,16 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
         setSubmitting(false);
       }
     },
-    [conversationId, loadConversations, loadHistory, organizationId, projectId]
+    [acceptRun, conversationId, refreshAcceptedTurn, organizationId, projectId]
   );
 
   const submitMessage = useCallback(
-    async (input: { attachments: PromptAttachment[]; message: string }) => {
+    async (input: {
+      attachments: PromptAttachment[];
+      message: string;
+      requestId?: string;
+      preserveDraft?: boolean;
+    }) => {
       if (
         !(
           (input.message.length > 0 || input.attachments.length > 0) &&
@@ -829,8 +973,12 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       ) {
         return false;
       }
-      const sent = await sendTurn(input.message, input.attachments);
-      if (sent) {
+      const sent = await sendTurn(
+        input.message,
+        input.attachments,
+        input.requestId
+      );
+      if (sent && !input.preserveDraft) {
         setDraft((current) =>
           current.trim() === input.message.trim() ? "" : current
         );
@@ -844,9 +992,12 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     async (input: {
       message: string;
       attachments: PromptAttachment[];
+      requestId?: string;
+      targetRunId?: string;
     }): Promise<boolean> => {
+      const targetRunId = input.targetRunId ?? pendingRunId;
       if (
-        !(pendingRunId && conversationId && organizationId && projectId) ||
+        !(targetRunId && conversationId && organizationId && projectId) ||
         input.attachments.length ||
         !input.message.trim()
       ) {
@@ -855,17 +1006,18 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       }
       const previous = steeringAttempt.current;
       const key =
-        previous?.runId === pendingRunId && previous.message === input.message
+        input.requestId ??
+        (previous?.runId === targetRunId && previous.message === input.message
           ? previous.key
-          : crypto.randomUUID();
+          : crypto.randomUUID());
       steeringAttempt.current = {
         key,
         message: input.message,
-        runId: pendingRunId,
+        runId: targetRunId,
       };
       try {
         const result = await request(
-          `/v1/build-sessions/${conversationId}/runs/${pendingRunId}/steering?${scopeQuery(organizationId, projectId)}`,
+          `/v1/build-sessions/${conversationId}/runs/${targetRunId}/steering?${scopeQuery(organizationId, projectId)}`,
           RunSteeringAcceptedSchema.parse,
           {
             body: JSON.stringify({ message: input.message }),
@@ -892,10 +1044,41 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   );
 
   const retry = useCallback(
-    async (text: string) => {
-      await sendTurn(text);
+    async (text: string, sourceRunId?: string) => {
+      if (!sourceRunId) {
+        await sendTurn(text);
+        return;
+      }
+      const key =
+        retryAttempt.current?.runId === sourceRunId
+          ? retryAttempt.current.key
+          : crypto.randomUUID();
+      retryAttempt.current = { key, runId: sourceRunId };
+      setSubmitting(true);
+      setError("");
+      try {
+        const accepted = await request(
+          `/v1/build-sessions/${conversationId}/runs/${sourceRunId}/retry?${scopeQuery(organizationId, projectId)}`,
+          ConversationTurnAcceptedSchema.parse,
+          { headers: { "idempotency-key": key }, method: "POST" }
+        );
+        retryAttempt.current = null;
+        acceptRun(accepted);
+        await refreshAcceptedTurn();
+      } catch (cause) {
+        setError(describeError(cause, "Could not retry this generation."));
+      } finally {
+        setSubmitting(false);
+      }
     },
-    [sendTurn]
+    [
+      acceptRun,
+      conversationId,
+      refreshAcceptedTurn,
+      organizationId,
+      projectId,
+      sendTurn,
+    ]
   );
 
   const stopRun = useCallback(async () => {
@@ -903,6 +1086,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       return;
     }
     setStoppingRunId(pendingRunId);
+    setQueuePausedConversation(conversationId);
     setError("");
     setNotice("Stopping the run…");
     try {
@@ -918,6 +1102,55 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       setError(describeError(cause, "Could not stop the run."));
     }
   }, [conversationId, organizationId, pendingRunId, projectId, settle]);
+
+  const openSideChat = useCallback(
+    async (input: {
+      message: string;
+      attachments: PromptAttachment[];
+      requestId?: string;
+    }) => {
+      // Open from the click before awaiting allocation, preserving browser gesture
+      // permission. The current chat and its remaining queue stay selected.
+      const side = window.open("about:blank", "_blank");
+      if (!side) {
+        setError("Allow a new tab to open the side chat, then retry.");
+        return false;
+      }
+      side.opener = null;
+      try {
+        const allocated = await request(
+          "/v1/build-sessions",
+          BuildSessionAllocationSchema.parse,
+          {
+            body: JSON.stringify({
+              attachments: input.attachments,
+              message: input.message,
+              organizationId,
+              projectId,
+            }),
+            headers: {
+              "idempotency-key": input.requestId ?? crypto.randomUUID(),
+            },
+            method: "POST",
+          }
+        );
+        side.location.href = `/?${new URLSearchParams({ conversationId: allocated.buildSession.buildSessionId, projectId }).toString()}`;
+        try {
+          await loadConversations();
+        } catch {
+          setNotice(
+            "Side chat created. Its progress will reconnect in the new tab."
+          );
+        }
+        return true;
+      } catch (cause) {
+        side.close();
+        setError(describeError(cause, "Could not open the side chat."));
+        return false;
+      }
+    },
+    [loadConversations, organizationId, projectId]
+  );
 
   const editMessage = useCallback((text: string) => {
     setDraft(text);
@@ -1121,7 +1354,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
 
   const selectedProject = projects.some((item) => item.projectId === projectId);
   const activeRunEvents = Object.values(
-    timeline.runs[pendingRunId ?? ""]?.events ?? {}
+    timeline.runs[pendingRunId ?? active?.latestRunId ?? ""]?.events ?? {}
   );
   const streamEnded = runStreamEnded(
     activeRunEvents,
@@ -1129,6 +1362,13 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   );
   const working = pendingRunId !== null && !streamEnded;
   const savingStoppedRun = pendingRunId !== null && streamEnded;
+  let progressLabel = runProgressLabel(activeRunEvents);
+  if (question) {
+    progressLabel = "Waiting for your answer";
+  }
+  if (stoppingRunId === pendingRunId && pendingRunId !== null) {
+    progressLabel = "Stopping…";
+  }
   const composer = (
     <Composer
       busy={submitting || savingStoppedRun}
@@ -1142,6 +1382,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       onChange={updateDraft}
       onCreateProject={createProjectNamed}
       onKeyDown={promptKeyDown}
+      onOpenSideChat={openSideChat}
       onProjectSelect={selectProject}
       onSteer={steerMessage}
       onStop={stopRun}
@@ -1149,19 +1390,34 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       onTranscribe={transcribe}
       onVoiceMode={openVoice}
       pending={working || !selectedProject}
+      pendingRunId={pendingRunId}
       placeholder={
         selectedProject
           ? "Describe the product, or the change you want next…"
           : "Choose a project first…"
       }
+      preventAutoQueueDispatch={
+        queuePausedConversation === conversationId ||
+        active?.status === "failed" ||
+        active?.status === "cancelled" ||
+        activeRunEvents.some(
+          (event) =>
+            (event.type === "run.failed" || event.type === "run.cancelled") &&
+            typeof event.payload.outcome === "string"
+        )
+      }
       projectId={projectId}
       projectPickerDisabled={working || submitting}
       projects={projects}
-      stopping={stoppingRunId === pendingRunId}
+      queueScopeKey={historyIdentity}
+      stopping={pendingRunId !== null && stoppingRunId === pendingRunId}
     />
   );
   const questionForm =
-    question && answeredToolCallId !== question.toolCallId ? (
+    question &&
+    !streamEnded &&
+    stoppingRunId !== pendingRunId &&
+    answeredToolCallId !== question.toolCallId ? (
       <QuestionCard
         busy={answering}
         key={question.toolCallId}
@@ -1174,8 +1430,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     ) : null;
   const emptyConversation =
     messages.length === 0 && Object.keys(timeline.runs).length === 0;
-  const heading =
-    active?.title ?? (conversationId ? "Conversation" : "New conversation");
+  const heading = conversationHeading(active, conversationId);
   const project = projects.find((item) => item.projectId === projectId);
   const renderedMessages = visibleHistory(
     historyIdentity,
@@ -1249,6 +1504,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
             heading={heading}
             onOpenPanel={openPanel}
             onRefresh={refreshConversation}
+            progressLabel={progressLabel}
             projectName={project?.name ?? "No project selected"}
             selectedProject={selectedProject}
             settling={savingStoppedRun}
@@ -1386,7 +1642,7 @@ function ConversationPane({
   live: boolean;
   messages: ConversationMessage[];
   onEdit: (text: string) => void;
-  onRetry: (text: string) => void;
+  onRetry: (text: string, sourceRunId?: string) => void;
   onStarter: (event: React.MouseEvent<HTMLButtonElement>) => void;
   pending: boolean;
   starters: readonly string[];
@@ -1446,7 +1702,8 @@ async function readHistory(
       // biome-ignore lint/performance/noAwaitInLoops: each page depends on the previous cursor
       await request(
         `${url}&after=${after}`,
-        ConversationTranscriptSchema.parse
+        ConversationTranscriptSchema.parse,
+        { signal: AbortSignal.timeout(10_000) }
       );
     if (!isCurrent()) {
       return;

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { RunEventEnvelopeSchema } from "@reasonateai/contracts/execution-protocol";
 import { describe, expect, it } from "vitest";
-import { runStreamEnded } from "./run-state";
+import { runProgressLabel, runStreamEnded } from "./run-state";
 
 const event = (type: string, payload: Record<string, unknown>) =>
   RunEventEnvelopeSchema.parse({
@@ -17,6 +17,15 @@ const event = (type: string, payload: Record<string, unknown>) =>
   });
 
 describe("composer run state", () => {
+  it("distinguishes connection setup and queued work from a claimed run", () => {
+    expect(runProgressLabel([])).toBe("Connecting…");
+    expect(runProgressLabel([event("run.queued", {})])).toBe(
+      "Waiting for a worker…"
+    );
+    expect(
+      runProgressLabel([event("run.queued", {}), event("run.claimed", {})])
+    ).toBe("Working");
+  });
   it("does not show Stop after cancellation is confirmed by the controller", () => {
     expect(runStreamEnded([event("run.cancel.requested", {})], true)).toBe(
       false

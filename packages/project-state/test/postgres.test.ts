@@ -6,7 +6,11 @@ import {
 } from "@reasonateai/contracts/identity";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createProjectStateStore } from "../src/postgres.js";
+import {
+  ConversationBusyError,
+  ConversationRetryUnavailableError,
+  createProjectStateStore,
+} from "../src/postgres.js";
 import { deleteOrganizations } from "./support/database.js";
 
 const connectionString = process.env.DATABASE_URL;
@@ -173,6 +177,126 @@ describeWithDatabase("project state store", () => {
         (item) => item.text
       )
     ).toEqual(["Start the app", "Add search"]);
+  });
+
+  it("admits only one new retry under concurrent requests and rejects retry source substitution", async () => {
+    const allocation = await store.allocateBuildSession({
+      idempotencyKey: `retry-source-${randomUUID()}`,
+      message: "Retry this generation",
+      scope,
+      userSessionId,
+    });
+    const { buildSessionId, runId } = allocation.buildSession;
+    await store.setRunStatus({ runId, scope, status: "failed" });
+    const request = { buildSessionId, runId, scope };
+    const results = await Promise.allSettled([
+      store.retryConversationRun({
+        ...request,
+        idempotencyKey: "retry-race-a",
+      }),
+      store.retryConversationRun({
+        ...request,
+        idempotencyKey: "retry-race-b",
+      }),
+    ]);
+    expect(
+      results.filter((result) => result.status === "fulfilled")
+    ).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected?.status === "rejected" && rejected.reason).toBeInstanceOf(
+      ConversationBusyError
+    );
+    const history = await store.listConversationMessages({
+      buildSessionId,
+      scope,
+    });
+    expect(history).toHaveLength(2);
+    const retried = history.find((message) => message.runId !== runId);
+    if (!retried?.runId) {
+      throw new Error("The accepted retry was not recorded.");
+    }
+    await store.setRunStatus({
+      runId: retried.runId,
+      scope,
+      status: "completed",
+    });
+    await expect(
+      store.retryConversationRun({
+        ...request,
+        idempotencyKey: "retry-successful",
+        runId: retried.runId,
+      })
+    ).rejects.toBeInstanceOf(ConversationRetryUnavailableError);
+    const other = await store.allocateBuildSession({
+      idempotencyKey: `retry-other-${randomUUID()}`,
+      message: "Other conversation",
+      scope,
+      userSessionId,
+    });
+    await store.setRunStatus({
+      runId: other.buildSession.runId,
+      scope,
+      status: "failed",
+    });
+    await expect(
+      store.retryConversationRun({
+        ...request,
+        idempotencyKey: "retry-other-conversation",
+        runId: other.buildSession.runId,
+      })
+    ).rejects.toBeInstanceOf(ConversationRetryUnavailableError);
+    await expect(
+      store.retryConversationRun({
+        ...request,
+        idempotencyKey: "retry-foreign-tenant",
+        scope: foreignScope,
+      })
+    ).rejects.toThrow("Conversation not found");
+    expect(
+      await store.listConversationMessages({ buildSessionId, scope })
+    ).toHaveLength(2);
+  });
+
+  it("keeps retry idempotency separate from normal turns and other retry sources", async () => {
+    const allocation = await store.allocateBuildSession({
+      idempotencyKey: `retry-key-scope-${randomUUID()}`,
+      message: "Original generation",
+      scope,
+      userSessionId,
+    });
+    const { buildSessionId, runId } = allocation.buildSession;
+    await store.setRunStatus({ runId, scope, status: "failed" });
+    const idempotencyKey = "same-key-for-different-commands";
+    const normal = await store.appendConversationTurn({
+      buildSessionId,
+      idempotencyKey,
+      message: "A different request",
+      scope,
+    });
+    await store.setRunStatus({ runId: normal.runId, scope, status: "failed" });
+    const request = { buildSessionId, idempotencyKey, runId, scope };
+    expect(await store.getConversationRetry(request)).toBeUndefined();
+    const retried = await store.retryConversationRun(request);
+    expect(retried.created).toBe(true);
+    expect(retried.runId).not.toBe(normal.runId);
+    expect(await store.getConversationRetry(request)).toBe(retried.runId);
+    expect(
+      await store.getConversationRetry({ ...request, runId: normal.runId })
+    ).toBeUndefined();
+    expect(
+      await store.getConversationRetry({ ...request, scope: foreignScope })
+    ).toBeUndefined();
+    await store.setRunStatus({
+      runId: retried.runId,
+      scope,
+      status: "completed",
+    });
+    const differentSource = await store.retryConversationRun({
+      ...request,
+      runId: normal.runId,
+    });
+    expect(differentSource.created).toBe(true);
+    expect(differentSource.runId).not.toBe(retried.runId);
   });
 
   it("refuses to resolve another tenant's build session", async () => {

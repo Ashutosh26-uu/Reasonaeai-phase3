@@ -47,6 +47,7 @@ import {
   PROJECT_CONVERSATIONS_PATH,
   RUN_ANSWER_PATH,
   RUN_CANCELLATION_PATH,
+  RUN_RETRY_PATH,
 } from "./routes/build-sessions";
 import {
   createOrganizationHandlers,
@@ -360,6 +361,16 @@ export const mastra = new Mastra({
       registerApiRoute(RUN_ANSWER_PATH, {
         handler: (c) => buildSessionHandlers.answerRun(c),
         method: "POST",
+      }),
+      registerApiRoute(RUN_RETRY_PATH, {
+        handler: (c) => buildSessionHandlers.retryRun(c),
+        method: "POST",
+        openapi: {
+          description:
+            "Idempotently retries a failed or cancelled generation using its stored input and attachments within the authorized conversation.",
+          summary: "Retry a generation",
+          tags: ["Build sessions"],
+        },
       }),
       registerApiRoute(RUN_CANCELLATION_PATH, {
         handler: (c) => buildSessionHandlers.cancelRun(c),
