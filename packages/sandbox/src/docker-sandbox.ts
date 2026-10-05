@@ -164,10 +164,14 @@ export class DockerSandbox implements ISandbox {
       dockerArgs.push("-v", `${mount.source}:${mount.target}${mode}`);
     }
 
-    const env = {
+    const env: Record<string, string> = {
       HOME: this.config.workdir,
       ...this.config.env,
     };
+
+    if (this.config.packageCacheVolume) {
+      env.npm_config_cache = "/root/.npm";
+    }
 
     for (const [key, value] of Object.entries(env)) {
       dockerArgs.push("-e", `${key}=${value}`);

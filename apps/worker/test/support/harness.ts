@@ -375,6 +375,13 @@ export class ScriptedSession implements RunSession {
     };
   };
 
+  /** Emits intermediate controller events during an active run session. */
+  emit(events: AgentControllerEvent[] = []): void {
+    for (const event of events) {
+      this.#emit(event);
+    }
+  }
+
   /** Ends the scripted run, emitting the controller's closing events first. */
   complete(closing: AgentControllerEvent[] = []): void {
     for (const event of closing) {

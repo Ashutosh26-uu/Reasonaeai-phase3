@@ -81,7 +81,13 @@ export function resolveBuildSandboxCacheVolume(
   const candidate = (
     env.REASONATE_PACKAGE_CACHE_VOLUME ?? env.SANDBOX_CACHE_VOLUME
   )?.trim();
-  return candidate && candidate.length > 0 ? candidate : undefined;
+  if (!candidate || candidate.length === 0) {
+    return undefined;
+  }
+  if (candidate.toLowerCase().includes("docker.sock")) {
+    throw new Error("Mounting the host Docker socket is forbidden.");
+  }
+  return candidate;
 }
 
 function createBuildSandbox(scope: RunScope) {
@@ -99,19 +105,23 @@ function createBuildSandbox(scope: RunScope) {
       type: "volume",
     },
   ];
+  const env: Record<string, string> = {
+    HOME: SANDBOX_WORKING_DIRECTORY,
+  };
   if (cacheVolume) {
     mounts.push({
       source: cacheVolume,
       target: "/root/.npm",
       type: "volume",
     });
+    env.npm_config_cache = "/root/.npm";
   }
 
   return new DockerSandbox({
     capDrop: ["ALL"],
     cpuPeriod: SANDBOX_CPU_PERIOD,
     cpuQuota: SANDBOX_CPU_QUOTA,
-    env: { HOME: SANDBOX_WORKING_DIRECTORY },
+    env,
     id: sandboxId,
     image: SANDBOX_IMAGE,
     memory: SANDBOX_MEMORY_BYTES,
