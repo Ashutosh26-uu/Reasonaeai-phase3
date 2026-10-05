@@ -636,8 +636,10 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
         organizationId: organizationId.data,
         projectId: projectId.data,
       };
+      const requiredAction: Permission =
+        body.data.approved === undefined ? "agent:run" : "plan:approve";
       const decision = await authorizeProjectAction({
-        action: "agent:run",
+        action: requiredAction,
         deps,
         ...scope,
         principal,

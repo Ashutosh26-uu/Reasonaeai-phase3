@@ -115,6 +115,9 @@ function conversationRetryKey(input: { idempotencyKey: string; runId: RunId }) {
   return JSON.stringify(["retry", input.runId, input.idempotencyKey]);
 }
 
+const PLAN_APPROVE_PATTERN = /^(approved|approve|yes|true)$/i;
+const PLAN_REJECT_PATTERN = /^(rejected|reject|no|false)$/i;
+
 async function resolveConversationPrompt(
   client: PoolClient,
   input: {
@@ -1209,6 +1212,13 @@ export function createProjectStateStore(config: {
         planFeedback: feedback ?? null,
       };
     }
+    const trimmed = resolvedAnswer.trim();
+    if (PLAN_APPROVE_PATTERN.test(trimmed)) {
+      return { planApproved: true, planFeedback: null };
+    }
+    if (PLAN_REJECT_PATTERN.test(trimmed)) {
+      return { planApproved: false, planFeedback: null };
+    }
     try {
       const parsed = JSON.parse(resolvedAnswer);
       if (
@@ -1223,11 +1233,11 @@ export function createProjectStateStore(config: {
         };
       }
     } catch {
-      // not JSON, keep defaults
+      // not JSON
     }
     return {
-      planApproved: true,
-      planFeedback: feedback ?? null,
+      planApproved: false,
+      planFeedback: trimmed.length > 0 ? trimmed : (feedback ?? null),
     };
   }
 

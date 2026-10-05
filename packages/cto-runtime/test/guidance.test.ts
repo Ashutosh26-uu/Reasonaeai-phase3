@@ -182,6 +182,7 @@ describe("bundled guidance and verified project instructions", () => {
     expect(Object.keys(coder?.tools ?? {}).sort()).toEqual([
       "edit",
       "read",
+      "submit_plan",
       "write",
     ]);
   });

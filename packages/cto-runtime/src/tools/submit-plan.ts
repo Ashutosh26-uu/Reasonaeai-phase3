@@ -26,16 +26,27 @@ export const SubmitPlanOutputSchema = z.object({
 
 export type SubmitPlanOutput = z.infer<typeof SubmitPlanOutputSchema>;
 
+const APPROVE_PATTERN = /^(approved|approve|yes|true)$/i;
+const REJECT_PATTERN = /^(rejected|reject|no|false)$/i;
+const APPROVE_ACTION_PATTERN = /^(approved|approve)$/i;
+
 function parseResumedDecision(resumeData: unknown): {
   approved: boolean;
   feedback?: string;
 } {
   let decision = resumeData;
   if (typeof decision === "string") {
+    const trimmed = decision.trim();
+    if (APPROVE_PATTERN.test(trimmed)) {
+      return { approved: true };
+    }
+    if (REJECT_PATTERN.test(trimmed)) {
+      return { approved: false };
+    }
     try {
       decision = JSON.parse(decision);
     } catch {
-      decision = { approved: false, feedback: decision };
+      return { approved: false, feedback: trimmed };
     }
   }
 
@@ -43,7 +54,11 @@ function parseResumedDecision(resumeData: unknown): {
     decision && typeof decision === "object" ? decision : {}
   ) as Record<string, unknown>;
 
-  const approved = decObj.approved === true || decObj.action === "approved";
+  const approved =
+    decObj.approved === true ||
+    decObj.action === "approved" ||
+    (typeof decObj.action === "string" &&
+      APPROVE_ACTION_PATTERN.test(decObj.action));
   const feedback =
     typeof decObj.feedback === "string" && decObj.feedback.trim().length > 0
       ? decObj.feedback.trim()

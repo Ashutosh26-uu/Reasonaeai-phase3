@@ -142,4 +142,52 @@ describe("submit_plan tool", () => {
       isError: false,
     });
   });
+
+  it("handles plain string 'approved' resumeData correctly", async () => {
+    const tool = createSubmitPlanTool();
+    const result = await run(tool, sampleProposal, {
+      agent: {
+        resumeData: "approved",
+      },
+    });
+
+    expect(result).toMatchObject({
+      approved: true,
+      isError: false,
+    });
+    expect(result?.content).toContain("Plan approved by user");
+  });
+
+  it("handles plain string 'rejected' resumeData correctly", async () => {
+    const tool = createSubmitPlanTool();
+    const result = await run(tool, sampleProposal, {
+      agent: {
+        resumeData: "rejected",
+      },
+    });
+
+    expect(result).toMatchObject({
+      approved: false,
+      isError: false,
+    });
+    expect(result?.content).toContain("Plan was not approved by user");
+  });
+
+  it("handles plain text feedback string as rejection with feedback", async () => {
+    const tool = createSubmitPlanTool();
+    const result = await run(tool, sampleProposal, {
+      agent: {
+        resumeData: "Do not modify the database schema without migration",
+      },
+    });
+
+    expect(result).toMatchObject({
+      approved: false,
+      feedback: "Do not modify the database schema without migration",
+      isError: false,
+    });
+    expect(result?.content).toContain(
+      "Do not modify the database schema without migration"
+    );
+  });
 });

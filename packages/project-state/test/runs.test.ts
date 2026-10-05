@@ -810,4 +810,82 @@ describeWithDatabase("run dispatch", () => {
       });
     }
   });
+
+  it("records run.plan_decided with approved: false when answered with text feedback", async () => {
+    const { allocation, scope } = await queuedRun();
+    const { runId } = allocation.buildSession;
+    fixtureRuns.push(runId);
+
+    const lease = await store.beginRun({
+      holder: "worker-plan-test-2",
+      runId,
+      ttlMs: 60_000,
+    });
+    expect(lease).toBeDefined();
+
+    await store.appendRunEvent({
+      controllerRunId: "ctrl-plan-run-2",
+      payload: {
+        kind: "tool_suspended",
+        plan: {
+          files: [
+            {
+              action: "delete",
+              description: "Drop legacy table",
+              path: "src/legacy.ts",
+            },
+          ],
+          rationale: "Clean up codebase",
+          risk: "High",
+          steps: ["Delete legacy file"],
+          summary: "Remove legacy code",
+          title: "Delete Legacy Code Plan",
+        },
+        toolCallId: "call-plan-2",
+        toolName: "submit_plan",
+      },
+      runId,
+      scope,
+      type: "run.plan_proposed",
+    });
+
+    const rejectionFeedback =
+      "Do not delete legacy code yet; dependencies still exist.";
+    const answerResult = await store.answerRunQuestion({
+      answer: rejectionFeedback,
+      buildSessionId: allocation.buildSession.buildSessionId,
+      requestedByUserId: UserIdSchema.parse(randomUUID()),
+      runId,
+      scope,
+      toolCallId: "call-plan-2",
+    });
+    expect(answerResult).toBe("accepted");
+
+    const events = await store.listRunEvents({
+      afterSequence: 0,
+      limit: 50,
+      runId,
+      scope,
+    });
+    const planDecided = events.find((e) => e.type === "run.plan_decided");
+    expect(planDecided).toBeDefined();
+    expect(planDecided?.payload.approved).toBe(false);
+    expect(planDecided?.payload.feedback).toBe(rejectionFeedback);
+
+    const takenAnswer = await store.takeRunAnswer({
+      runId,
+      scope,
+      toolCallId: "call-plan-2",
+    });
+    expect(takenAnswer).toBe(rejectionFeedback);
+
+    if (lease) {
+      await store.finishRun({
+        holder: "worker-plan-test-2",
+        leaseId: lease.leaseId,
+        runId,
+        status: "succeeded",
+      });
+    }
+  });
 });

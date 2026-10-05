@@ -53,6 +53,7 @@ describe.skipIf(!(connectionString && shellAvailable))(
     let root: string;
     let buildSessionId: BuildSessionId;
     let checkpointId: string;
+    let checkpointDigest: string;
     let ownerCookie: string;
     let outsiderCookie: string;
     let handlers: ReturnType<typeof createWorkspaceHandlers>;
@@ -167,7 +168,7 @@ describe.skipIf(!(connectionString && shellAvailable))(
         sandbox: sourceSandbox,
         store: checkpoints,
       });
-      ({ checkpointId } = snapshot);
+      ({ checkpointId, digest: checkpointDigest } = snapshot);
 
       const targetSandbox: CheckpointSandbox = {
         runCommand: async (input) => {
@@ -254,6 +255,38 @@ describe.skipIf(!(connectionString && shellAvailable))(
       );
       expect(auditResult.rowCount).toBe(1);
       expect(auditResult.rows[0]?.action).toBe("checkpoint.restored");
+    });
+
+    it("restores checkpoint via checkpointDigest successfully", async () => {
+      const response = await handlers.restore(context({ checkpointDigest }));
+      expect(response.status).toBe(200);
+
+      const json = (await response.json()) as WorkspaceRestoreResponse;
+      expect(json.checkpointId).toBe(checkpointId);
+      expect(json.digest).toBe(checkpointDigest);
+      expect(json.restoredAt).toBeDefined();
+    });
+
+    it("restores checkpoint via slash-formatted checkpointId successfully", async () => {
+      const slashFormatted = `${scope.organizationId}/${scope.projectId}/${checkpointDigest}`;
+      const response = await handlers.restore(
+        context({ checkpointId: slashFormatted })
+      );
+      expect(response.status).toBe(200);
+
+      const json = (await response.json()) as WorkspaceRestoreResponse;
+      expect(json.checkpointId).toBe(checkpointId);
+      expect(json.digest).toBe(checkpointDigest);
+    });
+
+    it("rejects cross-tenant checkpoint restore attempt with 404", async () => {
+      const otherOrg = randomUUID();
+      const otherProj = randomUUID();
+      const crossTenantId = `${otherOrg}.${otherProj}.${checkpointDigest}`;
+      const response = await handlers.restore(
+        context({ checkpointId: crossTenantId })
+      );
+      expect(response.status).toBe(404);
     });
   }
 );

@@ -14,6 +14,7 @@ import {
   type RunCheckpoint,
   RunCheckpointSchema,
   type RunEventEnvelope,
+  type WorkspaceRestoreRequest,
   WorkspaceRestoreRequestSchema,
   WorkspaceRestoreResponseSchema,
 } from "@reasonateai/contracts/execution-protocol";
@@ -23,6 +24,7 @@ import {
   type Permission,
   type ProjectId,
   ProjectIdSchema,
+  type RunId,
   RunIdSchema,
   type UserPrincipal,
 } from "@reasonateai/contracts/identity";
@@ -570,6 +572,82 @@ async function guardWorkspaceRestore(input: {
   return undefined;
 }
 
+function resolveRestoreCheckpoint(
+  scope: TenantScope,
+  body: WorkspaceRestoreRequest
+): { checkpointId: string; digest: string } | undefined {
+  const rawCheckpointId =
+    body.checkpointId ??
+    (body.checkpointDigest
+      ? `${scope.organizationId}.${scope.projectId}.${body.checkpointDigest}`
+      : undefined);
+
+  if (!rawCheckpointId) {
+    return undefined;
+  }
+
+  const normalized = rawCheckpointId.replaceAll("/", ".");
+  try {
+    const parsed = parseCheckpointId(normalized);
+    if (
+      parsed.organizationId !== scope.organizationId ||
+      parsed.projectId !== scope.projectId
+    ) {
+      return undefined;
+    }
+    return { checkpointId: normalized, digest: parsed.digest };
+  } catch {
+    return undefined;
+  }
+}
+
+async function parseRestoreScopeAndBody(c: HandlerContext) {
+  const buildSessionId = BuildSessionIdSchema.safeParse(
+    c.req.param("buildSessionId")
+  );
+  const bodyJson = await c.req.json().catch(() => ({}));
+  const body = WorkspaceRestoreRequestSchema.safeParse(bodyJson);
+  const scope = WorkspaceScopeSchema.safeParse({
+    organizationId:
+      c.req.query("organizationId") ??
+      (body.success ? body.data.organizationId : undefined),
+    projectId:
+      c.req.query("projectId") ??
+      (body.success ? body.data.projectId : undefined),
+  });
+  if (!(buildSessionId.success && scope.success && body.success)) {
+    return;
+  }
+  return {
+    body: body.data,
+    buildSessionId: buildSessionId.data,
+    scope: scope.data,
+  };
+}
+
+async function resolveWorkspaceSandbox(
+  deps: WorkspaceRouteDeps,
+  scope: TenantScope,
+  buildSessionId: BuildSessionId,
+  runId: RunId
+): Promise<CheckpointSandbox> {
+  if (deps.resolveSandbox) {
+    return await deps.resolveSandbox({
+      buildSessionId,
+      organizationId: scope.organizationId,
+      projectId: scope.projectId,
+    });
+  }
+  const createdSandbox = createBuildSandbox({
+    buildSessionId,
+    organizationId: scope.organizationId,
+    projectId: scope.projectId,
+    runId,
+  });
+  await createdSandbox.start?.();
+  return checkpointSandboxFor(createdSandbox);
+}
+
 /**
  * The answer for a `git` call that did not produce a listing or a body. A path
  * that is not in the commit is the caller's mistake; anything else means this
@@ -954,15 +1032,8 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
         return unauthenticatedResponse(rid);
       }
 
-      const buildSessionId = BuildSessionIdSchema.safeParse(
-        c.req.param("buildSessionId")
-      );
-      const scope = WorkspaceScopeSchema.safeParse({
-        organizationId: c.req.query("organizationId"),
-        projectId: c.req.query("projectId"),
-      });
-      const body = WorkspaceRestoreRequestSchema.safeParse(await c.req.json());
-      if (!(buildSessionId.success && scope.success && body.success)) {
+      const parsedRequest = await parseRestoreScopeAndBody(c);
+      if (!parsedRequest) {
         return apiErrorResponse({
           code: "invalid_request",
           message:
@@ -970,31 +1041,28 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
           requestId: rid,
         });
       }
+      const { body, buildSessionId, scope } = parsedRequest;
 
       const refusal = await guardWorkspaceRestore({
-        buildSessionId: buildSessionId.data,
+        buildSessionId,
         deps,
         principal,
         requestId: rid,
-        scope: scope.data,
+        scope,
       });
       if (refusal) {
         return refusal;
       }
 
-      const checkpointId =
-        body.data.checkpointId ??
-        (body.data.checkpointDigest
-          ? `${scope.data.organizationId}/${scope.data.projectId}/${body.data.checkpointDigest}`
-          : undefined);
-
-      if (!checkpointId) {
+      const resolved = resolveRestoreCheckpoint(scope, body);
+      if (!resolved) {
         return apiErrorResponse({
-          code: "invalid_request",
-          message: "A checkpointId or checkpointDigest is required.",
+          code: "not_found",
+          message: "No such checkpoint exists.",
           requestId: rid,
         });
       }
+      const { checkpointId, digest } = resolved;
 
       try {
         await checkpoints.read(checkpointId);
@@ -1008,7 +1076,7 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
 
       const buildSession = await deps
         .store()
-        .getBuildSession(scope.data, buildSessionId.data);
+        .getBuildSession(scope, buildSessionId);
       if (!buildSession) {
         return apiErrorResponse({
           code: "not_found",
@@ -1017,24 +1085,12 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
         });
       }
 
-      const sandbox = deps.resolveSandbox
-        ? await deps.resolveSandbox({
-            buildSessionId: buildSessionId.data,
-            organizationId: scope.data.organizationId,
-            projectId: scope.data.projectId,
-          })
-        : checkpointSandboxFor(
-            await (async () => {
-              const createdSandbox = createBuildSandbox({
-                buildSessionId: buildSessionId.data,
-                organizationId: scope.data.organizationId,
-                projectId: scope.data.projectId,
-                runId: buildSession.runId,
-              });
-              await createdSandbox.start?.();
-              return createdSandbox;
-            })()
-          );
+      const sandbox = await resolveWorkspaceSandbox(
+        deps,
+        scope,
+        buildSessionId,
+        buildSession.runId
+      );
 
       await restoreSandbox({
         checkpointId,
@@ -1048,27 +1104,14 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
           action: "checkpoint.restored",
           actor: principal,
           metadata: {
-            buildSessionId: buildSessionId.data,
+            buildSessionId,
             checkpointId,
           },
-          organizationId: scope.data.organizationId,
-          projectId: scope.data.projectId,
+          organizationId: scope.organizationId,
+          projectId: scope.projectId,
           requestId: rid,
         })
       );
-
-      const parsed = (() => {
-        try {
-          return parseCheckpointId(checkpointId);
-        } catch {
-          return null;
-        }
-      })();
-      const digest =
-        body.data.checkpointDigest ??
-        parsed?.digest ??
-        checkpointId.split(".").pop() ??
-        checkpointId.slice(-64);
 
       const restoredAt = new Date().toISOString();
       return c.json(
