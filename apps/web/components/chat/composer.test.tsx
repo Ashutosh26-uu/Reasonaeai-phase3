@@ -66,3 +66,51 @@ describe("composer primary action", () => {
     expect(html).toContain("disabled");
   });
 });
+
+describe("composer suggestions", () => {
+  const suggestions = [
+    {
+      category: "ai" as const,
+      categoryLabel: "✨ AI Features",
+      icon: "sparkles" as const,
+      id: "sugg-1",
+      prompt: "Add AI lyrics translation",
+      title: "Add AI capabilities",
+    },
+    {
+      category: "design" as const,
+      categoryLabel: "Design",
+      icon: "design" as const,
+      id: "sugg-2",
+      prompt: "Add lyric hover effects",
+      title: "Add lyric hover effects",
+    },
+  ];
+
+  it("renders suggestion bubbles when suggestions are provided and not pending", () => {
+    const html = renderToStaticMarkup(
+      <Composer {...props} hasConversation suggestions={suggestions} />
+    );
+    expect(html).toContain('aria-label="Suggested next actions"');
+    expect(html).toContain("Add AI capabilities");
+    expect(html).toContain("Add lyric hover effects");
+    expect(html).toContain("✨ AI Features");
+    expect(html).toContain("Design");
+  });
+
+  it("hides suggestion bubbles while a run is pending", () => {
+    const html = renderToStaticMarkup(
+      <Composer {...props} hasConversation pending suggestions={suggestions} />
+    );
+    expect(html).not.toContain('aria-label="Suggested next actions"');
+    expect(html).not.toContain("Add AI capabilities");
+  });
+
+  it("disables suggestion bubbles when composer is busy", () => {
+    const html = renderToStaticMarkup(
+      <Composer {...props} busy hasConversation suggestions={suggestions} />
+    );
+    expect(html).toContain('aria-label="Suggested next actions"');
+    expect(html).toContain("disabled");
+  });
+});

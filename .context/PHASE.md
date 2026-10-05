@@ -135,6 +135,11 @@ The model policy in `.context/SPEC.md` is binding: paid frontier-model APIs are 
   - Non-intrusive floating glassmorphic pill (`NetworkBanner`) in root layout with live tabular countdown, status indicator dots, accessible `role="status"`, and manual retry trigger.
   - Connected product API client (`product-api.ts`) to feed network failure and recovery events into the manager.
   - Covered by unit and component test suites in `apps/web/lib/network-state.test.ts` and `apps/web/components/network/network-banner.test.tsx`.
+- Added dynamic AI-suggested next actions (compact suggestion bubbles) in `apps/web`:
+  - Contextual domain engine (`generatePromptSuggestions` / `detectDomain`) dynamically extracts project domain and checkpoint facts (user prompt, assistant answer, checkpoint file changes, project name, seed) upon run/checkpoint completion, using a weighted multi-signal scoring classifier with word boundary protection to generate 4 high-value next steps across key product dimensions (`✨ AI Features`, `Design`, `New feature`, `Reliability`).
+  - Google AI Studio inspired compact glassmorphic bubbles (`SuggestionBubbles`) rendered above the composer input with category badges, subtle watermark accent icons (`PencilRuler`, `Sparkles`, `LayoutGrid`, `ShieldCheck`), smooth horizontal mouse-wheel scrolling, and accessible WCAG AA contrast across dark and light themes. Compact dual-line bubble profile keeps the vertical height minimal while preserving clear action titles and category pills without badge clipping.
+  - Interactive lifecycle: clicking a bubble immediately populates the prompt into the composer and focuses the textarea for review or submission; provides refresh/shuffle to cycle alternative ideas, and dismiss capability for the active turn; dynamically hides while a run is executing, cancels stale suggestions if the latest turn failed, and resets state upon conversation switches.
+  - Covered by comprehensive unit and component tests in `apps/web/components/chat/suggestions.test.ts`, `apps/web/components/chat/suggestion-bubbles.test.tsx`, and `apps/web/components/chat/composer.test.tsx`.
 
 ### In progress
 
