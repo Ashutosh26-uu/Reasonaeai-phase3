@@ -4,6 +4,7 @@ import {
   ProjectIdSchema,
   type RunId,
   SessionIdSchema,
+  UserIdSchema,
 } from "@reasonateai/contracts/identity";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -581,5 +582,108 @@ describeWithDatabase("run dispatch", () => {
         runId,
       })
     ).toBeUndefined();
+  });
+
+  it("parks an unanswered run, keeps it from runnable poll until answered, then re-offers it", async () => {
+    const { allocation, scope } = await queuedRun();
+    const { runId } = allocation.buildSession;
+
+    // Begin run
+    const lease = await store.beginRun({
+      holder: "worker-park-test",
+      runId,
+      ttlMs: 60_000,
+    });
+    expect(lease).toBeDefined();
+
+    // Suspend for ask_user
+    await store.appendRunEvent({
+      controllerRunId: "ctrl-park-run-1",
+      payload: {
+        kind: "tool_suspended",
+        toolCallId: "call-park-1",
+        toolName: "ask_user",
+      },
+      runId,
+      scope,
+      type: "approval.requested",
+    });
+
+    // Verify run is in awaiting_approval
+    const suspended = await store.getRun({
+      organizationId: scope.organizationId,
+      projectId: scope.projectId,
+      runId,
+    });
+    expect(suspended?.status).toBe("awaiting_approval");
+
+    // Park the run and release lease (simulating suspension timeout)
+    const parked = await store.parkRunSuspension({ runId, scope });
+    expect(parked).toBe(true);
+    if (lease) {
+      await store.releaseRunLease({
+        leaseId: lease.leaseId,
+        runId,
+        scope,
+      });
+    }
+
+    // Since the run is parked and unanswered, listRunnableRuns MUST NOT return it
+    const listBeforeAnswer = (
+      await store.listRunnableRuns({ limit: 500 })
+    ).find((r) => r.runId === runId);
+    expect(listBeforeAnswer).toBeUndefined();
+
+    // User answers the question
+    const answerResult = await store.answerRunQuestion({
+      answer: "User answered here",
+      buildSessionId: allocation.buildSession.buildSessionId,
+      requestedByUserId: UserIdSchema.parse(randomUUID()),
+      runId,
+      scope,
+      toolCallId: "call-park-1",
+    });
+    expect(answerResult).toBe("accepted");
+
+    // Now listRunnableRuns MUST detect the answering run!
+    const listAfterAnswer = (await store.listRunnableRuns({ limit: 500 })).find(
+      (r) => r.runId === runId
+    );
+    expect(listAfterAnswer).toBeDefined();
+    expect(listAfterAnswer?.pendingToolCallId).toBe("call-park-1");
+    expect(listAfterAnswer?.pendingMastraRunId).toBe("ctrl-park-run-1");
+
+    // A worker re-claims the lease
+    const resumeLease = await store.beginRun({
+      holder: "worker-resume-test",
+      runId,
+      ttlMs: 60_000,
+    });
+    expect(resumeLease).toBeDefined();
+
+    // Worker consumes the answer
+    const answer = await store.takeRunAnswer({
+      runId,
+      scope,
+      toolCallId: "call-park-1",
+    });
+    expect(answer).toBe("User answered here");
+
+    // Run status is now running and parked_at is cleared
+    const resumed = await store.getRun({
+      organizationId: scope.organizationId,
+      projectId: scope.projectId,
+      runId,
+    });
+    expect(resumed?.status).toBe("running");
+
+    if (resumeLease) {
+      await store.finishRun({
+        holder: "worker-resume-test",
+        leaseId: resumeLease.leaseId,
+        runId,
+        status: "succeeded",
+      });
+    }
   });
 });

@@ -144,10 +144,34 @@ export class DockerSandbox implements ISandbox {
       `${this.hostWorkspaceDir}:${this.config.workdir}`,
     ];
 
-    const env = {
+    if (this.config.packageCacheVolume) {
+      if (
+        this.config.packageCacheVolume.toLowerCase().includes("docker.sock")
+      ) {
+        throw new Error("Mounting the host Docker socket is forbidden.");
+      }
+      dockerArgs.push("-v", `${this.config.packageCacheVolume}:/root/.npm`);
+    }
+
+    for (const mount of this.config.mounts) {
+      if (
+        mount.source.toLowerCase().includes("docker.sock") ||
+        mount.target.toLowerCase().includes("docker.sock")
+      ) {
+        throw new Error("Mounting the host Docker socket is forbidden.");
+      }
+      const mode = mount.readonly ? ":ro" : "";
+      dockerArgs.push("-v", `${mount.source}:${mount.target}${mode}`);
+    }
+
+    const env: Record<string, string> = {
       HOME: this.config.workdir,
       ...this.config.env,
     };
+
+    if (this.config.packageCacheVolume) {
+      env.npm_config_cache = "/root/.npm";
+    }
 
     for (const [key, value] of Object.entries(env)) {
       dockerArgs.push("-e", `${key}=${value}`);

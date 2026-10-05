@@ -9,6 +9,7 @@ import type {
   RunnableRun,
 } from "@reasonateai/project-state/postgres";
 import type {
+  CheckpointReference,
   CheckpointStore,
   CheckpointWriteResult,
 } from "@reasonateai/sandbox/checkpoint";
@@ -62,9 +63,16 @@ export interface RunExecutionConfig {
   renewIntervalMs: number;
   /** How long an aborted step may take to settle before teardown proceeds. */
   stopGraceMs: number;
+  /** How long a question may wait for user answer before durably parking the run. */
+  suspensionTimeoutMs?: number;
 }
 
-export type RunOutcome = "cancelled" | "failed" | "skipped" | "succeeded";
+export type RunOutcome =
+  | "cancelled"
+  | "failed"
+  | "parked"
+  | "skipped"
+  | "succeeded";
 
 export interface RunExecutorDeps {
   checkpoints: CheckpointStore;
@@ -94,7 +102,8 @@ const CHECKPOINT_COMMIT_PATTERN = /^[a-f0-9]{40,64}$/;
 type DriveResult =
   | { kind: "completed" }
   | { kind: "failed"; reason: string }
-  | { kind: "stopped"; leaseLost: boolean; reason: string };
+  | { kind: "stopped"; leaseLost: boolean; reason: string }
+  | { kind: "parked"; reason: string; toolCallId: string };
 
 /** The terminal status each way an attempt can end is recorded under. */
 function finishStatusOf(driven: DriveResult): RunFinishStatus {
@@ -209,37 +218,23 @@ export class RunExecutor {
         scope,
         suspended: recovery !== undefined,
       });
-      const restored = recovery
-        ? undefined
-        : await restoreLatestCheckpoint({
-            checkpoints: this.#deps.checkpoints,
-            sandbox: checkpointSandboxFor(sandbox),
-            scope,
-          });
+      const restored =
+        recovery && retainedWorkspace
+          ? undefined
+          : await restoreLatestCheckpoint({
+              checkpoints: this.#deps.checkpoints,
+              sandbox: checkpointSandboxFor(sandbox),
+              scope,
+            });
       logger.info("run.workspace.ready", {
         ...fields,
         restoredCheckpointId: restored?.checkpointId ?? null,
       });
-      if (!recovery) {
-        if (restored === undefined) {
-          baseCommit = null;
-        } else {
-          const head = await checkpointSandboxFor(sandbox).runCommand({
-            args: ["rev-parse", "HEAD"],
-            command: "git",
-            cwd: "/workspace",
-          });
-          if (
-            head.exitCode !== 0 ||
-            !CHECKPOINT_COMMIT_PATTERN.test(head.stdout.trim())
-          ) {
-            throw new Error(
-              "The restored checkpoint commit could not be verified."
-            );
-          }
-          baseCommit = head.stdout.trim();
-        }
-      }
+      baseCommit = await this.#resolveBaseCommit({
+        recovery: recovery !== undefined,
+        restored,
+        sandbox,
+      });
 
       driven = await this.#drive({
         fields,
@@ -256,6 +251,17 @@ export class RunExecutor {
       driven = { kind: "failed", reason: describeFailure(error).message };
     }
 
+    if (driven.kind === "parked") {
+      return await this.#park({
+        baseCommit,
+        driven,
+        fields,
+        leaseId: lease.leaseId,
+        sandbox,
+        scope,
+      });
+    }
+
     return await this.#settle({
       baseCommit,
       driven,
@@ -264,6 +270,31 @@ export class RunExecutor {
       sandbox,
       scope,
     });
+  }
+
+  async #resolveBaseCommit(input: {
+    recovery: boolean;
+    restored: CheckpointReference | undefined;
+    sandbox: WorkspaceSandbox;
+  }): Promise<string | null> {
+    if (input.restored === undefined && !input.recovery) {
+      return null;
+    }
+    const head = await checkpointSandboxFor(input.sandbox).runCommand({
+      args: ["rev-parse", "HEAD"],
+      command: "git",
+      cwd: "/workspace",
+    });
+    if (
+      head.exitCode === 0 &&
+      CHECKPOINT_COMMIT_PATTERN.test(head.stdout.trim())
+    ) {
+      return head.stdout.trim();
+    }
+    if (input.recovery) {
+      return null;
+    }
+    throw new Error("The restored checkpoint commit could not be verified.");
   }
 
   async #checkpointRetainedWorkspace(input: {
@@ -595,14 +626,36 @@ export class RunExecutor {
         }
       }
       await appends.drain();
+      const suspensionTimeoutMs = config.suspensionTimeoutMs ?? 600_000;
       while (stop === undefined && failure === undefined && pendingQuestion) {
         const toolCallId = pendingQuestion;
         logger.info("run.question.waiting", { ...fields, toolCallId });
         let answer: string | undefined;
+        const waitStartedAt = Date.now();
         while (stop === undefined && answer === undefined) {
+          if (Date.now() - waitStartedAt >= suspensionTimeoutMs) {
+            logger.warn("run.question.timeout", {
+              ...fields,
+              reason: "Suspension timeout expired waiting for user answer",
+              timeoutMs: suspensionTimeoutMs,
+              toolCallId,
+            });
+            break;
+          }
           // biome-ignore lint/performance/noAwaitInLoops: the worker must wait for this answer before resuming the controller
           await Promise.race([
-            new Promise<void>((resolve) => setTimeout(resolve, 500)),
+            new Promise<void>((resolve) =>
+              setTimeout(
+                resolve,
+                Math.min(
+                  500,
+                  Math.max(
+                    10,
+                    suspensionTimeoutMs - (Date.now() - waitStartedAt)
+                  )
+                )
+              )
+            ),
             stopRequested,
           ]);
           if (stop === undefined) {
@@ -613,8 +666,15 @@ export class RunExecutor {
             });
           }
         }
-        if (stop !== undefined || answer === undefined) {
+        if (stop !== undefined) {
           break;
+        }
+        if (answer === undefined) {
+          return {
+            kind: "parked",
+            reason: "suspension timeout expired while waiting for user answer",
+            toolCallId,
+          };
         }
         pendingQuestion = undefined;
         logger.info("run.question.resuming", { ...fields, toolCallId });
@@ -700,6 +760,96 @@ export class RunExecutor {
       };
     }
     return { kind: "completed" };
+  }
+
+  /**
+   * Parks an unanswered suspended run: captures a Git checkpoint snapshot,
+   * marks the run as durably parked in the store, records run.parked on the
+   * ledger, gracefully releases the PostgreSQL run lease, and destroys the
+   * active container to release host resources and worker concurrency slots.
+   */
+  async #park(input: {
+    baseCommit?: string | null | undefined;
+    driven: { kind: "parked"; reason: string; toolCallId: string };
+    fields: LogFields;
+    leaseId: string;
+    sandbox: WorkspaceSandbox | undefined;
+    scope: RunScope;
+  }): Promise<RunOutcome> {
+    const { ledger, logger, store } = this.#deps;
+    const { driven, fields, scope, sandbox } = input;
+
+    // 1. Transition run state to durably parked awaiting_approval in PostgreSQL
+    await store.parkRunSuspension({ runId: scope.runId, scope });
+
+    // 2. Capture a Git checkpoint snapshot of the mutable workspace
+    let checkpoint: CheckpointWriteResult | undefined;
+    if (sandbox !== undefined) {
+      try {
+        checkpoint = await snapshotWorkspaceCheckpoint({
+          ...(input.baseCommit === undefined
+            ? {}
+            : { baseCommit: input.baseCommit }),
+          checkpoints: this.#deps.checkpoints,
+          sandbox: checkpointSandboxFor(sandbox),
+          scope,
+        });
+      } catch (error) {
+        logger.error("run.park.checkpoint.failed", {
+          ...fields,
+          failure: describeFailure(error).message,
+        });
+      }
+    }
+
+    // Append run.parked event to durable ledger
+    await ledger.appendTransition({
+      identity: scope,
+      payload: {
+        bytes: checkpoint?.bytes ?? null,
+        checkpointId: checkpoint?.checkpointId ?? null,
+        reason: driven.reason,
+        toolCallId: driven.toolCallId,
+      },
+      type: "run.parked",
+    });
+
+    // 3. Gracefully release the PostgreSQL run lease
+    try {
+      await store.releaseRunLease({
+        leaseId: input.leaseId,
+        runId: scope.runId,
+        scope,
+      });
+    } catch (error) {
+      logger.warn("run.park.lease.release.failed", {
+        ...fields,
+        failure: describeFailure(error).message,
+      });
+    }
+
+    // 4. Clean up / stop the active Docker container to free host CPU/memory
+    if (sandbox !== undefined) {
+      try {
+        await sandbox.destroy?.();
+      } catch (error) {
+        logger.error("run.sandbox.destroy.failed", {
+          ...fields,
+          failure: describeFailure(error).message,
+        });
+      } finally {
+        releaseBuildSandbox(scope);
+      }
+    }
+
+    logger.info("run.parked", {
+      ...fields,
+      checkpointId: checkpoint?.checkpointId ?? null,
+      toolCallId: driven.toolCallId,
+    });
+
+    // 5. Release worker process loop slot (returned to caller)
+    return "parked";
   }
 
   /**

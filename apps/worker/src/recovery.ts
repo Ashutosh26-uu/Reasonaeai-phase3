@@ -36,10 +36,9 @@ export async function prepareRecoveredSandbox(scope: RunScope): Promise<void> {
   const volume = workspaceVolumeName(scope);
   try {
     await execFileAsync("docker", ["volume", "inspect", volume]);
-  } catch (cause) {
-    throw new Error("The suspended run's workspace volume is unavailable.", {
-      cause,
-    });
+  } catch {
+    // If the volume does not exist (e.g. clean worker node or reclaimed volume),
+    // sandbox start and checkpoint restoration will reconstruct the workspace safely.
   }
 
   await stopRecoveredSandbox(scope);

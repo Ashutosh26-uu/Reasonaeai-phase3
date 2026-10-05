@@ -44,13 +44,41 @@ export const SandboxPortBindingSchema = z.strictObject({
 });
 export type SandboxPortBinding = z.infer<typeof SandboxPortBindingSchema>;
 
+export const SandboxMountSchema = z
+  .strictObject({
+    readonly: z.boolean().default(false),
+    source: z.string().min(1).max(256),
+    target: z.string().min(1).max(256),
+    type: z.enum(["volume", "bind"]).default("volume"),
+  })
+  .refine(
+    (mount) =>
+      !(
+        mount.source.toLowerCase().includes("docker.sock") ||
+        mount.target.toLowerCase().includes("docker.sock")
+      ),
+    {
+      message: "Host Docker socket access is forbidden.",
+    }
+  );
+export type SandboxMount = z.infer<typeof SandboxMountSchema>;
+
 export const SandboxConfigSchema = z.strictObject({
   cpuLimit: z.number().min(0.1).max(8.0).default(1.0),
   env: z.record(z.string(), z.string()).default({}),
   id: SandboxIdSchema,
   image: z.string().min(1).max(256),
   memoryLimitMb: z.number().int().min(64).max(4096).default(512),
+  mounts: z.array(SandboxMountSchema).max(8).default([]),
   networkMode: SandboxNetworkModeSchema.default("none"),
+  packageCacheVolume: z
+    .string()
+    .min(1)
+    .max(128)
+    .refine((v) => !v.toLowerCase().includes("docker.sock"), {
+      message: "Mounting the host Docker socket is forbidden.",
+    })
+    .optional(),
   /**
    * Container ports to publish out of the sandbox. A port is published when the
    * container is created — Docker cannot add a published port to a container
