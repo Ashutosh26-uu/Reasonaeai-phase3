@@ -13,6 +13,8 @@
  * appearing available and then erroring on every use.
  */
 
+import type { InstructionSource } from "../../context/instructions.js";
+import { BUNDLED_SKILLS } from "../../guidance/catalog.js";
 import type { RunScope } from "../../run-scope.js";
 import { createFormatReaders } from "../../tools/readers/registry.js";
 import type { FormatReader } from "../../tools/readers/types.js";
@@ -24,6 +26,7 @@ import { AgentOutputHandler } from "./agent.js";
 import { ArtifactHandler } from "./artifact.js";
 import type { DocsRoot } from "./docs.js";
 import { DocsHandler } from "./docs.js";
+import { GuidanceHandler } from "./guidance.js";
 import { RuleHandler } from "./rule.js";
 
 export interface RunResourceOptions {
@@ -33,6 +36,7 @@ export interface RunResourceOptions {
   docsRoots?: readonly DocsRoot[] | undefined;
   /** Overrides the home directory used for user-level rules. */
   home?: string | undefined;
+  instructionSources?: readonly InstructionSource[] | undefined;
   /** Root under which per-run stores live. */
   root: string;
   scope: RunScope;
@@ -68,7 +72,11 @@ export function createRunResources(options: RunResourceOptions): RunResources {
   const handlers: ProtocolHandler[] = [
     new ArtifactHandler(artifacts),
     new AgentOutputHandler(agentOutputs),
-    new RuleHandler(options.cwd, { home: options.home }),
+    new RuleHandler(options.cwd, {
+      home: options.home,
+      sources: options.instructionSources,
+    }),
+    new GuidanceHandler("skill", BUNDLED_SKILLS),
   ];
 
   if (options.docsRoots !== undefined && options.docsRoots.length > 0) {

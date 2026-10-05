@@ -86,6 +86,7 @@ export function createCtoRuntimeFactory(input: {
   return () =>
     createReasonateCtoRuntime({
       ...buildSandboxEnvironment,
+      enableTestRunner: true,
       model: input.model,
       storage,
       workspace: reasonateBuildWorkspace,

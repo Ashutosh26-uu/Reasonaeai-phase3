@@ -1,6 +1,11 @@
 import type { AgentDefinition } from "../types.js";
 import { compactionAgent, titleAgent } from "./hidden.js";
-import { coderAgent, debuggerAgent, scoutAgent } from "./workers.js";
+import {
+  coderAgent,
+  debuggerAgent,
+  reviewerAgent,
+  scoutAgent,
+} from "./workers.js";
 
 /**
  * The built-in agent set.
@@ -15,6 +20,7 @@ export const BUILTIN_AGENT_DEFINITIONS: Record<string, AgentDefinition> = {
   [coderAgent.name]: coderAgent,
   [compactionAgent.name]: compactionAgent,
   [debuggerAgent.name]: debuggerAgent,
+  [reviewerAgent.name]: reviewerAgent,
   [scoutAgent.name]: scoutAgent,
   [titleAgent.name]: titleAgent,
 };
