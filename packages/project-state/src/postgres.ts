@@ -503,6 +503,10 @@ export interface ProjectStateStore {
   memberships: MembershipRepository;
   migrate: () => Promise<void>;
   outbox: OutboxRepository;
+  parkRunSuspension: (input: {
+    runId: RunId;
+    scope: TenantScope;
+  }) => Promise<boolean>;
   previews: PreviewRepository;
   rateLimiter: RateLimiter;
   recordArtifact: (
@@ -1253,7 +1257,7 @@ export function createProjectStateStore(config: {
       await client.query(
         `update runs set status = 'running', pending_tool_call_id = null,
          pending_answer = null, pending_answered_by = null,
-         pending_mastra_run_id = null, updated_at = now()
+         pending_mastra_run_id = null, parked_at = null, updated_at = now()
          where run_id = $1`,
         [input.runId]
       );
@@ -1369,8 +1373,14 @@ export function createProjectStateStore(config: {
                and occupied.run_id <> r.run_id
                and occupied.status in ('running', 'awaiting_approval')
           )
-          and (r.status <> 'awaiting_approval'
-            or (r.pending_tool_call_id is not null and r.pending_mastra_run_id is not null))
+          and (
+            r.status <> 'awaiting_approval'
+            or (
+              r.pending_tool_call_id is not null
+              and r.pending_mastra_run_id is not null
+              and (r.parked_at is null or r.pending_answer is not null or r.cancellation_requested_at is not null)
+            )
+          )
           and not exists (
             select 1
               from run_leases lease
@@ -1820,6 +1830,21 @@ export function createProjectStateStore(config: {
     return result.rowCount === 1;
   }
 
+  async function parkRunSuspension(input: {
+    runId: RunId;
+    scope: TenantScope;
+  }): Promise<boolean> {
+    const result = await pool.query(
+      `update runs
+          set status = 'awaiting_approval', parked_at = now(), updated_at = now()
+        where run_id = $1 and organization_id = $2 and project_id = $3
+          and status = 'awaiting_approval'`,
+      [input.runId, input.scope.organizationId, input.scope.projectId]
+    );
+
+    return result.rowCount === 1;
+  }
+
   async function setRunStatus(input: {
     runId: RunId;
     scope: TenantScope;
@@ -2243,6 +2268,7 @@ export function createProjectStateStore(config: {
       await attemptMigration(1);
     },
     outbox: { claim: claimOutbox },
+    parkRunSuspension,
     previews,
     rateLimiter,
     recordArtifact,

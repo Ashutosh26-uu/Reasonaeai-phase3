@@ -127,6 +127,7 @@ function main(): void {
       leaseTtlMs: config.leaseTtlMs,
       renewIntervalMs: config.renewIntervalMs,
       stopGraceMs: config.stopGraceMs,
+      suspensionTimeoutMs: config.suspensionTimeoutMs,
     },
     ledger: createLedger({ store }),
     live,
@@ -153,6 +154,7 @@ function main(): void {
     pollIntervalMs: config.pollIntervalMs,
     pollJitterMs: config.pollJitterMs,
     renewIntervalMs: config.renewIntervalMs,
+    suspensionTimeoutMs: config.suspensionTimeoutMs,
   });
   worker.start();
 }

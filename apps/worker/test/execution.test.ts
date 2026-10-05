@@ -319,6 +319,107 @@ describeWithDatabase("run execution", () => {
     expect(session.sendCalls).toBe(0);
   });
 
+  it("parks an unanswered suspended run upon suspension timeout, releasing lease and container, and resumes when answered", async () => {
+    const allocated = await fixture("Configure environment");
+    const scripted = scriptedRuntime();
+    const executor = createExecutor({
+      harness,
+      holder: "worker-suspension-test",
+      runtime: scripted.runtime,
+      suspensionTimeoutMs: 300,
+    });
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+    session.complete([
+      {
+        args: { question: "Which region?" },
+        resumeSchema: "string",
+        suspendPayload: { question: "Which region?" },
+        toolCallId: "ask-park-1",
+        toolName: "ask_user",
+        type: "tool_suspended",
+      },
+      { reason: "suspended", type: "agent_end" },
+    ]);
+
+    const outcome = await attempt;
+    expect(outcome).toBe("parked");
+
+    expect(await runStatus(harness, allocated)).toBe("awaiting_approval");
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeUndefined();
+    expect(await containerCount(allocated.volume)).toBe(0);
+
+    const parkedRow = await harness.pool.query<{ parked_at: Date | null }>(
+      "select parked_at from runs where run_id = $1",
+      [allocated.candidate.runId]
+    );
+    expect(parkedRow.rows[0]?.parked_at).not.toBeNull();
+
+    const events = await ledger(harness, allocated);
+    const parkEvent = events.find((e) => e.type === "run.parked");
+    expect(parkEvent).toBeDefined();
+    expect(parkEvent?.payload).toMatchObject({
+      toolCallId: "ask-park-1",
+    });
+
+    const runnablesBeforeAnswer = await harness.store.listRunnableRuns({
+      limit: 64,
+    });
+    expect(
+      runnablesBeforeAnswer.some(
+        (run) => run.runId === allocated.candidate.runId
+      )
+    ).toBe(false);
+
+    expect(
+      await harness.store.answerRunQuestion({
+        answer: "us-east-1",
+        buildSessionId: allocated.buildSessionId,
+        requestedByUserId: UserIdSchema.parse(randomUUID()),
+        runId: allocated.candidate.runId,
+        scope: allocated.scope,
+        toolCallId: "ask-park-1",
+      })
+    ).toBe("accepted");
+
+    const runnablesAfterAnswer = await harness.store.listRunnableRuns({
+      limit: 64,
+    });
+    const resumedCandidate = runnablesAfterAnswer.find(
+      (run) => run.runId === allocated.candidate.runId
+    );
+    expect(resumedCandidate).toBeDefined();
+    if (resumedCandidate === undefined) {
+      throw new Error("Expected resumedCandidate to be defined");
+    }
+    expect(resumedCandidate.pendingToolCallId).toBe("ask-park-1");
+
+    const resumeScripted = scriptedRuntime();
+    const resumeExecutor = createExecutor({
+      harness,
+      holder: "worker-resumer",
+      runtime: resumeScripted.runtime,
+    });
+    const resumeAttempt = resumeExecutor.execute(
+      resumedCandidate,
+      createStopSignal()
+    );
+    const resumeSession = await resumeScripted.waitForSession();
+    await vi.waitFor(
+      () => {
+        expect(resumeSession.lastResumeData).toBe("us-east-1");
+      },
+      { timeout: 3000 }
+    );
+    expect(resumeSession.lastResumedToolCallId).toBe("ask-park-1");
+    resumeSession.complete([{ reason: "complete", type: "agent_end" }]);
+
+    expect(await resumeAttempt).toBe("succeeded");
+    expect(await runStatus(harness, allocated)).toBe("completed");
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeUndefined();
+  });
+
   it("publishes the text its agent streams as live deltas, and the ledger keeps the message", async () => {
     const scripted = scriptedRuntime({
       events: [

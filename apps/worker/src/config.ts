@@ -39,6 +39,7 @@ const DEFAULT_MAX_RUNS_PER_POLL = 1;
 const DEFAULT_MAX_CONCURRENT_RUNS = 2;
 const DEFAULT_SHUTDOWN_GRACE_MS = 30_000;
 const DEFAULT_STOP_GRACE_MS = 5000;
+const DEFAULT_SUSPENSION_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * The model the CTO runs on. Pinned the same way the API's composition root
@@ -73,6 +74,8 @@ export interface WorkerConfig {
   shutdownGraceMs: number;
   /** How long an aborted step may take to settle before teardown proceeds. */
   stopGraceMs: number;
+  /** How long a question may wait for user answer before durably parking the run. */
+  suspensionTimeoutMs: number;
 }
 
 const WorkerEnvironmentSchema = z.object({
@@ -80,6 +83,12 @@ const WorkerEnvironmentSchema = z.object({
   MASTRA_MODEL: z.string().trim().min(1).optional(),
   REASONATE_CHECKPOINT_ROOT: z.string().trim().min(1).optional(),
   REDIS_URL: z.string().min(1).optional(),
+  SUSPENSION_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .max(86_400_000)
+    .optional(),
   WORKER_HOLDER: z.string().trim().min(1).max(128).optional(),
   WORKER_LEASE_TTL_MS: z.coerce
     .number()
@@ -129,6 +138,12 @@ const WorkerEnvironmentSchema = z.object({
     .int()
     .min(MIN_STOP_GRACE_MS)
     .max(MAX_STOP_GRACE_MS)
+    .optional(),
+  WORKER_SUSPENSION_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .max(86_400_000)
     .optional(),
 });
 
@@ -204,5 +219,9 @@ export function readWorkerConfig(
     renewIntervalMs,
     shutdownGraceMs,
     stopGraceMs,
+    suspensionTimeoutMs:
+      settings.WORKER_SUSPENSION_TIMEOUT_MS ??
+      settings.SUSPENSION_TIMEOUT_MS ??
+      DEFAULT_SUSPENSION_TIMEOUT_MS,
   };
 }

@@ -9,6 +9,7 @@ const CONCURRENT_RUNS_FIELD = /WORKER_MAX_CONCURRENT_RUNS/;
 const POLL_INTERVAL_FIELD = /WORKER_POLL_INTERVAL_MS/;
 const RENEW_INTERVAL_FIELD = /WORKER_RENEW_INTERVAL_MS/;
 const STOP_GRACE_FIELD = /WORKER_STOP_GRACE_MS/;
+const SUSPENSION_TIMEOUT_FIELD = /SUSPENSION_TIMEOUT_MS/;
 
 describe("worker configuration", () => {
   it("derives a bounded, coherent configuration from the environment", () => {
@@ -33,7 +34,29 @@ describe("worker configuration", () => {
       pollIntervalMs: 500,
       pollJitterMs: 50,
       renewIntervalMs: 5000,
+      suspensionTimeoutMs: 600_000,
     });
+  });
+
+  it("derives suspension timeout from environment variables", () => {
+    const custom = readWorkerConfig({
+      DATABASE_URL,
+      WORKER_SUSPENSION_TIMEOUT_MS: "15000",
+    });
+    expect(custom.suspensionTimeoutMs).toBe(15_000);
+
+    const fallback = readWorkerConfig({
+      DATABASE_URL,
+      SUSPENSION_TIMEOUT_MS: "45000",
+    });
+    expect(fallback.suspensionTimeoutMs).toBe(45_000);
+
+    expect(() =>
+      readWorkerConfig({
+        DATABASE_URL,
+        WORKER_SUSPENSION_TIMEOUT_MS: "50",
+      })
+    ).toThrow(SUSPENSION_TIMEOUT_FIELD);
   });
 
   it("generates a distinct holder identity when none is configured", () => {

@@ -204,6 +204,9 @@ export function createExecutor(input: {
   live?: LiveEventPublisher;
   renewIntervalMs?: number;
   runtime: RunRuntime;
+  stopGraceMs?: number;
+  /** How long a question may wait before parking the run. */
+  suspensionTimeoutMs?: number;
   /** Overrides the store, so a suite can make one operation refuse. */
   store?: ProjectStateStore;
 }): RunExecutor {
@@ -216,7 +219,10 @@ export function createExecutor(input: {
       holder: input.holder,
       leaseTtlMs,
       renewIntervalMs,
-      stopGraceMs: 2000,
+      stopGraceMs: input.stopGraceMs ?? 2000,
+      ...(input.suspensionTimeoutMs === undefined
+        ? {}
+        : { suspensionTimeoutMs: input.suspensionTimeoutMs }),
     },
     ledger: createLedger({ store }),
     live: input.live ?? recordingLiveEvents().publisher,

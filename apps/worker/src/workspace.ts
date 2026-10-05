@@ -62,8 +62,51 @@ export const buildSandboxEnvironment: {
   },
 };
 
+export function resolveBuildSandboxNetworkMode(
+  env: NodeJS.ProcessEnv = process.env
+): "bridge" | "none" {
+  const candidate = (
+    env.REASONATE_SANDBOX_NETWORK_MODE ??
+    env.SANDBOX_NETWORK_MODE ??
+    "bridge"
+  )
+    .trim()
+    .toLowerCase();
+  return candidate === "none" ? "none" : "bridge";
+}
+
+export function resolveBuildSandboxCacheVolume(
+  env: NodeJS.ProcessEnv = process.env
+): string | undefined {
+  const candidate = (
+    env.REASONATE_PACKAGE_CACHE_VOLUME ?? env.SANDBOX_CACHE_VOLUME
+  )?.trim();
+  return candidate && candidate.length > 0 ? candidate : undefined;
+}
+
 function createBuildSandbox(scope: RunScope) {
   const sandboxId = sandboxIdFor(scope);
+  const network = resolveBuildSandboxNetworkMode();
+  const cacheVolume = resolveBuildSandboxCacheVolume();
+  const mounts: Array<{
+    source: string;
+    target: string;
+    type: "volume";
+  }> = [
+    {
+      source: `${sandboxId}${WORKSPACE_VOLUME_SUFFIX}`,
+      target: SANDBOX_WORKING_DIRECTORY,
+      type: "volume",
+    },
+  ];
+  if (cacheVolume) {
+    mounts.push({
+      source: cacheVolume,
+      target: "/root/.npm",
+      type: "volume",
+    });
+  }
+
   return new DockerSandbox({
     capDrop: ["ALL"],
     cpuPeriod: SANDBOX_CPU_PERIOD,
@@ -73,14 +116,8 @@ function createBuildSandbox(scope: RunScope) {
     image: SANDBOX_IMAGE,
     memory: SANDBOX_MEMORY_BYTES,
     memorySwap: SANDBOX_MEMORY_BYTES,
-    mounts: [
-      {
-        source: `${sandboxId}${WORKSPACE_VOLUME_SUFFIX}`,
-        target: SANDBOX_WORKING_DIRECTORY,
-        type: "volume",
-      },
-    ],
-    network: "none",
+    mounts,
+    network,
     pidsLimit: 256,
     securityOpt: ["no-new-privileges:true"],
     timeout: 120_000,
