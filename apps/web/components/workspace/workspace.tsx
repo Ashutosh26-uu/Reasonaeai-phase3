@@ -40,13 +40,18 @@ import {
 import { turnCheckpoint } from "@/components/chat/checkpoint-state";
 import { Composer } from "@/components/chat/composer";
 import { EmptyState } from "@/components/chat/empty-state";
+import { PlanCard } from "@/components/chat/plan-card";
 import { QuestionCard } from "@/components/chat/question-card";
 import { runProgressLabel, runStreamEnded } from "@/components/chat/run-state";
 import {
   generatePromptSuggestions,
   type PromptSuggestion,
 } from "@/components/chat/suggestions";
-import { pendingQuestion, projectTranscript } from "@/components/chat/timeline";
+import {
+  pendingPlan,
+  pendingQuestion,
+  projectTranscript,
+} from "@/components/chat/timeline";
 import { Transcript } from "@/components/chat/transcript";
 import { useRunStream } from "@/components/chat/use-run-stream";
 import { VoiceMode } from "@/components/chat/voice-mode";
@@ -269,6 +274,7 @@ function ResizableWorkspacePanel({
   organizationId,
   panelWidth,
   projectId,
+  refreshKey,
   workAreaRef,
 }: {
   buildSessionId: string;
@@ -281,6 +287,7 @@ function ResizableWorkspacePanel({
   organizationId: string;
   panelWidth: number;
   projectId: string;
+  refreshKey?: number;
   workAreaRef: { current: HTMLDivElement | null };
 }) {
   if (!isOpen) {
@@ -315,6 +322,7 @@ function ResizableWorkspacePanel({
         onClose={onClose}
         organizationId={organizationId}
         projectId={projectId}
+        refreshKey={refreshKey}
       />
     </>
   );
@@ -534,6 +542,11 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   const [answeredToolCallId, setAnsweredToolCallId] = useState<string | null>(
     null
   );
+  const [decidingPlan, setDecidingPlan] = useState(false);
+  const [decidedPlanToolCallId, setDecidedPlanToolCallId] = useState<
+    string | null
+  >(null);
+  const [workspaceRefreshKey, setWorkspaceRefreshKey] = useState(0);
   const [suggestionSeed, setSuggestionSeed] = useState(0);
   const [dismissedSuggestionTurnId, setDismissedSuggestionTurnId] = useState<
     string | null
@@ -799,6 +812,9 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   const question = pendingRunId
     ? pendingQuestion(timeline, pendingRunId)
     : undefined;
+  const planProposal = pendingRunId
+    ? pendingPlan(timeline, pendingRunId)
+    : undefined;
   const answerQuestion = useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
@@ -851,6 +867,77 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     },
     []
   );
+
+  const approvePlan = useCallback(
+    async (toolCallId: string) => {
+      if (!(pendingRunId && conversationId && organizationId && projectId)) {
+        return;
+      }
+      setDecidingPlan(true);
+      setError("");
+      try {
+        await request(
+          `/v1/build-sessions/${conversationId}/runs/${pendingRunId}/answers?${scopeQuery(organizationId, projectId)}`,
+          RunAnswerAcceptedSchema.parse,
+          {
+            body: JSON.stringify({ approved: true, toolCallId }),
+            method: "POST",
+          }
+        );
+        setDecidedPlanToolCallId(toolCallId);
+      } catch (cause) {
+        setError(describeError(cause, "Could not approve the plan."));
+      } finally {
+        setDecidingPlan(false);
+      }
+    },
+    [conversationId, organizationId, pendingRunId, projectId]
+  );
+
+  const rejectPlan = useCallback(
+    async (toolCallId: string, feedback: string) => {
+      if (!(pendingRunId && conversationId && organizationId && projectId)) {
+        return;
+      }
+      setDecidingPlan(true);
+      setError("");
+      try {
+        await request(
+          `/v1/build-sessions/${conversationId}/runs/${pendingRunId}/answers?${scopeQuery(organizationId, projectId)}`,
+          RunAnswerAcceptedSchema.parse,
+          {
+            body: JSON.stringify({ approved: false, feedback, toolCallId }),
+            method: "POST",
+          }
+        );
+        setDecidedPlanToolCallId(toolCallId);
+      } catch (cause) {
+        setError(describeError(cause, "Could not reject the plan."));
+      } finally {
+        setDecidingPlan(false);
+      }
+    },
+    [conversationId, organizationId, pendingRunId, projectId]
+  );
+
+  const handleApprovePlan = useCallback(() => {
+    if (planProposal) {
+      approvePlan(planProposal.toolCallId);
+    }
+  }, [approvePlan, planProposal]);
+
+  const handleRejectPlan = useCallback(
+    (feedback: string) => {
+      if (planProposal) {
+        rejectPlan(planProposal.toolCallId, feedback);
+      }
+    },
+    [planProposal, rejectPlan]
+  );
+
+  const handleWorkspaceRestore = useCallback(() => {
+    setWorkspaceRefreshKey((key) => key + 1);
+  }, []);
 
   const updateDraft = useCallback(
     (event: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -1381,6 +1468,8 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   let progressLabel = runProgressLabel(activeRunEvents);
   if (question) {
     progressLabel = "Waiting for your answer";
+  } else if (planProposal) {
+    progressLabel = "Waiting for plan approval";
   }
   if (stoppingRunId === pendingRunId && pendingRunId !== null) {
     progressLabel = "Stopping…";
@@ -1563,6 +1652,20 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
         value={answerDraft}
       />
     ) : null;
+  const planForm =
+    planProposal &&
+    !streamEnded &&
+    stoppingRunId !== pendingRunId &&
+    decidedPlanToolCallId !== planProposal.toolCallId ? (
+      <PlanCard
+        busy={decidingPlan}
+        key={planProposal.toolCallId}
+        onApprove={handleApprovePlan}
+        onReject={handleRejectPlan}
+        plan={planProposal.plan}
+      />
+    ) : null;
+  const interactiveForm = questionForm ?? planForm;
   const organizationName =
     organizations.find((item) => item.organizationId === organizationId)
       ?.name ?? "This workspace";
@@ -1640,14 +1743,14 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
             {selectedProject && voiceOpen ? (
               <VoiceMode
                 busy={working || submitting}
-                disabled={questionForm !== null}
+                disabled={interactiveForm !== null}
                 key={`${organizationId}:${projectId}`}
                 onClose={closeVoice}
                 onStop={stopRun}
                 onSubmit={sendTurn}
                 onTranscribe={transcribe}
                 projectName={project?.name ?? "Your project"}
-                question={questionForm}
+                question={interactiveForm}
                 response={voiceResponse}
               />
             ) : null}
@@ -1664,11 +1767,14 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
                 messages={
                   visibleHistory(historyIdentity, history, messages).messages
                 }
+                onApprovePlan={approvePlan}
                 onEdit={editMessage}
+                onRejectPlan={rejectPlan}
+                onRestore={handleWorkspaceRestore}
                 onRetry={retry}
                 onStarter={selectStarter}
                 pending={working}
-                questionForm={questionForm}
+                questionForm={interactiveForm}
                 starters={promptStarters}
                 timeline={timeline}
               />
@@ -1700,6 +1806,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
           organizationId={organizationId}
           panelWidth={panelWidth}
           projectId={projectId}
+          refreshKey={workspaceRefreshKey}
           workAreaRef={workAreaRef}
         />
       </div>
@@ -1732,7 +1839,10 @@ function ConversationPane({
   empty,
   live,
   messages,
+  onApprovePlan,
   onEdit,
+  onRejectPlan,
+  onRestore,
   onRetry,
   onStarter,
   pending,
@@ -1749,7 +1859,10 @@ function ConversationPane({
   empty: boolean;
   live: boolean;
   messages: ConversationMessage[];
+  onApprovePlan?: (toolCallId: string) => void;
   onEdit: (text: string) => void;
+  onRejectPlan?: (toolCallId: string, feedback: string) => void;
+  onRestore?: () => void;
   onRetry: (text: string, sourceRunId?: string) => void;
   onStarter: (event: React.MouseEvent<HTMLButtonElement>) => void;
   pending: boolean;
@@ -1783,7 +1896,10 @@ function ConversationPane({
         checkpointScope={checkpointScope}
         live={live}
         messages={messages}
+        onApprovePlan={onApprovePlan}
         onEdit={onEdit}
+        onRejectPlan={onRejectPlan}
+        onRestore={onRestore}
         onRetry={onRetry}
         pending={pending}
         timeline={timeline}

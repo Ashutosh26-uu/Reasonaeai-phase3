@@ -209,7 +209,10 @@ function draftOf(
           toolCallId: event.toolCallId,
           toolName: event.toolName,
         },
-        type: "approval.requested",
+        type:
+          event.toolName === "submit_plan"
+            ? "run.plan_proposed"
+            : "approval.requested",
       };
     }
     case "tool_suspension_cancelled": {

@@ -76,6 +76,7 @@ import {
   createWorkspaceHandlers,
   WORKSPACE_CHECKPOINT_DIFF_PATH,
   WORKSPACE_FILE_PATH,
+  WORKSPACE_RESTORE_PATH,
   WORKSPACE_TREE_PATH,
 } from "./routes/workspace";
 import { serverMiddleware } from "./server";
@@ -463,6 +464,16 @@ export const mastra = new Mastra({
           description:
             "Reads a bounded file diff from a saved turn checkpoint after project authorization and durable run provenance verification.",
           summary: "Read a turn checkpoint diff",
+          tags: ["Workspace"],
+        },
+      }),
+      registerApiRoute(WORKSPACE_RESTORE_PATH, {
+        handler: (c) => workspaceHandlers.restore(c),
+        method: "POST",
+        openapi: {
+          description:
+            "Restores the project workspace from a durable Git checkpoint bundle into the build sandbox and records an audit log entry.",
+          summary: "Restore workspace from checkpoint",
           tags: ["Workspace"],
         },
       }),

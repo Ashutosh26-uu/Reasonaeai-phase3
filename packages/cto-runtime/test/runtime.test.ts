@@ -49,6 +49,7 @@ describe("ReasonateAI CTO composition", () => {
     expect(Object.keys(await runtime.mainAgent.listTools()).sort()).toEqual([
       "edit",
       "read",
+      "submit_plan",
       "write",
     ]);
   });

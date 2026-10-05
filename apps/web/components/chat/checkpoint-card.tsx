@@ -1,7 +1,16 @@
 "use client";
 
-import { CheckpointDiffSchema } from "@reasonateai/contracts/execution-protocol";
-import { ChevronRight, FileDiff, GitCommitHorizontal } from "lucide-react";
+import {
+  CheckpointDiffSchema,
+  WorkspaceRestoreResponseSchema,
+} from "@reasonateai/contracts/execution-protocol";
+import {
+  Check,
+  ChevronRight,
+  FileDiff,
+  GitCommitHorizontal,
+  RotateCcw,
+} from "lucide-react";
 import type { MouseEvent } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { describeError, request, scopeQuery } from "@/lib/product-api";
@@ -107,11 +116,55 @@ function diffLineClass(line: string) {
 export function CheckpointCard({
   turn,
   scope,
+  onRestore,
 }: {
   turn: TurnCheckpoint;
-  scope?: CheckpointScope;
+  scope?: CheckpointScope | undefined;
+  onRestore?: (() => void) | undefined;
 }) {
   const [selected, setSelected] = useState<string | undefined>();
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [restored, setRestored] = useState(false);
+  const [restoreError, setRestoreError] = useState("");
+
+  const checkpointId = turn.checkpointId ?? turn.checkpoint?.checkpointId;
+
+  const handleRestore = useCallback(async () => {
+    if (!(scope && checkpointId)) {
+      return;
+    }
+    setRestoring(true);
+    setRestoreError("");
+    try {
+      await request(
+        `/v1/build-sessions/${scope.buildSessionId}/workspace/restore?${scopeQuery(scope.organizationId, scope.projectId)}`,
+        WorkspaceRestoreResponseSchema.parse,
+        {
+          body: JSON.stringify({ checkpointId }),
+          method: "POST",
+        }
+      );
+      setShowConfirm(false);
+      setRestored(true);
+      onRestore?.();
+    } catch (cause) {
+      setRestoreError(describeError(cause, "Could not restore checkpoint."));
+    } finally {
+      setRestoring(false);
+    }
+  }, [checkpointId, onRestore, scope]);
+
+  const openConfirm = useCallback(() => {
+    setShowConfirm(true);
+    setRestoreError("");
+  }, []);
+
+  const closeConfirm = useCallback(() => {
+    setShowConfirm(false);
+    setRestoreError("");
+  }, []);
+
   const selectFile = useCallback((event: MouseEvent<HTMLButtonElement>) => {
     const { path } = event.currentTarget.dataset;
     setSelected((value) => (value === path ? undefined : path));
@@ -144,12 +197,72 @@ export function CheckpointCard({
         <ChevronRight aria-hidden="true" className={styles.chevron} size={16} />
       </summary>
       <div className={styles.content}>
-        <p className={styles.caption}>
-          {saved.fileCount === 0
-            ? "No files changed."
-            : `${saved.fileCount} ${saved.fileCount === 1 ? "file" : "files"} changed`}
-          {turn.outcome === "succeeded" ? "" : ` · turn ${turn.outcome}`}
-        </p>
+        {restored && (
+          <p className={styles.restoredBanner}>
+            <Check aria-hidden="true" size={14} /> Workspace restored to this
+            checkpoint.
+          </p>
+        )}
+        <div className={styles.toolbar}>
+          <p className={styles.caption}>
+            {saved.fileCount === 0
+              ? "No files changed."
+              : `${saved.fileCount} ${saved.fileCount === 1 ? "file" : "files"} changed`}
+            {turn.outcome === "succeeded" ? "" : ` · turn ${turn.outcome}`}
+          </p>
+          {scope && checkpointId && (
+            <button
+              className={styles.restoreButton}
+              disabled={restoring}
+              onClick={openConfirm}
+              type="button"
+            >
+              <RotateCcw aria-hidden="true" size={12} />
+              Restore Checkpoint
+            </button>
+          )}
+        </div>
+        {showConfirm && (
+          <div
+            aria-label="Confirm Checkpoint Restoration"
+            aria-modal="true"
+            className={styles.confirmModal}
+            role="dialog"
+          >
+            <div className={styles.confirmBox}>
+              <h4>Restore Checkpoint</h4>
+              <p>
+                Are you sure you want to restore the workspace to checkpoint{" "}
+                <code>{saved.commit.slice(0, 7)}</code>? Current uncommitted
+                changes in the sandbox will be replaced with this checkpoint's
+                state.
+              </p>
+              {restoreError && (
+                <p className={styles.restoreError} role="alert">
+                  {restoreError}
+                </p>
+              )}
+              <div className={styles.confirmActions}>
+                <button
+                  className={styles.cancelButton}
+                  disabled={restoring}
+                  onClick={closeConfirm}
+                  type="button"
+                >
+                  Cancel
+                </button>
+                <button
+                  className={styles.confirmRestoreButton}
+                  disabled={restoring}
+                  onClick={handleRestore}
+                  type="button"
+                >
+                  {restoring ? "Restoring…" : "Confirm Restore"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {saved.truncated && (
           <p className={styles.caption}>
             Showing the first {saved.files.length} files. Totals cover all

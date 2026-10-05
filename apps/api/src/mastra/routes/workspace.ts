@@ -14,6 +14,8 @@ import {
   type RunCheckpoint,
   RunCheckpointSchema,
   type RunEventEnvelope,
+  WorkspaceRestoreRequestSchema,
+  WorkspaceRestoreResponseSchema,
 } from "@reasonateai/contracts/execution-protocol";
 import {
   type OrganizationId,
@@ -30,11 +32,16 @@ import type {
 } from "@reasonateai/project-state/postgres";
 import {
   type CheckpointReference,
+  type CheckpointSandbox,
   type CheckpointStore,
   createGitCheckpointStore,
+  parseCheckpointId,
+  restoreSandbox,
 } from "@reasonateai/sandbox/checkpoint";
 import { z } from "zod";
 import { apiErrorResponse, unauthenticatedResponse } from "../principal";
+import { checkpointSandboxFor, createBuildSandbox } from "../workspace";
+import { auditEvent } from "./auth";
 import type { HandlerContext } from "./build-sessions";
 
 /**
@@ -60,6 +67,8 @@ export const WORKSPACE_FILE_PATH =
   "/v1/build-sessions/:buildSessionId/workspace/file";
 export const WORKSPACE_CHECKPOINT_DIFF_PATH =
   "/v1/build-sessions/:buildSessionId/workspace/checkpoint-diff";
+export const WORKSPACE_RESTORE_PATH =
+  "/v1/build-sessions/:buildSessionId/workspace/restore";
 
 /**
  * Most entries a listing returns, so one large project cannot turn into an
@@ -241,6 +250,11 @@ export interface WorkspaceRouteDeps {
   resolvePrincipal: (input: {
     cookieHeader: string | undefined;
   }) => Promise<UserPrincipal | undefined>;
+  resolveSandbox?: (scope: {
+    buildSessionId: BuildSessionId;
+    organizationId: OrganizationId;
+    projectId: ProjectId;
+  }) => Promise<CheckpointSandbox> | CheckpointSandbox;
   /**
    * Resolved per request so the store is created only when the authoritative
    * database is configured, and so tests can inject their own.
@@ -500,6 +514,44 @@ async function guardWorkspaceRead(input: {
     return apiErrorResponse({
       code: DENIAL_BY_REASON[decision.reason] ?? "forbidden",
       message: "You are not authorized to read this project.",
+      requestId: input.requestId,
+    });
+  }
+
+  const buildSession = await input.deps
+    .store()
+    .getBuildSession(input.scope, input.buildSessionId);
+  if (!buildSession) {
+    return apiErrorResponse({
+      code: "not_found",
+      message: "No such build session.",
+      requestId: input.requestId,
+    });
+  }
+
+  return undefined;
+}
+
+async function guardWorkspaceRestore(input: {
+  buildSessionId: BuildSessionId;
+  deps: WorkspaceRouteDeps;
+  principal: UserPrincipal;
+  requestId: string;
+  scope: TenantScope;
+}): Promise<Response | undefined> {
+  const decision = await authorizeProjectAction({
+    action: "checkpoint:restore",
+    deps: input.deps,
+    organizationId: input.scope.organizationId,
+    principal: input.principal,
+    projectId: input.scope.projectId,
+  });
+
+  if (!decision.allowed) {
+    return apiErrorResponse({
+      code: DENIAL_BY_REASON[decision.reason] ?? "forbidden",
+      message:
+        "You are not authorized to restore checkpoints for this project.",
       requestId: input.requestId,
     });
   }
@@ -888,6 +940,145 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
       }
 
       return c.json(WorkspaceFileSchema.parse(read.answer), 200);
+    },
+    /**
+     * Restores the project workspace from a Git checkpoint bundle into the build sandbox.
+     */
+    restore: async (c: HandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+
+      const principal = await deps.resolvePrincipal({
+        cookieHeader: c.req.header("cookie"),
+      });
+      if (!principal) {
+        return unauthenticatedResponse(rid);
+      }
+
+      const buildSessionId = BuildSessionIdSchema.safeParse(
+        c.req.param("buildSessionId")
+      );
+      const scope = WorkspaceScopeSchema.safeParse({
+        organizationId: c.req.query("organizationId"),
+        projectId: c.req.query("projectId"),
+      });
+      const body = WorkspaceRestoreRequestSchema.safeParse(await c.req.json());
+      if (!(buildSessionId.success && scope.success && body.success)) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message:
+            "A build session id, scope identifiers, and valid checkpointId are required.",
+          requestId: rid,
+        });
+      }
+
+      const refusal = await guardWorkspaceRestore({
+        buildSessionId: buildSessionId.data,
+        deps,
+        principal,
+        requestId: rid,
+        scope: scope.data,
+      });
+      if (refusal) {
+        return refusal;
+      }
+
+      const checkpointId =
+        body.data.checkpointId ??
+        (body.data.checkpointDigest
+          ? `${scope.data.organizationId}/${scope.data.projectId}/${body.data.checkpointDigest}`
+          : undefined);
+
+      if (!checkpointId) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message: "A checkpointId or checkpointDigest is required.",
+          requestId: rid,
+        });
+      }
+
+      try {
+        await checkpoints.read(checkpointId);
+      } catch {
+        return apiErrorResponse({
+          code: "not_found",
+          message: "No such checkpoint exists.",
+          requestId: rid,
+        });
+      }
+
+      const buildSession = await deps
+        .store()
+        .getBuildSession(scope.data, buildSessionId.data);
+      if (!buildSession) {
+        return apiErrorResponse({
+          code: "not_found",
+          message: "No such build session.",
+          requestId: rid,
+        });
+      }
+
+      const sandbox = deps.resolveSandbox
+        ? await deps.resolveSandbox({
+            buildSessionId: buildSessionId.data,
+            organizationId: scope.data.organizationId,
+            projectId: scope.data.projectId,
+          })
+        : checkpointSandboxFor(
+            await (async () => {
+              const createdSandbox = createBuildSandbox({
+                buildSessionId: buildSessionId.data,
+                organizationId: scope.data.organizationId,
+                projectId: scope.data.projectId,
+                runId: buildSession.runId,
+              });
+              await createdSandbox.start?.();
+              return createdSandbox;
+            })()
+          );
+
+      await restoreSandbox({
+        checkpointId,
+        sandbox,
+        store: checkpoints,
+      });
+
+      const store = deps.store();
+      await store.audit.record(
+        auditEvent({
+          action: "checkpoint.restored",
+          actor: principal,
+          metadata: {
+            buildSessionId: buildSessionId.data,
+            checkpointId,
+          },
+          organizationId: scope.data.organizationId,
+          projectId: scope.data.projectId,
+          requestId: rid,
+        })
+      );
+
+      const parsed = (() => {
+        try {
+          return parseCheckpointId(checkpointId);
+        } catch {
+          return null;
+        }
+      })();
+      const digest =
+        body.data.checkpointDigest ??
+        parsed?.digest ??
+        checkpointId.split(".").pop() ??
+        checkpointId.slice(-64);
+
+      const restoredAt = new Date().toISOString();
+      return c.json(
+        WorkspaceRestoreResponseSchema.parse({
+          checkpointId,
+          digest,
+          restoredAt,
+        }),
+        200
+      );
     },
     /**
      * The project's generated source as a path listing, read from the latest

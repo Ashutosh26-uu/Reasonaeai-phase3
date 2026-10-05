@@ -1,0 +1,266 @@
+.card {
+  position: relative;
+  display: grid;
+  gap: 14px;
+  width: 100%;
+  max-width: 736px;
+  padding: 18px 20px;
+  margin: 12px 0;
+  font-size: 13px;
+  background: var(--raised, #16181d);
+  border: 1px solid var(--line, #282c34);
+  border-radius: 14px;
+  box-shadow: 0 4px 20px #00000020;
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.headerTitle {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink, #ffffff);
+}
+
+.riskBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: capitalize;
+  border-radius: 9999px;
+}
+
+.riskLow {
+  color: #22c55e;
+  background: #22c55e1a;
+  border: 1px solid #22c55e33;
+}
+
+.riskMedium {
+  color: #f59e0b;
+  background: #f59e0b1a;
+  border: 1px solid #f59e0b33;
+}
+
+.riskHigh {
+  color: #ef4444;
+  background: #ef44441a;
+  border: 1px solid #ef444433;
+}
+
+.summary {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-2, #d1d5db);
+}
+
+.rationale {
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-3, #9ca3af);
+  background: var(--surface, #1e222b);
+  border-left: 3px solid var(--line, #374151);
+  border-radius: 4px;
+}
+
+.section {
+  display: grid;
+  gap: 6px;
+}
+
+.sectionLabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-3, #9ca3af);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.steps {
+  padding-left: 20px;
+  margin: 0;
+  line-height: 1.6;
+  color: var(--ink-2, #d1d5db);
+}
+
+.steps li {
+  margin-bottom: 4px;
+}
+
+.files {
+  display: grid;
+  gap: 6px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.fileItem {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--surface, #1e222b);
+  border: 1px solid var(--line, #282c34);
+  border-radius: 6px;
+}
+
+.fileBadge {
+  padding: 1px 6px;
+  font-family: monospace;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  border-radius: 4px;
+}
+
+.actionCreate {
+  color: #34d399;
+  background: #34d39922;
+}
+
+.actionModify {
+  color: #60a5fa;
+  background: #60a5fa22;
+}
+
+.actionDelete {
+  color: #f87171;
+  background: #f8717122;
+}
+
+.filePath {
+  font-family: monospace;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink, #ffffff);
+}
+
+.fileDesc {
+  flex: 1 1 100%;
+  font-size: 11px;
+  color: var(--ink-3, #9ca3af);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+  padding-top: 6px;
+  border-top: 1px solid var(--line, #282c34);
+}
+
+.approveButton {
+  padding: 7px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--shell, #ffffff);
+  cursor: pointer;
+  background: #2563eb;
+  border: 1px solid #3b82f6;
+  border-radius: 8px;
+  transition: background 150ms ease;
+}
+
+.approveButton:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.rejectButton {
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-2, #d1d5db);
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--line, #374151);
+  border-radius: 8px;
+  transition: background 150ms ease;
+}
+
+.rejectButton:hover:not(:disabled) {
+  color: var(--ink, #ffffff);
+  background: var(--surface, #1e222b);
+}
+
+.approveButton:disabled,
+.rejectButton:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.rejectForm {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  padding-top: 6px;
+  border-top: 1px solid var(--line, #282c34);
+}
+
+.rejectTextarea {
+  width: 100%;
+  min-height: 60px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink, #ffffff);
+  resize: vertical;
+  background: var(--surface, #1e222b);
+  border: 1px solid var(--line, #374151);
+  border-radius: 8px;
+}
+
+.rejectActions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.resolved {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
+.resolvedApproved {
+  color: #22c55e;
+  background: #22c55e14;
+  border: 1px solid #22c55e2e;
+}
+
+.resolvedRejected {
+  color: #f87171;
+  background: #f8717114;
+  border: 1px solid #f871712e;
+}
+
+.resolvedStatus {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.feedbackQuote {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-2, #d1d5db);
+}
