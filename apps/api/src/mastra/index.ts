@@ -326,6 +326,7 @@ const storage = new MastraCompositeStore({
 
 export const reasonateCtoRuntime = createReasonateCtoRuntime({
   ...buildSandboxEnvironment,
+  enableTestRunner: true,
   model: frontierModel,
   storage,
   workspace: reasonateBuildWorkspace,

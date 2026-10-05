@@ -141,19 +141,18 @@ The model policy in `.context/SPEC.md` is binding: paid frontier-model APIs are 
   - Interactive lifecycle: clicking a bubble immediately populates the prompt into the composer and focuses the textarea for review or submission; provides refresh/shuffle to cycle alternative ideas, and dismiss capability for the active turn; dynamically hides while a run is executing, cancels stale suggestions if the latest turn failed, and resets state upon conversation switches.
   - Covered by comprehensive unit and component tests in `apps/web/components/chat/suggestions.test.ts`, `apps/web/components/chat/suggestion-bubbles.test.tsx`, and `apps/web/components/chat/composer.test.tsx`.
 
+- Merged [PR #20](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/20): workspace interactions, multi-message queues, turn steering, checkpoint diffs, and heartbeat timer isolation.
+- Integrated CTO guidance and subagent tool wiring (superseding PR #19): concise seven-phase guidance, three automatically applied rules, five on-demand skills, scoped project instruction loading (`loadWorkspaceInstructions`) inside verified sandbox root, valid empty `rule://` reads, command-capable verification reviewer, and direct workspace tools materialized for subagents (`scout` gets `read`; `coder` gets `edit`, `read`, `write`; `reviewer` gets `read`; `debugger` gets `edit`, `read`, `write`, and `test_execution`). Activated test runner tool (`enableTestRunner: true`) in production API and worker runtimes.
+
 ### In progress
-
-- Implement workspace interactions and checkpoints in [draft PR #20](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/20) on `codex/workspace-interactions-checkpoints`: preserve animated Beam/PromptInput and one primary control; add attached multi-message queues, safe steering/retry, logical paths, checkpoint diffs, and highlighted source viewing. Follow-up work addresses silent stream failure, stale Stop state, unanswered-question worker starvation, and terminal recovery without lost edits. Real proxy smoke verified ten-second heartbeats over forty seconds and replay after reconnect; focused PostgreSQL/Redis/Docker regressions pass. Final integrated gates and authenticated browser/live-model scenarios remain in progress; exact evidence is tracked in `docs/operations/workspace-interactions.md`. ASR needs the deployment's configured provider; TTS provider integration is being handled separately by the user and is untouched by this follow-up.
-
 - Extend transcript verification to reconnect replay, multiple alternating segments, and failure/cancellation paths; the current authenticated browser check covers a fresh read-only run, completion, reload, and grouping.
 - Complete the `read` tool's sandbox-backed format handling. Resource URLs now resolve through the per-run router, so the protocol half is done; what remains is the format half — archives, documents, notebooks, SQLite, images, and structural summaries need sandbox-compatible readers, and output that exceeds the inline limit needs to spill into the artifact store instead of being truncated, which is also what makes `artifact://` non-empty.
-- Implement mid-turn rule enforcement: rule files carrying regex and ast-grep conditions matched against streaming text, thinking, and tool-argument deltas, either injecting a provenance-marked notice into the offending tool result or interrupting the stream, with fire-once bookkeeping that survives session resume.
 - Derive each worker's tool eligibility from the actual runtime tool inventory rather than static workspace-tool names. The disconnected custom registry was removed because it was not consulted at runtime.
 - Harden the private worker's remaining recovery windows and finish the launch vertical slice. Redis dispatch, leased worker execution, Docker workspace, and PostgreSQL recovery are running locally; object-storage integration and deployment proof remain pending.
 - Select and implement the production object-storage and deployment adapters for the API/worker/Redis/PostgreSQL topology.
 - Finalize the launch authentication architecture and provider decision from current official documentation and security evidence.
 
-### Open pull requests — snapshot after PR #11 merged on 2026-09-30
+### Open pull requests — GitHub snapshot on 2026-10-03
 
 These changes are present on PR branches and are not integrated into `main`. “CLEAN” and “DIRTY” report GitHub's mergeability only; they do not mean review, CI, or the phase exit criteria have passed.
 
@@ -167,12 +166,14 @@ These changes are present on PR branches and are not integrated into `main`. “
 | [#14](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/14) | Open, CLEAN | Immutable release and rollback contract; its provider is a local test memory provider, not production deployment. |
 | [#15](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/15) | Open, DIRTY | Move Mastra conversations and threads from process-local storage to PostgreSQL. Its conversation APIs overlap `main`; reconcile them rather than installing a second route set. Run the real PostgreSQL, Redis, and Docker gates. |
 | [#16](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/16) | Open, DIRTY | Reconnecting CTO stream client and chat UI. Compare against the merged live stream and transcript; carry forward only missing behavior. |
+| [#18](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/18) | Open, CLEAN | Access and plan approval flows. Review grant/decision authorization and restart continuation, reconcile its runtime changes, and require full gates and browser evidence. No GitHub checks or reviews are currently recorded. |
+| [#19](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/pull/19) | Open, draft, CLEAN | CTO guidance, scoped instructions, bundled rules/skills, and verification reviewer. Local gates and independent source review passed; live approved-model behavior evaluation remains pending. Reconcile runtime composition with #18. |
 
-PR #11 is the baseline for conversation work. PRs #15 and #16 need integration against it, not parallel replacement of its routes and UI. PRs #8 and #14 overlap deployment scope; #9 and #12 overlap sensory intake. Keep the eight open PRs in progress until they are reconciled and verified against the relevant phase criteria. GitHub currently reports conflicts on #8, #10, #12, #13, #15, and #16; #9 and #14 are mergeable but still need review and verification.
+PR #11 is the baseline for conversation work. PRs #15 and #16 need integration against it, not parallel replacement of its routes and UI. PRs #8 and #14 overlap deployment scope; #9 and #12 overlap sensory intake; #18 and #19 both change runtime composition. Keep these ten open PRs in progress until reconciled and verified against relevant phase criteria. GitHub reports conflicts on #8, #10, #12, #13, #15, and #16; #9, #14, #18, and #19 are mergeable but still need review and acceptance evidence. The nine pre-existing PRs had empty GitHub status-check rollups when checked; #19 records local evidence and remains draft.
 
 ### Ready to assign
 
-- **Approval completion:** implement authorized `request_access` and `submit_plan` decisions, audit records, browser states, and worker continuation through the existing conversation/run contract. This is a coherent next feature independent of the conflicting PRs.
+- **Approval completion:** review and integrate PR #18's `request_access` and `submit_plan` decisions, audit records, browser states, and worker continuation through the existing conversation/run contract. Require full gates, denied decisions, and restart/browser evidence before treating the approval paths as complete.
 - **Migration integration:** have PR #13's owner resolve conflicts against `main`, prove checksum mismatch handling with real PostgreSQL, and update deployment/rollback notes. Do not start another migration system.
 - **Conversation durability:** have PR #15's owner retain the needed Mastra PostgreSQL storage work, reconcile duplicate conversation routes and schema with merged #11, and verify a process restart with real PostgreSQL/Redis/Docker. Have PR #16's owner compare its client behavior with merged #11 and submit only gaps.
 - **Release path:** reconcile #8's preview/evidence/deployment flow with #14's immutable release contract, then implement a real deployment adapter and an authorized staging smoke test. The memory provider alone is not a release.
@@ -180,7 +181,7 @@ PR #11 is the baseline for conversation work. PRs #15 and #16 need integration a
 
 ### Next
 
-1. Complete the approval paths and harden the private worker's answer-consumption and command-acknowledgement recovery windows.
+1. Review and integrate PR #18's approval paths; harden the private worker's answer-consumption and command-acknowledgement recovery windows.
 2. Reconcile and verify open PRs #13, #15, and #16 against the merged conversation baseline; keep only behavior absent from `main`.
 3. Reconcile PRs #8 and #14, implement a real selected deployment adapter, and verify an accepted checkpoint at its authorized staging URL.
 4. Integrate PRs #9 and #12 so voice and wireframe intake use one bounded, replaceable gateway.

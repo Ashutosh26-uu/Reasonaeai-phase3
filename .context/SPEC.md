@@ -45,7 +45,7 @@ The product includes:
 - Speech-to-text intake and text-to-speech milestone reporting behind replaceable ASR and TTS adapters.
 - Vision-to-architecture extraction that converts wireframes, screenshots, and flowcharts into a reviewable structured specification.
 - Editable requirements, architecture, acceptance criteria, API contract, and plan.
-- A run-scoped autonomous CTO with the full approved tool, skill, workspace, browser, command, debugging, verification, and deployment surface; it may execute directly or delegate bounded work to scout, coder, debugger, and ephemeral custom agents.
+- A run-scoped autonomous CTO with the full approved tool, skill, workspace, browser, command, debugging, verification, and deployment surface; it may execute directly or delegate bounded work to scout, coder, debugger, reviewer, and ephemeral custom agents.
 - A central, typed, tenant-scoped project-state and event log through which agents coordinate; it is authoritative over agent memory. Optional vector retrieval is scoped and supplemental.
 - Workspace read, search, edit, language intelligence, debugging, execution, browser, and Git checkpoint tools.
 - Persistent organizations, projects, authenticated sessions, build sessions, decisions, runs, artifacts, evidence, previews, deployments, and recovery checkpoints.
@@ -135,7 +135,7 @@ Passkeys, MFA, recovery codes, enterprise SSO, domain verification, and SCIM are
 
 ## Agent architecture
 
-ReasonateAI uses Mastra as the agent platform. Each project build session has one run-scoped ReasonateAI CTO with the complete approved tool, skill, workspace, browser, command, debugging, verification, and deployment surface. The CTO preserves lifecycle context and may perform work directly. It delegates only when specialization or parallelism improves delivery, using a small worker vocabulary: a read-only scout, a full-capability coder, an evidence-driven debugger that can diagnose and repair, and ephemeral custom agents whose system instructions are authored by the CTO for one bounded objective. Frontend, backend, database, infrastructure, accessibility, security, and release engineering are task objectives, not permanent agent identities.
+ReasonateAI uses Mastra as the agent platform. Each project build session has one run-scoped ReasonateAI CTO with the complete approved tool, skill, workspace, browser, command, debugging, verification, and deployment surface. The CTO preserves lifecycle context and may perform work directly. It delegates only when specialization or parallelism improves delivery, using a small worker vocabulary: a read-only scout, a full-capability coder, an evidence-driven debugger, an independent verification-capable reviewer, and ephemeral custom agents for bounded objectives. The reviewer examines coherent implementation changes for correctness and exploitable security flaws and may run scoped check-mode commands; it has no direct source mutation tools, but shell execution is not a read-only guarantee. The CTO owns repairs, integration, final gates, and acceptance. Frontend, backend, database, infrastructure, accessibility, security, and release engineering are task objectives, not permanent agent identities.
 
 An authorized project can contain multiple build sessions, each representing one CTO conversation. The first request for a conversation binds its organization, project, run, sandbox identity, conversation thread, approvals, budget, and eventual deployment records. A repeat request with the same idempotency key reconnects to that conversation; a new key starts a separate one. Later user turns create new runs in the same conversation. Project checkpoints preserve the source workspace across conversations, while at most one run mutates a project's workspace at a time.
 
@@ -209,7 +209,8 @@ Resource invariants:
 - Selectors, ranges, pagination, raw mode, conversion, and artifact recovery are consistent across resource types.
 - Handlers reject traversal, symlink escape, unauthorized scope, ownership violations, and oversized output.
 - Large output returns a stable authorized artifact reference instead of disappearing after truncation.
-- Skills and rules are loaded on demand rather than permanently occupying model context.
+- Rules define constraints; skills describe task procedures. A short bundled policy is automatically included for the CTO and workers, with named immutable `rule://` resources for revisiting it. Detailed skills load on demand through the explicit `skill://` catalog. Project instruction files and bounded relative imports come only from the verified sandbox filesystem; they cannot override platform policy. An empty project-rule listing is normal, and startup enumeration is unnecessary.
+- Safety decisions follow the operation's actual effect, scope, and existing authorization. Ordinary authorized development proceeds without repeated approval; sensitive external effects remain subject to control-plane policy. Prompt guidance supplements enforced controls and never constitutes a security boundary or proof that a review happened.
 
 ## Execution and verification
 
@@ -222,6 +223,7 @@ The product lifecycle is:
 3. Understand multimodal intent; produce editable requirements, architecture, acceptance criteria, and an implementation plan.
 4. Obtain required approval, then create a Git checkpoint.
 5. Implement the smallest coherent change directly or through bounded workers.
+   Review coherent changes independently for correctness, security, and applicable quality gates. Scale review to changed boundaries and retain evidence; after repairs, re-review affected changes.
 6. Start the real application in the sandbox and expose an authorized preview.
 7. Exercise the changed user path in a real browser.
 8. Capture relevant logs, console output, network activity, screenshots, security results, and test evidence.
@@ -270,7 +272,7 @@ TypeScript is pinned to 6.0.3 because Mastra 1.67.0 uses `typescript-paths` 1.5.
 
 ## Agent orchestration foundation
 
-Mastra is the executive-agent foundation. `@reasonateai/cto-runtime` owns the branded ReasonateAI CTO instructions, bounded loop defaults, core scout/coder/debugger definitions, verified run scope, and `AgentController` composition. Ephemeral custom agents remain a product requirement but are not currently registered, because their previous standalone execution bypassed controller governance; they must be reintroduced through the controller with the same verified workload grant. The `apps/api/src/mastra` composition root owns no product policy: it supplies configuration for both the authenticated API artifact and private worker artifact. It receives trusted request context only after company-owned authorization has resolved organization, project, build session, run, and workload grant.
+Mastra is the executive-agent foundation. `@reasonateai/cto-runtime` owns the branded ReasonateAI CTO instructions, configured loop budgets, core scout/coder/debugger/reviewer definitions, bundled guidance, verified run scope, and `AgentController` composition. Ephemeral custom agents remain a product requirement but are not currently registered, because their previous standalone execution bypassed controller governance; they must be reintroduced through the controller with the same verified workload grant. The `apps/api/src/mastra` composition root owns no product policy: it supplies configuration for both the authenticated API artifact and private worker artifact. It receives trusted request context only after company-owned authorization has resolved organization, project, build session, run, and workload grant.
 
 The runtime follows the useful coding-harness properties proven by Spectra and Mastra Code—fresh bounded workers, explicit capability profiles, focused assignments, task state, resumable approvals, child-result correlation, and evidence-based reporting—without copying their product boundary. ReasonateAI remains an autonomous product CTO and software factory that owns intake through deployed product, not a coding TUI.
 
