@@ -203,7 +203,7 @@ export class RunExecutor {
         session.suspensions.register({
           runId: recovery.mastraRunId,
           toolCallId: recovery.toolCallId,
-          toolName: "ask_user",
+          toolName: candidate.pendingToolName ?? "ask_user",
         });
       }
       if (recovery || retainedWorkspace) {
@@ -549,11 +549,13 @@ export class RunExecutor {
     const live = new RunLiveEventMapper({ scope });
     const unsubscribeEvents = input.session.subscribe((event) => {
       const at = new Date();
-      const controllerRunId =
-        event.type === "tool_suspended" && event.toolName === "ask_user"
-          ? (input.session.run.getRunId() ?? undefined)
-          : undefined;
-      if (event.type === "tool_suspended" && event.toolName === "ask_user") {
+      const isSuspension =
+        event.type === "tool_suspended" &&
+        (event.toolName === "ask_user" || event.toolName === "submit_plan");
+      const controllerRunId = isSuspension
+        ? (input.session.run.getRunId() ?? undefined)
+        : undefined;
+      if (isSuspension) {
         pendingQuestion = event.toolCallId;
       }
       if (

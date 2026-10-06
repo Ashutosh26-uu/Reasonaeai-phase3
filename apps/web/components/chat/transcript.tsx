@@ -39,6 +39,7 @@ import {
 import { ActivityOutline } from "./activity";
 import { CheckpointCard } from "./checkpoint-card";
 import { type CheckpointScope, turnCheckpoint } from "./checkpoint-state";
+import { PlanCard } from "./plan-card";
 import {
   projectTranscript,
   type Timeline,
@@ -46,10 +47,13 @@ import {
 } from "./timeline";
 
 export interface TranscriptProps {
-  checkpointScope?: CheckpointScope;
+  checkpointScope?: CheckpointScope | undefined;
   live: boolean;
   messages: ConversationMessage[];
+  onApprovePlan?: ((toolCallId: string) => void) | undefined;
   onEdit: (text: string) => void;
+  onRejectPlan?: ((toolCallId: string, feedback: string) => void) | undefined;
+  onRestore?: (() => void) | undefined;
   onRetry: (text: string, sourceRunId?: string) => void;
   pending: boolean;
   timeline: Timeline;
@@ -172,7 +176,31 @@ function UserMessageActions({
   );
 }
 
-function Entry({ entry }: { entry: TranscriptEntry }) {
+function Entry({
+  entry,
+  onApprovePlan,
+  onRejectPlan,
+}: {
+  entry: TranscriptEntry;
+  onApprovePlan?: ((toolCallId: string) => void) | undefined;
+  onRejectPlan?: ((toolCallId: string, feedback: string) => void) | undefined;
+}) {
+  if (entry.kind === "plan") {
+    return (
+      <PlanCard
+        onApprove={
+          onApprovePlan ? () => onApprovePlan(entry.toolCallId) : undefined
+        }
+        onReject={
+          onRejectPlan
+            ? (feedback) => onRejectPlan(entry.toolCallId, feedback)
+            : undefined
+        }
+        plan={entry.plan}
+        resolved={entry.resolved}
+      />
+    );
+  }
   if (entry.kind === "steering") {
     const status =
       entry.status === "delivered"
@@ -230,7 +258,11 @@ function Entry({ entry }: { entry: TranscriptEntry }) {
   );
 }
 
-function renderEntries(entries: TranscriptEntry[]): ReactNode[] {
+function renderEntries(
+  entries: TranscriptEntry[],
+  onApprovePlan?: ((toolCallId: string) => void) | undefined,
+  onRejectPlan?: ((toolCallId: string, feedback: string) => void) | undefined
+): ReactNode[] {
   const rendered: ReactNode[] = [];
   for (let index = 0; index < entries.length; ) {
     const entry = entries[index];
@@ -239,7 +271,14 @@ function renderEntries(entries: TranscriptEntry[]): ReactNode[] {
       continue;
     }
     if (entry.kind !== "tool") {
-      rendered.push(<Entry entry={entry} key={entry.id} />);
+      rendered.push(
+        <Entry
+          entry={entry}
+          key={entry.id}
+          onApprovePlan={onApprovePlan}
+          onRejectPlan={onRejectPlan}
+        />
+      );
       index += 1;
       continue;
     }
@@ -252,7 +291,14 @@ function renderEntries(entries: TranscriptEntry[]): ReactNode[] {
       }
     }
     if (group.length === 1) {
-      rendered.push(<Entry entry={entry} key={entry.id} />);
+      rendered.push(
+        <Entry
+          entry={entry}
+          key={entry.id}
+          onApprovePlan={onApprovePlan}
+          onRejectPlan={onRejectPlan}
+        />
+      );
     } else {
       const expanded = group.some(
         (toolEntry) =>
@@ -276,7 +322,12 @@ function renderEntries(entries: TranscriptEntry[]): ReactNode[] {
           </CollapsibleTrigger>
           <CollapsibleContent className="transcript-tool-group-content">
             {group.map((toolEntry) => (
-              <Entry entry={toolEntry} key={toolEntry.id} />
+              <Entry
+                entry={toolEntry}
+                key={toolEntry.id}
+                onApprovePlan={onApprovePlan}
+                onRejectPlan={onRejectPlan}
+              />
             ))}
           </CollapsibleContent>
         </Collapsible>
@@ -290,7 +341,10 @@ function renderEntries(entries: TranscriptEntry[]): ReactNode[] {
 export function Transcript({
   checkpointScope,
   messages,
+  onApprovePlan,
   onEdit,
+  onRejectPlan,
+  onRestore,
   onRetry,
   pending,
   timeline,
@@ -346,7 +400,7 @@ export function Transcript({
                   />
                 </Message>
               )}
-              {renderEntries(turn.entries)}
+              {renderEntries(turn.entries, onApprovePlan, onRejectPlan)}
               {(answer || interrupted) && (
                 <MessageActions>
                   {answer && <CopyAction text={answer} />}
@@ -365,6 +419,7 @@ export function Transcript({
                     ? {}
                     : { scope: checkpointScope })}
                   key={`${turn.id}:${checkpoint.sequence}`}
+                  onRestore={onRestore}
                   turn={checkpoint}
                 />
               )}

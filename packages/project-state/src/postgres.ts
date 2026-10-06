@@ -115,6 +115,9 @@ function conversationRetryKey(input: { idempotencyKey: string; runId: RunId }) {
   return JSON.stringify(["retry", input.runId, input.idempotencyKey]);
 }
 
+const PLAN_APPROVE_PATTERN = /^(approved|approve|yes|true)$/i;
+const PLAN_REJECT_PATTERN = /^(rejected|reject|no|false)$/i;
+
 async function resolveConversationPrompt(
   client: PoolClient,
   input: {
@@ -209,6 +212,7 @@ export interface RunnableRun {
   organizationId: OrganizationId;
   pendingMastraRunId: string | null;
   pendingToolCallId: string | null;
+  pendingToolName: string | null;
   projectId: ProjectId;
   runId: RunId;
   sandboxEnvironmentId: SandboxEnvironmentId;
@@ -354,8 +358,10 @@ export interface ProjectStateStore {
     userSessionId: SessionId;
   }) => Promise<BuildSessionAllocation>;
   answerRunQuestion: (input: {
-    answer: string;
+    answer?: string;
+    approved?: boolean;
     buildSessionId: BuildSessionId;
+    feedback?: string;
     requestedByUserId: UserId;
     runId: RunId;
     scope: TenantScope;
@@ -1142,9 +1148,11 @@ export function createProjectStateStore(config: {
   }): Promise<RunEventEnvelope> {
     return await withTransaction(async (client) => {
       if (
-        input.type === "approval.requested" &&
+        (input.type === "approval.requested" ||
+          input.type === "run.plan_proposed") &&
         input.payload.kind === "tool_suspended" &&
-        input.payload.toolName === "ask_user"
+        (input.payload.toolName === "ask_user" ||
+          input.payload.toolName === "submit_plan")
       ) {
         if (
           typeof input.payload.toolCallId !== "string" ||
@@ -1157,6 +1165,7 @@ export function createProjectStateStore(config: {
         const updated = await client.query(
           `update runs set status = 'awaiting_approval',
              pending_tool_call_id = $4, pending_mastra_run_id = $5,
+             pending_tool_name = $6,
              pending_answer = null,
              pending_answered_by = null, updated_at = now()
            where run_id = $1 and organization_id = $2 and project_id = $3
@@ -1167,6 +1176,7 @@ export function createProjectStateStore(config: {
             input.scope.projectId,
             input.payload.toolCallId,
             input.controllerRunId,
+            input.payload.toolName,
           ]
         );
         if (updated.rowCount !== 1) {
@@ -1177,9 +1187,65 @@ export function createProjectStateStore(config: {
     });
   }
 
+  function formatPlanOrQuestionAnswer(input: {
+    answer?: string | undefined;
+    approved?: boolean | undefined;
+    feedback?: string | undefined;
+  }): string {
+    if (input.approved !== undefined) {
+      return JSON.stringify({
+        approved: input.approved,
+        ...(input.feedback ? { feedback: input.feedback } : {}),
+      });
+    }
+    return input.answer ?? "";
+  }
+
+  function parsePlanDecisionPayload(
+    resolvedAnswer: string,
+    approved?: boolean | undefined,
+    feedback?: string | undefined
+  ): { planApproved: boolean; planFeedback: string | null } {
+    if (approved !== undefined) {
+      return {
+        planApproved: approved,
+        planFeedback: feedback ?? null,
+      };
+    }
+    const trimmed = resolvedAnswer.trim();
+    if (PLAN_APPROVE_PATTERN.test(trimmed)) {
+      return { planApproved: true, planFeedback: null };
+    }
+    if (PLAN_REJECT_PATTERN.test(trimmed)) {
+      return { planApproved: false, planFeedback: null };
+    }
+    try {
+      const parsed = JSON.parse(resolvedAnswer);
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        typeof parsed.approved === "boolean"
+      ) {
+        return {
+          planApproved: parsed.approved,
+          planFeedback:
+            typeof parsed.feedback === "string" ? parsed.feedback : null,
+        };
+      }
+    } catch {
+      // not JSON
+    }
+    return {
+      planApproved: false,
+      planFeedback: trimmed.length > 0 ? trimmed : (feedback ?? null),
+    };
+  }
+
   async function answerRunQuestion(input: {
-    answer: string;
+    answer?: string;
+    approved?: boolean;
     buildSessionId: BuildSessionId;
+    feedback?: string;
     requestedByUserId: UserId;
     runId: RunId;
     scope: TenantScope;
@@ -1189,9 +1255,10 @@ export function createProjectStateStore(config: {
       const result = await client.query<{
         pending_answer: string | null;
         pending_tool_call_id: string | null;
+        pending_tool_name: string | null;
         status: RunStatus;
       }>(
-        `select status, pending_tool_call_id, pending_answer from runs
+        `select status, pending_tool_call_id, pending_tool_name, pending_answer from runs
           where run_id = $1 and organization_id = $2 and project_id = $3
             and build_session_id = $4 for update`,
         [
@@ -1208,14 +1275,38 @@ export function createProjectStateStore(config: {
       ) {
         return "conflict";
       }
+
+      const resolvedAnswer = formatPlanOrQuestionAnswer(input);
       if (run.pending_answer !== null) {
-        return run.pending_answer === input.answer ? "replayed" : "conflict";
+        return run.pending_answer === resolvedAnswer ? "replayed" : "conflict";
       }
+
       await client.query(
         `update runs set pending_answer = $2, pending_answered_by = $3,
            updated_at = now() where run_id = $1`,
-        [input.runId, input.answer, input.requestedByUserId]
+        [input.runId, resolvedAnswer, input.requestedByUserId]
       );
+
+      if (run.pending_tool_name === "submit_plan") {
+        const { planApproved, planFeedback } = parsePlanDecisionPayload(
+          resolvedAnswer,
+          input.approved,
+          input.feedback
+        );
+        await insertRunEvent(client, {
+          payload: {
+            approved: planApproved,
+            feedback: planFeedback,
+            kind: "plan_decided",
+            requestedByUserId: input.requestedByUserId,
+            toolCallId: input.toolCallId,
+          },
+          runId: input.runId,
+          scope: input.scope,
+          type: "run.plan_decided",
+        });
+      }
+
       await insertRunEvent(client, {
         payload: {
           kind: "answer_submitted",
@@ -1256,6 +1347,7 @@ export function createProjectStateStore(config: {
       }
       await client.query(
         `update runs set status = 'running', pending_tool_call_id = null,
+         pending_tool_name = null,
          pending_answer = null, pending_answered_by = null,
          pending_mastra_run_id = null, parked_at = null, updated_at = now()
          where run_id = $1`,
@@ -1355,6 +1447,7 @@ export function createProjectStateStore(config: {
               r.user_message,
               r.user_attachments,
               r.pending_tool_call_id,
+              r.pending_tool_name,
               r.pending_mastra_run_id
          from runs r
          join build_sessions bs
@@ -1397,6 +1490,7 @@ export function createProjectStateStore(config: {
       organizationId: OrganizationIdSchema.parse(row.organization_id),
       pendingMastraRunId: row.pending_mastra_run_id ?? null,
       pendingToolCallId: row.pending_tool_call_id ?? null,
+      pendingToolName: row.pending_tool_name ?? null,
       projectId: ProjectIdSchema.parse(row.project_id),
       runId: RunIdSchema.parse(row.run_id),
       sandboxEnvironmentId: SandboxEnvironmentIdSchema.parse(

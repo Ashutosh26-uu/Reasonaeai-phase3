@@ -33,6 +33,7 @@ import {
 import { readRunScope, sandboxIdFor } from "./run-scope.js";
 import { createWorkspaceEditTool } from "./tools/edit.js";
 import { ReadSnapshotStore } from "./tools/read-snapshots.js";
+import { createSubmitPlanTool } from "./tools/submit-plan.js";
 import { createWorkspaceReadTool } from "./tools/workspace-read.js";
 import { createWorkspaceWriteTool } from "./tools/write.js";
 
@@ -214,11 +215,14 @@ function createRuntimeTools(
         : { root: config.workspaceRoot }),
     }),
   };
+  const submitPlanTool = createSubmitPlanTool();
   return {
     fileTools,
+    submitPlanTool,
     testExecutionTool,
     tools: {
       ...fileTools,
+      submit_plan: submitPlanTool,
       ...(config.enableTestRunner ? { test_execution: testExecutionTool } : {}),
     },
   };
@@ -337,13 +341,14 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     snapshotsByRequest.set(requestContext, snapshots);
     return Promise.resolve(snapshots);
   };
-  const { fileTools, testExecutionTool, tools } = createRuntimeTools(
-    config,
-    resolveWorkspace,
-    resolveFilesystem,
-    resolveSnapshots,
-    resolveResources
-  );
+  const { fileTools, submitPlanTool, testExecutionTool, tools } =
+    createRuntimeTools(
+      config,
+      resolveWorkspace,
+      resolveFilesystem,
+      resolveSnapshots,
+      resolveResources
+    );
 
   const sessionStartedAt = new Date();
   const instructionsByRequest = new WeakMap<
@@ -436,7 +441,7 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
           config.model
       ),
     overrides: workerOverrides,
-    tools: fileTools,
+    tools: { ...fileTools, submit_plan: submitPlanTool },
   });
   const subagents =
     budget === undefined

@@ -1,3 +1,7 @@
+import type {
+  ExecuteCommandOptions,
+  WorkspaceSandbox,
+} from "@mastra/core/workspace";
 import { WORKSPACE_TOOLS, Workspace } from "@mastra/core/workspace";
 import { DockerSandbox } from "@mastra/docker";
 import type {
@@ -9,7 +13,59 @@ import {
   readRunScope,
   sandboxIdFor,
 } from "@reasonateai/cto-runtime/run-scope";
+import type { CheckpointSandbox } from "@reasonateai/sandbox/checkpoint";
 import { SandboxFilesystem } from "./sandbox-filesystem";
+
+export function checkpointSandboxFor(
+  sandbox: WorkspaceSandbox
+): CheckpointSandbox {
+  const executeCommand = sandbox.executeCommand?.bind(sandbox);
+  const writeFiles = sandbox.writeFiles?.bind(sandbox);
+
+  return {
+    runCommand: async (request) => {
+      if (executeCommand === undefined) {
+        throw new Error("The resolved sandbox cannot execute commands.");
+      }
+
+      const options: ExecuteCommandOptions = {};
+      if (request.cwd !== undefined) {
+        options.cwd = request.cwd;
+      }
+      if (request.env !== undefined) {
+        options.env = request.env;
+      }
+      if (request.timeoutMs !== undefined) {
+        options.timeout = request.timeoutMs;
+      }
+
+      const startedAt = Date.now();
+      const result = await executeCommand(
+        request.command,
+        request.args,
+        options
+      );
+      return {
+        durationMs: Date.now() - startedAt,
+        exitCode: result.exitCode,
+        stderr: result.stderr,
+        stdout: result.stdout,
+        timedOut: false,
+      };
+    },
+    writeFile: async (relativePath, content) => {
+      if (writeFiles === undefined) {
+        throw new Error("The resolved sandbox cannot write files.");
+      }
+      await writeFiles([
+        {
+          content: typeof content === "string" ? content : Buffer.from(content),
+          path: relativePath,
+        },
+      ]);
+    },
+  };
+}
 
 const SANDBOX_CPU_PERIOD = 100_000;
 const SANDBOX_CPU_QUOTA = 100_000;
@@ -74,7 +130,7 @@ export function resolveBuildSandboxCacheVolume(
   return candidate;
 }
 
-function createBuildSandbox(scope: RunScope) {
+export function createBuildSandbox(scope: RunScope) {
   const sandboxId = sandboxIdFor(scope);
   const network = resolveBuildSandboxNetworkMode();
   const cacheVolume = resolveBuildSandboxCacheVolume();

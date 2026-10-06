@@ -254,6 +254,98 @@ describeWithDatabase("run execution", () => {
     expect(await leaseRow(harness, allocated.candidate.runId)).toBeUndefined();
   });
 
+  it("keeps a suspended submit_plan run leased, then resumes the same session with the plan decision", async () => {
+    const scripted = scriptedRuntime({
+      events: [
+        {
+          message: streamed("plan-message", "Here is the implementation plan."),
+          type: "message_update",
+        },
+      ],
+    });
+    const executor = createExecutor({
+      harness,
+      holder: "worker-plan",
+      runtime: scripted.runtime,
+    });
+    const allocated = await fixture("Review the plan");
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+    session.complete([
+      {
+        args: {
+          files: [
+            {
+              action: "create",
+              description: "New file",
+              path: "src/new.ts",
+            },
+          ],
+          rationale: "Needed for feature",
+          risk: "low",
+          steps: ["Create file"],
+          summary: "Plan summary",
+          title: "Plan Title",
+        },
+        resumeSchema: '{"type":"object"}',
+        suspendPayload: {
+          files: [
+            {
+              action: "create",
+              description: "New file",
+              path: "src/new.ts",
+            },
+          ],
+          rationale: "Needed for feature",
+          risk: "low",
+          steps: ["Create file"],
+          summary: "Plan summary",
+          title: "Plan Title",
+        },
+        toolCallId: "plan-1",
+        toolName: "submit_plan",
+        type: "tool_suspended",
+      },
+      { reason: "suspended", type: "agent_end" },
+    ]);
+    await vi.waitFor(async () => {
+      expect(await runStatus(harness, allocated)).toBe("awaiting_approval");
+    });
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeDefined();
+
+    const runRow = await harness.pool.query<{
+      pending_tool_name: string | null;
+    }>("select pending_tool_name from runs where run_id = $1", [
+      allocated.candidate.runId,
+    ]);
+    expect(runRow.rows[0]?.pending_tool_name).toBe("submit_plan");
+
+    const decision = { approved: true, feedback: "Approved, go ahead" };
+    expect(
+      await harness.store.answerRunQuestion({
+        answer: JSON.stringify(decision),
+        buildSessionId: allocated.buildSessionId,
+        requestedByUserId: UserIdSchema.parse(randomUUID()),
+        runId: allocated.candidate.runId,
+        scope: allocated.scope,
+        toolCallId: "plan-1",
+      })
+    ).toBe("accepted");
+
+    await vi.waitFor(
+      () => {
+        expect(session.lastResumeData).toBe(JSON.stringify(decision));
+      },
+      { timeout: 3000 }
+    );
+    expect(session.lastResumedToolCallId).toBe("plan-1");
+    session.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await attempt).toBe("succeeded");
+    expect(await runStatus(harness, allocated)).toBe("completed");
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeUndefined();
+  });
+
   it("reclaims an expired suspended run from its durable controller identity", async () => {
     const allocated = await fixture("Ask for the region");
     const oldLease = await harness.store.beginRun({

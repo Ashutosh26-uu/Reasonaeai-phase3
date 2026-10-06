@@ -469,7 +469,7 @@ function checkpointIdFor(scope: CheckpointScope, digest: string): string {
   return `${scope.organizationId}.${scope.projectId}.${digest}`;
 }
 
-function parseCheckpointId(checkpointId: string): {
+export function parseCheckpointId(checkpointId: string): {
   digest: string;
   organizationId: OrganizationId;
   projectId: ProjectId;

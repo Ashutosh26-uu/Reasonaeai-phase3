@@ -11,6 +11,7 @@ import {
   EMPTY_TIMELINE,
   foldDurable,
   foldLive,
+  pendingPlan,
   pendingQuestion,
   projectTranscript,
 } from "./timeline";
@@ -176,6 +177,101 @@ describe("conversation transcript", () => {
       )
     );
     expect(pendingQuestion(resolved, runId)).toBeUndefined();
+  });
+  it("tracks pending structured plan proposals and clears on decision or terminal event", () => {
+    const plan = {
+      files: [
+        {
+          action: "create" as const,
+          description: "Main entry point",
+          path: "src/index.ts",
+        },
+      ],
+      rationale: "Implement the feature architecture",
+      risk: "low",
+      steps: ["Create entry point", "Write tests"],
+      summary: "Add new feature module",
+      title: "Feature Implementation Plan",
+    };
+    const proposed = event(
+      4,
+      {
+        args: plan,
+        kind: "tool_suspended",
+        toolCallId: "plan-1",
+        toolName: "submit_plan",
+      },
+      runId,
+      "run.plan_proposed"
+    );
+    const timeline = foldDurable(EMPTY_TIMELINE, proposed);
+    expect(pendingPlan(timeline, runId)).toEqual({
+      plan,
+      toolCallId: "plan-1",
+    });
+
+    const approved = foldDurable(
+      timeline,
+      event(
+        5,
+        {
+          approved: true,
+          toolCallId: "plan-1",
+        },
+        runId,
+        "run.plan_decided"
+      )
+    );
+    expect(pendingPlan(approved, runId)).toBeUndefined();
+  });
+  it("renders plan proposals as plan transcript entries with approval outcome", () => {
+    const plan = {
+      files: [
+        {
+          action: "modify" as const,
+          description: "Update config",
+          path: "config.json",
+        },
+      ],
+      rationale: "Update production configuration",
+      risk: "medium",
+      steps: ["Edit config.json"],
+      summary: "Config update",
+      title: "Update Config Plan",
+    };
+    const history = [
+      event(
+        1,
+        {
+          args: plan,
+          kind: "tool_suspended",
+          toolCallId: "plan-call",
+          toolName: "submit_plan",
+        },
+        runId,
+        "run.plan_proposed"
+      ),
+      event(
+        2,
+        {
+          approved: true,
+          toolCallId: "plan-call",
+        },
+        runId,
+        "run.plan_decided"
+      ),
+    ];
+    const entries = projectTranscript(
+      history.reduce(foldDurable, EMPTY_TIMELINE),
+      []
+    )[0]?.entries;
+    expect(entries).toHaveLength(1);
+    expect(entries?.[0]).toMatchObject({
+      kind: "plan",
+      plan,
+      resolved: { approved: true },
+      toolCallId: "plan-call",
+    });
   });
   it("renders the reported sequence at equal timestamps and with tool results arriving later", () => {
     const timeline = events.reduce(foldDurable, EMPTY_TIMELINE);

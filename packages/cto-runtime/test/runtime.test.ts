@@ -49,6 +49,7 @@ describe("ReasonateAI CTO composition", () => {
     expect(Object.keys(await runtime.mainAgent.listTools()).sort()).toEqual([
       "edit",
       "read",
+      "submit_plan",
       "write",
     ]);
   });
@@ -170,5 +171,27 @@ describe("ReasonateAI CTO composition", () => {
     const debuggerSubagent = subagents.find((s) => s.id === "debugger");
     expect(debuggerSubagent).toBeDefined();
     expect(debuggerSubagent?.tools).toHaveProperty("test_execution");
+  });
+
+  it("provides submit_plan tool to coder subagent", () => {
+    const runtime = createReasonateCtoRuntime({
+      model: "openai/gpt-5-mini",
+      workspace,
+    });
+
+    const subagents =
+      (
+        runtime.controller as unknown as {
+          config: {
+            subagents?: Array<{
+              id: string;
+              tools?: Record<string, unknown>;
+            }>;
+          };
+        }
+      ).config.subagents ?? [];
+    const coderSubagent = subagents.find((s) => s.id === "coder");
+    expect(coderSubagent).toBeDefined();
+    expect(coderSubagent?.tools).toHaveProperty("submit_plan");
   });
 });

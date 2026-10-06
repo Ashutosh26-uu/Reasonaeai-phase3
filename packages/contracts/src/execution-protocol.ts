@@ -30,16 +30,76 @@ export type RunCancellationAccepted = z.infer<
   typeof RunCancellationAcceptedSchema
 >;
 
-export const RunAnswerRequestSchema = z.strictObject({
-  answer: z.string().trim().min(1).max(20_000),
-  toolCallId: z.string().min(1).max(256),
-});
+export const RunAnswerRequestSchema = z
+  .strictObject({
+    answer: z.string().trim().min(1).max(20_000).optional(),
+    approved: z.boolean().optional(),
+    feedback: z.string().max(20_000).optional(),
+    toolCallId: z.string().min(1).max(256),
+  })
+  .refine(
+    (data) => data.answer !== undefined || data.approved !== undefined,
+    "Either answer or approved must be provided."
+  );
+export type RunAnswerRequest = z.infer<typeof RunAnswerRequestSchema>;
 
 export const RunAnswerAcceptedSchema = z.strictObject({
   accepted: z.literal(true),
   runId: RunIdSchema,
   toolCallId: z.string(),
 });
+export type RunAnswerAccepted = z.infer<typeof RunAnswerAcceptedSchema>;
+
+export const PlanProposedFileActionSchema = z.enum([
+  "create",
+  "modify",
+  "delete",
+]);
+export type PlanProposedFileAction = z.infer<
+  typeof PlanProposedFileActionSchema
+>;
+
+export const PlanProposedFileSchema = z.strictObject({
+  action: PlanProposedFileActionSchema,
+  description: z.string().min(1).max(2000),
+  path: z.string().min(1).max(4096),
+});
+export type PlanProposedFile = z.infer<typeof PlanProposedFileSchema>;
+
+export const PlanProposalSchema = z.strictObject({
+  files: z.array(PlanProposedFileSchema).min(1).max(100),
+  rationale: z.string().min(1).max(10_000),
+  risk: z.string().min(1).max(2000),
+  steps: z.array(z.string().min(1).max(2000)).min(1).max(50),
+  summary: z.string().min(1).max(5000),
+  title: z.string().min(1).max(256),
+});
+export type PlanProposal = z.infer<typeof PlanProposalSchema>;
+
+export const PlanDecisionSchema = z.strictObject({
+  approved: z.boolean(),
+  feedback: z.string().max(20_000).optional(),
+});
+export type PlanDecision = z.infer<typeof PlanDecisionSchema>;
+
+export const RunPlanDecisionRequestSchema = z.strictObject({
+  approved: z.boolean(),
+  feedback: z.string().max(20_000).optional(),
+  toolCallId: z.string().min(1).max(256),
+});
+export type RunPlanDecisionRequest = z.infer<
+  typeof RunPlanDecisionRequestSchema
+>;
+
+export const RunPlanDecisionAcceptedSchema = z.strictObject({
+  accepted: z.literal(true),
+  approved: z.boolean(),
+  runId: RunIdSchema,
+  toolCallId: z.string(),
+});
+export type RunPlanDecisionAccepted = z.infer<
+  typeof RunPlanDecisionAcceptedSchema
+>;
 
 export const ArtifactIdSchema = z.uuid().brand<"ArtifactId">();
 export type ArtifactId = z.infer<typeof ArtifactIdSchema>;
@@ -94,6 +154,8 @@ export const RunEventTypeSchema = z.enum([
   "run.repair_verified",
   "run.repair_failed",
   "run.parked",
+  "run.plan_proposed",
+  "run.plan_decided",
 ]);
 export type RunEventType = z.infer<typeof RunEventTypeSchema>;
 
@@ -372,6 +434,33 @@ export const ReleaseDescriptorSchema = z.strictObject({
   url: z.url(),
 });
 export type ReleaseDescriptor = z.infer<typeof ReleaseDescriptorSchema>;
+
+export const WorkspaceRestoreRequestSchema = z
+  .strictObject({
+    checkpointDigest: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+    checkpointId: z.string().min(1).max(512).optional(),
+    organizationId: OrganizationIdSchema.optional(),
+    projectId: ProjectIdSchema.optional(),
+  })
+  .refine(
+    (data) => Boolean(data.checkpointDigest || data.checkpointId),
+    "Either checkpointDigest or checkpointId must be provided."
+  );
+export type WorkspaceRestoreRequest = z.infer<
+  typeof WorkspaceRestoreRequestSchema
+>;
+
+export const WorkspaceRestoreResponseSchema = z.strictObject({
+  checkpointId: z.string().min(1).max(512),
+  digest: z.string().min(1).max(64),
+  restoredAt: IsoDateTimeSchema,
+});
+export type WorkspaceRestoreResponse = z.infer<
+  typeof WorkspaceRestoreResponseSchema
+>;
 
 export const runEventTopic = (runId: string): string =>
   `reasonateai.run.events.${runId}`;

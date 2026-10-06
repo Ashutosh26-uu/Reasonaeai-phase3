@@ -127,3 +127,130 @@
     padding: 12px 10px;
   }
 }
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 9px;
+}
+
+.toolbar .caption {
+  margin: 0;
+}
+
+.restoreButton {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--foreground);
+  cursor: pointer;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  transition: background 150ms ease;
+}
+
+.restoreButton:hover:not(:disabled) {
+  background: var(--line, #374151);
+}
+
+.restoreButton:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.confirmModal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #00000080;
+  backdrop-filter: blur(2px);
+}
+
+.confirmBox {
+  display: grid;
+  gap: 12px;
+  width: min(90vw, 440px);
+  padding: 20px;
+  background: var(--raised, #16181d);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px #00000040;
+}
+
+.confirmBox h4 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.confirmBox p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+.confirmBox code {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--foreground);
+}
+
+.restoreError {
+  font-size: 12px;
+  color: #ef4444;
+}
+
+.confirmActions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.cancelButton {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.confirmRestoreButton {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 550;
+  color: #ffffff;
+  cursor: pointer;
+  background: #dc2626;
+  border: 1px solid #ef4444;
+  border-radius: 6px;
+}
+
+.confirmRestoreButton:disabled,
+.cancelButton:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.restoredBanner {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #22c55e;
+}
