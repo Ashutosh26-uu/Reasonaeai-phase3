@@ -13,6 +13,7 @@ import {
   EMPTY_TIMELINE,
   foldDurable,
   foldLive,
+  reconcileHistory,
   type Timeline,
 } from "./timeline";
 
@@ -47,28 +48,16 @@ export function useRunStream(input: RunStreamInput) {
   }
 
   useEffect(() => {
-    const retainedRuns = new Set<string>(
-      historyEvents.map((event) => event.runId)
-    );
-    if (active?.pendingRunId) {
-      retainedRuns.add(active.pendingRunId);
-    }
-    setState((current) => ({
-      identity,
-      timeline: historyEvents.reduce(
-        foldDurable,
-        current.identity === identity
-          ? {
-              ...current.timeline,
-              runs: Object.fromEntries(
-                Object.entries(current.timeline.runs).filter(([runId]) =>
-                  retainedRuns.has(runId)
-                )
-              ),
-            }
-          : EMPTY_TIMELINE
-      ),
-    }));
+    setState((current) => {
+      const timeline = reconcileHistory(
+        current.identity === identity ? current.timeline : EMPTY_TIMELINE,
+        historyEvents,
+        active?.pendingRunId
+      );
+      return current.identity === identity && current.timeline === timeline
+        ? current
+        : { identity, timeline };
+    });
   }, [identity, historyEvents, active?.pendingRunId]);
 
   const buildSessionId = active?.buildSessionId;

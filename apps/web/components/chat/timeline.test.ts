@@ -14,6 +14,7 @@ import {
   pendingPlan,
   pendingQuestion,
   projectTranscript,
+  reconcileHistory,
 } from "./timeline";
 
 const organizationId = randomUUID();
@@ -37,6 +38,34 @@ const event = (
     sequence,
     type,
   });
+
+describe("active history reconciliation", () => {
+  it("keeps unchanged snapshots stable even when callers recreate the event array", () => {
+    const saved = event(1, { text: "Saved answer" });
+    const timeline = reconcileHistory(EMPTY_TIMELINE, [saved]);
+    expect(reconcileHistory(timeline, [saved])).toBe(timeline);
+    expect(reconcileHistory(EMPTY_TIMELINE, [])).toBe(EMPTY_TIMELINE);
+  });
+  it("removes the superseded suffix while preserving the active replacement", () => {
+    const kept = event(1, { text: "Retained prefix" });
+    const supersededId = randomUUID();
+    const replacementId = randomUUID();
+    const superseded = event(1, { text: "Superseded answer" }, supersededId);
+    const replacement = event(1, { text: "New answer" }, replacementId);
+    const timeline = [kept, superseded, replacement].reduce(
+      foldDurable,
+      EMPTY_TIMELINE
+    );
+    const rewound = reconcileHistory(timeline, [kept], replacementId);
+    expect(Object.keys(rewound.runs).sort()).toEqual(
+      [runId, replacementId].sort()
+    );
+    expect(rewound.runs[replacementId]?.events[1]?.payload.text).toBe(
+      "New answer"
+    );
+    expect(reconcileHistory(rewound, [kept], replacementId)).toBe(rewound);
+  });
+});
 const snapshot = MessageSnapshotSchema.parse({
   finished: true,
   messageId: "m",

@@ -20,6 +20,25 @@ export interface Timeline {
 export const EMPTY_TIMELINE: Timeline = { runs: {}, sawLiveText: false };
 const emptyRun = (): RunTimeline => ({ events: {}, live: {}, workers: {} });
 
+/** Reconcile the active history without scheduling updates for unchanged input. */
+export function reconcileHistory(
+  timeline: Timeline,
+  events: RunEventEnvelope[],
+  pendingRunId?: string | null
+): Timeline {
+  const retained = new Set<string>(events.map((event) => event.runId));
+  if (pendingRunId) {
+    retained.add(pendingRunId);
+  }
+  const entries = Object.entries(timeline.runs);
+  const active = entries.filter(([runId]) => retained.has(runId));
+  const base =
+    active.length === entries.length
+      ? timeline
+      : { ...timeline, runs: Object.fromEntries(active) };
+  return events.reduce(foldDurable, base);
+}
+
 function questionText(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null) {
     return;
