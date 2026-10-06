@@ -1,26 +1,28 @@
-# Reasonate AI — R2T2 ASR service (OpenAI-compatible /v1/audio/transcriptions)
+# Reasonate AI — R2T2 ASR service runtime (OpenAI-compatible /v1/audio/transcriptions)
 #
-# Every line is pinned. Install with:  pip install -r requirements.txt
+# This file is the SLIM runtime: everything the llama.cpp backend needs and
+# nothing else. The vLLM backend for large GPUs is an optional extra, documented
+# in README.md ("vLLM backend"), and is deliberately absent here — its torch
+# CUDA wheels and vLLM stack add ~14 GB that the llama path never uses.
 #
-# NOTE on PyTorch/CUDA: the R2T2 package pulls in vLLM, which in turn needs a
-# torch wheel built for your CUDA runtime. That wheel is not resolvable from
-# PyPI alone, so it is intentionally NOT pinned here. On a GPU host, install
-# torch first from the matching index, e.g.
-#   pip install torch --index-url https://download.pytorch.org/whl/cu124
-# and only then install this file. See README.md ("Docker" and "GPU").
+# torch is installed by the Dockerfile from the CPU wheel index before this
+# file (`r2t2` imports it eagerly; the llama path performs no CUDA work
+# through it), and `confucius4-r2t2` is installed by the Dockerfile with
+# --no-deps — its declared dependency is `qwen-asr[vllm]`, and selecting that
+# extra is exactly what would drag the fat stack back in.
 
 # --- HTTP service ---------------------------------------------------------
-fastapi==0.115.6          # web framework; provides the OpenAI-compatible endpoints
-uvicorn[standard]==0.32.1 # ASGI server used by the Dockerfile/CMD
-python-multipart==0.0.20  # REQUIRED by FastAPI to parse multipart/form-data (File/Form fields)
+fastapi                 # web framework; provides the OpenAI-compatible endpoints
+uvicorn[standard]       # ASGI server used by the Dockerfile/CMD
+python-multipart        # REQUIRED by FastAPI to parse multipart/form-data (File/Form fields)
 
 # --- Audio / numerics -----------------------------------------------------
-numpy==1.26.4             # float32 audio buffers; pinned <2 to match the vLLM/torch stack
-soundfile==0.12.1         # reads the 16 kHz mono WAV that ffmpeg produces
-huggingface_hub==0.27.1   # resolves and caches `netease-youdao/Confucius4-R2T2` when ASR_MODEL_PATH is a repo id
+numpy                   # float32 audio buffers
+soundfile==0.12.1       # reads the 16 kHz mono WAV that ffmpeg produces
+huggingface_hub         # resolves checkpoints when a repo id is configured
 
 # --- Model runtime --------------------------------------------------------
-# Confucius4-R2T2 (import name `r2t2`), pinned to the exact commit this service
-# was written and verified against. Installing it brings the `qwen-asr[vllm]`
-# dependency and, transitively, vLLM + transformers.
-confucius4-r2t2 @ git+https://github.com/netease-youdao/Confucius4-R2T2.git@26d55a54ce5670cff9947a167d8ed95d569fd4d9
+# Anchored: pip must use this release and never fall back to the pre-vLLM
+# 0.0.x line (which declares flash-attn and builds it from source). Plain,
+# no vLLM extra — the llama backend does not serve through vLLM.
+qwen-asr==0.0.6

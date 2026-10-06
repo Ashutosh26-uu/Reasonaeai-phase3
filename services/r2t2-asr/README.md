@@ -7,8 +7,20 @@ Reasonate product's replaceable ASR adapter can talk to it through the same
 `/audio/transcriptions` contract it uses for any other provider.
 
 Everything here is self-hosted and open-weight: no paid third-party inference
-API is involved. Only `app.py` is product code; the model runs on your GPU via
-vLLM.
+API is involved. Only `app.py` is product code.
+
+The model runs through one of two backends, selected by `ASR_INFER_MODE`:
+
+| `ASR_INFER_MODE` | Weights | Needs | Fits |
+| ---------------- | ------- | ----- | ---- |
+| `llama` | one quantized GGUF pair — a model `*.gguf` beside its `mmproj*.gguf` projector | an NVIDIA GPU, ~4 GB VRAM | 6 GB consumer laptops |
+| `vllm` (code default) | the bf16 HF checkpoint | a large GPU (~24 GB) | datacenter cards |
+
+The `llama` backend is what the image is built for and what the acceptance run
+exercises: it serves a Q8 GGUF through a llama.cpp built in the image, which is
+the only path that fits a 6 GB GPU. `vllm` is the optional extra documented
+under [vLLM backend](#vllm-backend) and is **not** installed in this image, so
+a container started without `ASR_INFER_MODE=llama` refuses to serve.
 
 ## Endpoints
 
@@ -32,8 +44,8 @@ per offline call.
 ```
 services/r2t2-asr/
 ├── app.py            # FastAPI service (the whole thing)
-├── requirements.txt  # pinned Python dependencies
-├── Dockerfile        # python:3.12-slim + ffmpeg, non-root, HEALTHCHECK
+├── requirements.txt  # pinned Python dependencies of the runtime stage
+├── Dockerfile        # multi-stage: CUDA llama.cpp builder + slim GPU runtime
 ├── README.md         # this file
 └── .dockerignore
 ```
@@ -47,14 +59,17 @@ All configuration is via environment variables (never hard-code secrets).
 
 | Variable | Required | Default | Meaning |
 | -------- | -------- | ------- | ------- |
-| `ASR_MODEL_PATH` | **yes** | — | HF repo id (`netease-youdao/Confucius4-R2T2`) or a local checkpoint directory. Service refuses to start without it. |
+| `ASR_INFER_MODE` | no | `vllm` | `llama` serves a GGUF through the in-image llama.cpp; `vllm` serves the HF checkpoint. The image only implements `llama`. |
+| `ASR_GGUF_DIR` | in `llama` mode | — | Directory holding exactly one model `*.gguf` and one `mmproj*.gguf`. Service refuses to start without it in `llama` mode. |
+| `ASR_MODEL_PATH` | in `vllm` mode | — | HF repo id (`netease-youdao/Confucius4-R2T2`) or a local checkpoint directory. Service refuses to start without it in `vllm` mode. |
+| `ASR_N_THREADS` | no | `8` | CPU threads llama.cpp may use for the parts of a request that stay on the host. |
 | `ASR_PORT` | no | `8081` | Port uvicorn binds. |
 | `ASR_MAX_UPLOAD_BYTES` | no | `26214400` | Max request audio size (25 MiB, matches the product cap). |
 | `ASR_REQUEST_TIMEOUT_SEC` | no | `120` | Wall-clock budget per transcription; `0` disables. |
 | `ASR_LANGUAGE_DEFAULT` | no | unset | Language hint used when the client sends none (e.g. `Chinese`). Unset → auto-detect. |
-| `CUDA_VISIBLE_DEVICES` | no | `0` (vLLM default) | Passed through to vLLM/PyTorch; restricts which GPUs the model sees. |
-| `ASR_GPU_MEMORY_UTILIZATION` | no | `0.5` | vLLM GPU memory fraction. |
-| `ASR_MAX_MODEL_LEN` | no | `16384` | vLLM context length. |
+| `CUDA_VISIBLE_DEVICES` | no | `0` | Restricts which GPUs the backend sees. |
+| `ASR_GPU_MEMORY_UTILIZATION` | no | `0.5` | vLLM only; ignored by the llama.cpp backend. |
+| `ASR_MAX_MODEL_LEN` | no | `16384` | Context length: `n_ctx` for llama.cpp, `max_model_len` for vLLM. |
 | `ASR_MAX_NEW_TOKENS` | no | `4096` | Generation cap for offline (one-shot) transcription. |
 | `ASR_FFMPEG_BIN` | no | `ffmpeg` | ffmpeg executable path. |
 | `ASR_LOG_LEVEL` | no | `INFO` | Structured (JSON-lines) log level. |
@@ -69,7 +84,14 @@ Logs are JSON lines containing only non-sensitive fields: request id, path,
 status, duration (ms), audio bytes, decoded seconds. **Audio bytes, client
 filenames and transcript text are never logged.**
 
-## Local run
+## Local run (vLLM mode)
+
+The llama.cpp path is delivered by the image, because it needs a compiled
+`qwen3asr_native` extension plus the llama.cpp libraries beside it — the
+`llama-builder` stage of `Dockerfile` is that recipe (clone the pinned
+llama.cpp revision, configure `r2t2_llama` with `-DGGML_CUDA=ON`, rebuild
+`r2t2_llama/bin/`). Running it outside a container means reproducing that
+build by hand. What follows is the vLLM path for a large GPU:
 
 ```bash
 cd services/r2t2-asr
@@ -98,34 +120,54 @@ one); `/healthz` answers immediately because the model is loaded lazily.
 
 ## Docker
 
-The image is `python:3.12-slim` + `ffmpeg`. R2T2 inference uses vLLM, which needs
-an NVIDIA GPU, so run it with the NVIDIA Container Toolkit
-(`--gpus all`). Kubernetes/Compose deployments should request a GPU the same way.
+The image is built in two stages. The builder installs a host compiler and
+rebuilds the CPU backend of the pinned llama.cpp against the x86-64 baseline
+(`GGML_NATIVE=OFF`) together with the `qwen3asr_native` pybind extension; that
+pair is what removes the AVX-512 instructions the package's prebuilt CPU
+libraries carry. The runtime stage is `python:3.12-slim` plus ffmpeg, torch-CPU,
+the `qwen-asr` modeling code, the rebuilt CPU backend, and
+`libcublas12`/`libcublaslt12`/`libcudart12` from trixie's non-free section — no
+compiler, no toolkit. Inference needs an NVIDIA GPU, so run it with the NVIDIA
+Container Toolkit (`--gpus all`).
 
 ```bash
-docker build -t reasonate-r2t2-asr ./services/r2t2-asr
+docker build -t reasonate-r2t2-asr:slim ./services/r2t2-asr
 
-docker run --gpus all --rm \
-  -p 8081:8081 \
-  -e ASR_MODEL_PATH=netease-youdao/Confucius4-R2T2 \
-  -e CUDA_VISIBLE_DEVICES=0 \
-  -e ASR_LANGUAGE_DEFAULT=English \
-  -v "$HOME/.cache/huggingface:/home/appuser/.cache/huggingface" \
-  --shm-size=4gb \
-  reasonate-r2t2-asr
+docker run -d --gpus all --name r2t2-asr \
+  -p 127.0.0.1:8081:8081 \
+  -e ASR_INFER_MODE=llama \
+  -e ASR_GGUF_DIR=/models/gguf \
+  -v "$HOME/.cache/models/Confucius4-R2T2-GGUF:/models/gguf" \
+  reasonate-r2t2-asr:slim
 ```
 
-`--shm-size` matters: vLLM uses shared memory for its engine IPC.
+The GGUF directory is mounted read-only in spirit: the service only reads the
+two files, and the container user (`appuser`, uid 10001) needs read access to
+them. On Windows, path mounts work the same way —
+`-v C:/Users/you/.cache/models/Confucius4-R2T2-GGUF:/models/gguf`.
 
-### GPU image alternative
+`BUILD_JOBS` (default `4`) is the one build knob: `cmake --build` runs with it
+instead of `nproc`, because the build happens inside the container's memory
+limit, where an unbounded `-j` is OOM-killed rather than reporting a compile
+error. Lower it on a small machine, raise it on a large one.
 
-If you would rather not assemble the CUDA/vLLM stack yourself, the upstream
-project recommends building **on top of its prebuilt GPU image**,
-[`qwenllm/qwen3-asr`](https://hub.docker.com/r/qwenllm/qwen3-asr), which ships
-every runtime library R2T2 needs. Swap the `FROM python:3.12-slim` line for the
-Qwen3-ASR image and keep the same `app.py` / `requirements.txt` / `CMD`. The
-slim-based Dockerfile here is provided so the service builds and its CPU paths
-(health, decoding, contract tests) can be exercised in CI without a GPU.
+The CUDA backend itself (`libggml-cuda.so`) is used exactly as the package ships
+it, and the Dockerfile header records why: rebuilding it needs `nvcc`, which
+this environment cannot obtain, and the shipped library already targets this
+CPU baseline's CPU half while covering `89-real`. Debian's own
+`nvidia-cuda-toolkit` in trixie's non-free section is the supported route to
+rebuilding it too, and the header carries the exact configure line.
+
+### vLLM backend
+
+`ASR_INFER_MODE=vllm` serves the bf16 checkpoint through vLLM instead, which
+this image deliberately does not carry (~14 GB of CUDA wheels). Build a
+separate image for it — the same `app.py` and `requirements.txt` with torch
+from the CUDA index and `qwen-asr[vllm]` — or start from the upstream's
+prebuilt [`qwenllm/qwen3-asr`](https://hub.docker.com/r/qwenllm/qwen3-asr)
+image and keep `app.py` unchanged. `--shm-size=4gb` matters on that path: vLLM
+uses shared memory for its engine IPC.
+
 
 ## Pointing the product at it
 
@@ -144,10 +186,10 @@ product's adapter posts to this URL unchanged.
 
 Choose the checkpoint that matches the inference backend:
 
-| Inference backend | Model | HF repo | Notes |
-| ----------------- | ----- | ------- | ----- |
-| vLLM (this service) | `Confucius4-R2T2` | [`netease-youdao/Confucius4-R2T2`](https://huggingface.co/netease-youdao/Confucius4-R2T2) | Standard checkpoint. What `ASR_MODEL_PATH` should point at here. |
-| llama.cpp | `Confucius4-R2T2-GGUF` | [`netease-youdao/Confucius4-R2T2-GGUF`](https://huggingface.co/netease-youdao/Confucius4-R2T2-GGUF) | Several quantization variants; used by the upstream `r2t2_llama` package, not by this vLLM service. |
+| `ASR_INFER_MODE` | Model | HF repo | Notes |
+| ---------------- | ----- | ------- | ----- |
+| `llama` (this image) | `Confucius4-R2T2-GGUF` | [`netease-youdao/Confucius4-R2T2-GGUF`](https://huggingface.co/netease-youdao/Confucius4-R2T2-GGUF) | **Default path.** The image serves the `Q8_0` quantization; `ASR_GGUF_DIR` must hold the model `*.gguf` and its `mmproj-*.gguf` projector, and nothing else that ends in `.gguf`. |
+| `vllm` | `Confucius4-R2T2` | [`netease-youdao/Confucius4-R2T2`](https://huggingface.co/netease-youdao/Confucius4-R2T2) | The bf16 checkpoint for a vLLM image; `ASR_MODEL_PATH` points at it. |
 
 ModelScope mirrors exist for both.
 
@@ -190,34 +232,60 @@ append-only output.
 
 ## Verification
 
-Run the service (local or Docker), then:
+Run the service (local or Docker), then transcribe. Every command and output
+below is from a real run of this image on an RTX 4050 Laptop GPU (6 GB), with
+the `Q8_0` GGUF mounted at `/models/gguf`:
 
 ```bash
 # 1. Liveness + configured model id (does not load the model).
 curl -sS http://localhost:8081/healthz
-# {"status":"ok","model":"netease-youdao/Confucius4-R2T2"}
+# {"status":"ok","model":"/models/gguf"}
 
 # 2. OpenAI-compatible model list.
 curl -sS http://localhost:8081/v1/models
-# {"data":[{"id":"netease-youdao/Confucius4-R2T2","object":"model"}]}
+# {"data":[{"id":"/models/gguf","object":"model"}]}
 
-# 3. Transcribe the sample WAV shipped by the upstream repository.
+# 3. Transcribe audio. The first request loads the model (~2 min including
+#    CUDA graph warmup); afterwards a ~4 s clip transcribes in ~2 s.
 curl -sS -X POST http://localhost:8081/v1/audio/transcriptions \
-  -F "file=@resources/test.wav;type=audio/wav" \
+  -F "file=@recording.mp3;type=audio/mpeg" \
   -F "language=English"
-# {"text":"..."}
+# {"text":"Reason8 AI verified your build through the real speech model."}
 ```
 
-Get `resources/test.wav` from the upstream repo:
+That the run is on the GPU, and not quietly on the CPU, is visible in the
+container's own log:
+
+```
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 6140 MiB):
+llama_prepare_model_devices: using device CUDA0 (NVIDIA GeForce RTX 4050 Laptop GPU) - 5072 MiB free
+load_tensors: layer   0 assigned to device CUDA0, is_swa = 0
+```
+
+A backend that is not registered looks different: every
+`load_tensors` line reads `assigned to device CPU`, and a few seconds of audio
+then takes minutes. Check that line first if transcripts are slow.
+
+Through the product, the same audio arrives as the authorized upload the browser
+sends — session cookie plus the CSRF header, scoped to an organization and
+project:
 
 ```bash
-git clone --depth 1 https://github.com/netease-youdao/Confucius4-R2T2.git /tmp/Confucius4-R2T2
-# the file is at /tmp/Confucius4-R2T2/resources/test.wav
+curl -sS -X POST \
+  "http://127.0.0.1:4111/v1/voice/transcriptions?organizationId=$ORG&projectId=$PROJECT" \
+  -H "Origin: http://localhost:3219" \
+  -H "x-reasonate-csrf: $CSRF" \
+  -b cookies.txt \
+  -F "audio=@recording.mp3;type=audio/mpeg" \
+  -F "language=English"
+# {"language":"English","provider":"openai-compatible","text":"Reason8 AI verified your build through the real speech model."}
 ```
 
-The documented `curl` above reproduces the OpenAI-compatible contract exactly:
-multipart `file` (+ optional `model`/`language`) in, strict JSON `{"text": ...}`
-out. Extra OpenAI form fields are ignored.
+The service's own contract is the OpenAI-compatible one: multipart `file` (+
+optional `model`/`language`) in, strict JSON `{"text": ...}` out. Extra OpenAI
+form fields are ignored. The product route names its field `audio` instead, and
+the adapter maps it — see `apps/api/src/mastra/adapters/asr.ts`.
+
 
 ## Streaming ASR (future)
 

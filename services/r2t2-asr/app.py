@@ -100,15 +100,33 @@ class Config:
     decode_timeout_sec: float
     min_decoded_seconds: float
     ffmpeg_bin: str
+    # "vllm" serves the bf16 checkpoint through vLLM (needs a large GPU);
+    # "llama" serves a quantized GGUF through the bundled llama.cpp backend,
+    # which is the path that fits a 6 GB consumer GPU.
+    infer_mode: str
+    gguf_dir: Optional[str]
+    n_threads: int
 
     @property
     def model_id(self) -> str:
-        return self.model_path
+        return self.gguf_dir if self.infer_mode == "llama" else self.model_path
 
 
 def _load_config() -> Config:
     model_path = _env("ASR_MODEL_PATH")
-    if not model_path:
+    infer_mode = (_env("ASR_INFER_MODE", "vllm") or "vllm").lower()
+    gguf_dir = _env("ASR_GGUF_DIR")
+    if infer_mode == "llama":
+        if not gguf_dir:
+            # Fail fast: run this check at import time so uvicorn refuses to
+            # boot with an obviously broken configuration instead of failing
+            # per-request.
+            raise RuntimeError(
+                "ASR_GGUF_DIR is required when ASR_INFER_MODE=llama: a "
+                "directory holding one model *.gguf and one mmproj*.gguf "
+                "projector from the Confucius4-R2T2-GGUF repository."
+            )
+    elif not model_path:
         # Fail fast: run this check at import time so uvicorn refuses to boot
         # with an obviously broken configuration instead of failing per-request.
         raise RuntimeError(
@@ -129,6 +147,9 @@ def _load_config() -> Config:
         decode_timeout_sec=_env_float("ASR_DECODE_TIMEOUT_SEC", 60.0),
         min_decoded_seconds=_env_float("ASR_MIN_DECODED_SECONDS", 0.05),
         ffmpeg_bin=_env("ASR_FFMPEG_BIN", "ffmpeg") or "ffmpeg",
+        infer_mode=infer_mode,
+        gguf_dir=gguf_dir,
+        n_threads=_env_int("ASR_N_THREADS", 8),
     )
 
 
@@ -335,9 +356,45 @@ _GPU_LOCK = threading.Lock()
 _MODEL: Any = None
 
 
+def _discover_gguf(gguf_dir: str) -> Tuple[str, str]:
+    """The one model file and the one projector file in a GGUF directory."""
+    names = sorted(n for n in os.listdir(gguf_dir) if n.endswith(".gguf"))
+    model = [n for n in names if not n.startswith("mmproj")]
+    projector = [n for n in names if n.startswith("mmproj")]
+    if len(model) != 1 or len(projector) != 1:
+        raise RuntimeError(
+            "ASR_GGUF_DIR must hold exactly one model *.gguf and one "
+            f"mmproj*.gguf projector; found {names}"
+        )
+    return os.path.join(gguf_dir, model[0]), os.path.join(gguf_dir, projector[0])
+
+
 def _load_model_locked() -> Any:
     global _MODEL
     if _MODEL is None:
+        if CONFIG.infer_mode == "llama":
+            # Imported here, not at module scope, so that /healthz never
+            # touches the GPU. This is the bundled llama.cpp backend: quantized
+            # weights, no PyTorch encoder, sized for a 6 GB consumer GPU.
+            from r2t2_llama.llama_native_backend import (
+                LlamaNativeConfig,
+                LlamaNativeOnetime,
+            )
+
+            model_gguf, mmproj_gguf = _discover_gguf(CONFIG.gguf_dir or "")
+            _log("model_load_start", model=CONFIG.model_id, backend="llama")
+            _MODEL = LlamaNativeOnetime(
+                LlamaNativeConfig(
+                    model=model_gguf,
+                    mmproj=mmproj_gguf,
+                    n_ctx=CONFIG.max_model_len,
+                    n_threads=CONFIG.n_threads,
+                    max_tokens=CONFIG.max_new_tokens,
+                )
+            )
+            _log("model_load_done", model=CONFIG.model_id, backend="llama")
+            return _MODEL
+
         # Imported here, not at module scope, so that (a) importing this module
         # in vLLM's spawned children is cheap, and (b) /healthz never touches
         # the GPU.
@@ -358,6 +415,9 @@ def _transcribe_sync(wav: np.ndarray, language: Optional[str]) -> str:
     """Blocking one-shot transcription. Serialized: one inference at a time."""
     with _GPU_LOCK:
         model = _load_model_locked()
+        if CONFIG.infer_mode == "llama":
+            result = model.generate_once(wav, language=language)
+            return (result["text"] or "").strip()
         results = model.transcribe(
             audio=[(wav, 16000)],
             language=[language],
