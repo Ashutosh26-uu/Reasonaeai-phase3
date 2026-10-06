@@ -1,0 +1,28 @@
+# Reasonate AI — R2T2 ASR service runtime (OpenAI-compatible /v1/audio/transcriptions)
+#
+# This file is the SLIM runtime: everything the llama.cpp backend needs and
+# nothing else. The vLLM backend for large GPUs is an optional extra, documented
+# in README.md ("vLLM backend"), and is deliberately absent here — its torch
+# CUDA wheels and vLLM stack add ~14 GB that the llama path never uses.
+#
+# torch is installed by the Dockerfile from the CPU wheel index before this
+# file (`r2t2` imports it eagerly; the llama path performs no CUDA work
+# through it), and `confucius4-r2t2` is installed by the Dockerfile with
+# --no-deps — its declared dependency is `qwen-asr[vllm]`, and selecting that
+# extra is exactly what would drag the fat stack back in.
+
+# --- HTTP service ---------------------------------------------------------
+fastapi                 # web framework; provides the OpenAI-compatible endpoints
+uvicorn[standard]       # ASGI server used by the Dockerfile/CMD
+python-multipart        # REQUIRED by FastAPI to parse multipart/form-data (File/Form fields)
+
+# --- Audio / numerics -----------------------------------------------------
+numpy                   # float32 audio buffers
+soundfile==0.12.1       # reads the 16 kHz mono WAV that ffmpeg produces
+huggingface_hub         # resolves checkpoints when a repo id is configured
+
+# --- Model runtime --------------------------------------------------------
+# Anchored: pip must use this release and never fall back to the pre-vLLM
+# 0.0.x line (which declares flash-attn and builds it from source). Plain,
+# no vLLM extra — the llama backend does not serve through vLLM.
+qwen-asr==0.0.6
