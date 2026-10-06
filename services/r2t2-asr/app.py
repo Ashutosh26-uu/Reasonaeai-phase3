@@ -12,7 +12,7 @@
 #
 # Surface:
 #   POST /v1/audio/transcriptions   multipart file(+model,+language) -> {"text": ...}
-#   GET  /healthz                   {"status":"ok","model": ...}  (never loads the model)
+#   GET  /healthz                   {"status":"ok","model": ...,"ready": bool}
 #   GET  /v1/models                 {"data":[{"id": ...}]}
 #
 # Design note on vLLM and the __main__ guard
@@ -21,11 +21,13 @@
 # __main__ module inside its engine subprocesses. Loading the model at import
 # time therefore recurses (the classic vLLM "spawn" error). We avoid the
 # problem structurally: this module never touches vLLM at import time. The
-# R2T2/vLLM import and model construction happen lazily, on the first
-# transcription request, inside a worker thread. The `if __name__ ==
-# "__main__"` block at the bottom is only the local entrypoint that boots
-# uvicorn, so no engine state is ever created during the import that spawn
-# re-runs. This is why /healthz can report liveness with zero GPU work.
+# R2T2/vLLM import and model construction happen in the app's startup hook
+# (see "Startup warm-up" below), inside a background thread, and only if that
+# thread has not already succeeded does a transcription request load the model
+# itself. The `if __name__ == "__main__"` block at the bottom is only the local
+# entrypoint that boots uvicorn, so no engine state is ever created during the
+# import that spawn re-runs. This is why /healthz can answer, and report
+# whether the weights are ready, with zero GPU work of its own.
 
 from __future__ import annotations
 
@@ -39,8 +41,9 @@ import tempfile
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, Optional, Tuple
 
 import numpy as np
 import soundfile as sf
@@ -349,7 +352,7 @@ def _decode_audio(raw: bytes) -> Tuple[np.ndarray, float]:
 
 
 # --------------------------------------------------------------------------- #
-# Model (lazy; never constructed at import time)
+# Model (never constructed at import time; loaded by the startup warm-up)
 # --------------------------------------------------------------------------- #
 
 _GPU_LOCK = threading.Lock()
@@ -429,10 +432,70 @@ def _transcribe_sync(wav: np.ndarray, language: Optional[str]) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Startup warm-up
+# --------------------------------------------------------------------------- #
+# The weights are read through the operator's mount — 2.2 GB for the Q8_0 pair,
+# about 90 seconds at the ~24 MB/s a Docker Desktop bind mount delivers, plus the
+# engine's own init and CUDA graph capture. Paying that on the first request
+# makes the first caller wait two minutes for a three-second transcription, so
+# it is paid once here instead, at startup, and every request is served warm.
+
+_MODEL_READY = False
+
+
+def _warm_up() -> None:
+    """Load the model and exercise it, so no request pays the cold cost."""
+    global _MODEL_READY
+    started = time.perf_counter()
+    _log("warmup_start", model=CONFIG.model_id, backend=CONFIG.infer_mode)
+    try:
+        # Under the GPU lock, so a request that arrives while the weights are
+        # still loading waits for this load instead of starting a second one —
+        # two copies of a 2.2 GB pair do not fit the 6 GB this targets.
+        with _GPU_LOCK:
+            _load_model_locked()
+    except Exception as exc:  # noqa: BLE001 - reported; the next request retries
+        # Not fatal: the failure is logged with its type, `/healthz` keeps
+        # reporting `ready: false`, and the first request still tries the load
+        # and answers its caller with the backend's own refusal.
+        _log("warmup_failed", level="error", error=type(exc).__name__)
+        return
+    _MODEL_READY = True
+    try:
+        # A quarter second of silence goes through the same path a request does:
+        # the audio encoder, the prefill and one decode step, which is what
+        # compiles the CUDA graphs. Best effort — the model is already usable.
+        _transcribe_sync(np.zeros(4000, dtype=np.float32), CONFIG.language_default)
+        _log("warmup_inference_done")
+    except Exception as exc:  # noqa: BLE001
+        _log("warmup_inference_failed", level="error", error=type(exc).__name__)
+    _log(
+        "warmup_done",
+        model=CONFIG.model_id,
+        backend=CONFIG.infer_mode,
+        seconds=round(time.perf_counter() - started, 2),
+    )
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # A thread, not an await: uvicorn starts serving immediately, so /healthz
+    # answers while the weights load and reports readiness honestly.
+    threading.Thread(target=_warm_up, name="r2t2-warmup", daemon=True).start()
+    yield
+
+
+# --------------------------------------------------------------------------- #
 # HTTP application
 # --------------------------------------------------------------------------- #
 
-app = FastAPI(title="Reasonate R2T2 ASR", version="1.0.0", docs_url=None, redoc_url=None)
+app = FastAPI(
+    title="Reasonate R2T2 ASR",
+    version="1.0.0",
+    docs_url=None,
+    redoc_url=None,
+    lifespan=_lifespan,
+)
 
 
 def _error(status: int, message: str, request_id: str, err_type: str) -> JSONResponse:
@@ -451,8 +514,12 @@ def _normalize_media_type(value: Optional[str]) -> str:
 
 @app.get("/healthz")
 async def healthz() -> JSONResponse:
-    # Intentionally does not load the model; reports configuration and liveness.
-    return JSONResponse({"status": "ok", "model": CONFIG.model_id})
+    # Liveness first, readiness second: this answers while the weights are still
+    # loading, and `ready` turns true once they are. It never loads the model
+    # itself, so the check stays cheap enough for a container health probe.
+    return JSONResponse(
+        {"status": "ok", "model": CONFIG.model_id, "ready": _MODEL_READY}
+    )
 
 
 @app.get("/v1/models")

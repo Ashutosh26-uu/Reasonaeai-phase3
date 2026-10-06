@@ -191,7 +191,12 @@ USER appuser
 
 EXPOSE 8081
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -fsS "http://127.0.0.1:${ASR_PORT:-8081}/healthz" || exit 1
+# The start period covers the startup warm-up: the weights are 2.2 GB read
+# through the operator's mount, so becoming ready takes about two minutes on a
+# bind mount, and the probe must not call that unhealthy. Keying the probe on
+# `ready` is what lets `docker ps` distinguish "still loading the model" from
+# "serving transcripts".
+HEALTHCHECK --interval=30s --timeout=5s --start-period=240s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${ASR_PORT:-8081}/healthz" | grep -q '"ready":true' || exit 1
 
 CMD uvicorn app:app --host 0.0.0.0 --port ${ASR_PORT:-8081}

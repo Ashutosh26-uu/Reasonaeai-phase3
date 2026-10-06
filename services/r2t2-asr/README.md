@@ -146,6 +146,39 @@ two files, and the container user (`appuser`, uid 10001) needs read access to
 them. On Windows, path mounts work the same way —
 `-v C:/Users/you/.cache/models/Confucius4-R2T2-GGUF:/models/gguf`.
 
+### Startup: the cold cost is paid before traffic, not by the first caller
+
+Loading the model is expensive and it is a one-time cost: about **2 minutes**
+for the Q8_0 pair, of which ~40 s is importing torch/transformers and ~75 s is
+reading 2.2 GB and building the CUDA graphs. The service therefore loads the
+model in a background thread as it starts, so no request ever pays for it:
+
+| | observed |
+| --- | --- |
+| container start → `ready: true` | ~122 s |
+| **first transcription after ready** | **1.9 s** |
+| second and later transcriptions | ~1.3 s |
+
+`GET /healthz` answers immediately and reports both facts, which is also what
+the container's health probe keys on:
+
+```bash
+curl -sS http://localhost:8081/healthz
+# {"status":"ok","model":"/models/gguf","ready":true}
+```
+
+A request that arrives *while* the weights are still loading waits for that
+load and is then served normally — it never starts a second load, because two
+copies of a 2.2 GB pair do not fit the 6 GB this service targets. The
+`HEALTHCHECK` has a 240 s start period for the same reason, so `docker ps`
+reports `starting` and then `healthy` instead of flapping.
+
+Bind-mounted weights are the slow part of the load (measured at ~86 MB/s here,
+against multi-GB/s inside the VM). Copying the pair into a named volume
+(`docker volume create r2t2-gguf`, then a one-shot container to copy it in)
+removes roughly 20 s of startup — worth it only where container restarts are
+frequent, since it costs as much disk as the weights themselves.
+
 `BUILD_JOBS` (default `4`) is the one build knob: `cmake --build` runs with it
 instead of `nproc`, because the build happens inside the container's memory
 limit, where an unbounded `-j` is OOM-killed rather than reporting a compile
@@ -245,8 +278,9 @@ curl -sS http://localhost:8081/healthz
 curl -sS http://localhost:8081/v1/models
 # {"data":[{"id":"/models/gguf","object":"model"}]}
 
-# 3. Transcribe audio. The first request loads the model (~2 min including
-#    CUDA graph warmup); afterwards a ~4 s clip transcribes in ~2 s.
+# 3. Transcribe audio. The model is already loaded — the service warms it up at
+#    startup (see "Startup" above) — so a ~4 s clip answers in ~2 s. Poll
+#    /healthz for "ready":true if you call straight after a container restart.
 curl -sS -X POST http://localhost:8081/v1/audio/transcriptions \
   -F "file=@recording.mp3;type=audio/mpeg" \
   -F "language=English"
