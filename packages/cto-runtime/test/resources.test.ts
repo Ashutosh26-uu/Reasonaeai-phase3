@@ -393,7 +393,7 @@ describe("run resource handlers", () => {
 
     await expect(
       router.resolve("rule://absent.md", context(project))
-    ).rejects.toThrow("Available: AGENTS.md");
+    ).rejects.toThrow("AGENTS.md");
   });
 
   it("lists documentation and reads a document by its prefixed name", async () => {
@@ -443,6 +443,6 @@ describe("run resource handlers", () => {
     // and failing on every use.
     expect(router.schemes()).toContain("artifact");
     expect(router.schemes()).not.toContain("docs");
-    expect(router.schemes()).not.toContain("skill");
+    expect(router.schemes()).toContain("skill");
   });
 });

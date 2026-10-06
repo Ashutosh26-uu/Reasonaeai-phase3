@@ -24,7 +24,12 @@ export interface MaterializeOptions {
    * unreachable even though the definition and its tools are valid.
    */
   defaultModelId?: string | undefined;
+  instructions?: (
+    definition: AgentDefinition
+  ) => AgentControllerSubagent["instructions"];
   overrides?: WorkerOverrides;
+  /** Explicitly share only direct tools granted by the definition. Workspace allowlists do not filter these. */
+  tools?: AgentControllerSubagent["tools"];
   toolUniverse?: readonly string[];
 }
 
@@ -44,6 +49,20 @@ export function materializeSubagent(
   const maxTurns = override?.maxTurns ?? definition.maxTurns;
   const modelId =
     override?.model ?? definition.model?.id ?? options.defaultModelId;
+  const directTools = options.tools ?? {};
+  const permitted = new Set(
+    filterToolsByDefinition(Object.keys(directTools), definition)
+  );
+  const directFilteredTools =
+    options.tools === undefined
+      ? {}
+      : Object.fromEntries(
+          Object.entries(directTools).filter(([name]) => permitted.has(name))
+        );
+  const mergedTools = {
+    ...directFilteredTools,
+    ...(override?.tools ?? {}),
+  };
 
   return {
     allowedWorkspaceTools: filterToolsByDefinition(
@@ -52,9 +71,11 @@ export function materializeSubagent(
     ),
     description: definition.description,
     id: definition.name,
-    instructions: definition.prompt,
+    instructions: options.instructions?.(definition) ?? definition.prompt,
     name: displayNameFor(definition.name),
-    ...(override?.tools ? { tools: override.tools } : {}),
+    ...(options.tools === undefined && !override?.tools
+      ? {}
+      : { tools: mergedTools }),
     ...(maxTurns === undefined ? {} : { maxSteps: maxTurns }),
     ...(modelId ? { defaultModelId: modelId } : {}),
   };

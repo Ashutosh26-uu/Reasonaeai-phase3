@@ -71,6 +71,7 @@ export interface PanelProps {
   onClose: () => void;
   organizationId: string;
   projectId: string;
+  refreshKey?: number | undefined;
 }
 
 const treeUrl = (
@@ -124,10 +125,12 @@ function FilesView({
   buildSessionId,
   organizationId,
   projectId,
+  refreshKey,
 }: {
   buildSessionId: string;
   organizationId: string;
   projectId: string;
+  refreshKey?: number | undefined;
 }) {
   const [tree, setTree] = useState<TreeResponse | null>(null);
   const [file, setFile] = useState<FileResponse | null>(null);
@@ -163,7 +166,7 @@ function FilesView({
 
   useEffect(() => {
     load().catch(() => undefined);
-  }, [load]);
+  }, [load, refreshKey]);
 
   const openFile = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -648,6 +651,7 @@ export function Panel({
   onClose,
   organizationId,
   projectId,
+  refreshKey,
 }: PanelProps) {
   const [tab, setTab] = useState<"files" | "preview">("preview");
   const showFiles = useCallback(() => setTab("files"), []);
@@ -695,6 +699,7 @@ export function Panel({
             buildSessionId={buildSessionId}
             organizationId={organizationId}
             projectId={projectId}
+            refreshKey={refreshKey}
           />
         )}
       </div>

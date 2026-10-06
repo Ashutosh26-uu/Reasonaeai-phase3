@@ -24,5 +24,10 @@
   "engines": {
     "node": ">=22.12.0",
     "pnpm": ">=10.0.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "source-map-js": ">=1.2.2"
+    }
   }
 }

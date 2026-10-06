@@ -2,6 +2,8 @@ import type { ConversationMessage } from "@reasonateai/contracts/execution";
 import {
   type MessageSnapshot,
   MessageSnapshotSchema,
+  type PlanProposal,
+  PlanProposalSchema,
   type RunEventEnvelope,
   type RunLiveEvent,
 } from "@reasonateai/contracts/execution-protocol";
@@ -53,6 +55,53 @@ export function pendingQuestion(
     if (
       event.type === "approval.resolved" &&
       payload.toolCallId === pending?.toolCallId
+    ) {
+      pending = undefined;
+    }
+    if (["run.completed", "run.failed", "run.cancelled"].includes(event.type)) {
+      pending = undefined;
+    }
+  }
+  return pending;
+}
+
+export interface PendingPlan {
+  plan: PlanProposal;
+  toolCallId: string;
+}
+
+export function pendingPlan(
+  timeline: Timeline,
+  runId: string
+): PendingPlan | undefined {
+  const events = Object.values(timeline.runs[runId]?.events ?? {}).sort(
+    (a, b) => a.sequence - b.sequence
+  );
+  let pending: PendingPlan | undefined;
+  for (const event of events) {
+    const { payload } = event;
+    const isPlanProposed =
+      (event.type === "run.plan_proposed" ||
+        (event.type === "approval.requested" &&
+          payload.toolName === "submit_plan") ||
+        (payload.kind === "tool_suspended" &&
+          payload.toolName === "submit_plan")) &&
+      typeof payload.toolCallId === "string";
+    if (isPlanProposed) {
+      const rawPlan = payload.plan ?? payload.suspendPayload ?? payload.args;
+      const parsed = PlanProposalSchema.safeParse(rawPlan);
+      if (parsed.success) {
+        pending = {
+          plan: parsed.data,
+          toolCallId: String(payload.toolCallId),
+        };
+      }
+    }
+    if (
+      (event.type === "run.plan_decided" ||
+        event.type === "approval.resolved" ||
+        payload.kind === "answer_submitted") &&
+      (!payload.toolCallId || payload.toolCallId === pending?.toolCallId)
     ) {
       pending = undefined;
     }
@@ -157,6 +206,19 @@ export type TranscriptEntry =
       text: string;
       status: "requested" | "delivered" | "failed";
       reason?: string;
+    }
+  | {
+      id: string;
+      kind: "plan";
+      plan: PlanProposal;
+      toolCallId: string;
+      resolved?:
+        | {
+            approved: boolean;
+            cancelled?: boolean;
+            feedback?: string | undefined;
+          }
+        | undefined;
     };
 export interface TranscriptTurn {
   entries: TranscriptEntry[];
@@ -334,6 +396,57 @@ function runMessages(events: RunEventEnvelope[], run: RunTimeline) {
   return messages;
 }
 
+type SnapshotPart = MessageSnapshot["parts"][number];
+
+function toolPartEntry(
+  runId: string,
+  part: Extract<SnapshotPart, { type: "tool" }>,
+  tools: Map<string, ToolEntry>
+): TranscriptEntry | undefined {
+  const tool = tools.get(part.toolCallId);
+  if (!tool) {
+    return;
+  }
+  if (tool.name === "submit_plan") {
+    const parsed = PlanProposalSchema.safeParse(tool.input);
+    if (parsed.success) {
+      return {
+        id: `${runId}:plan:${part.toolCallId}`,
+        kind: "plan",
+        plan: parsed.data,
+        toolCallId: part.toolCallId,
+      };
+    }
+  }
+  return {
+    id: `${runId}:tool:${part.toolCallId}`,
+    kind: "tool",
+    tool,
+  };
+}
+
+function textPartEntry(
+  runId: string,
+  snapshot: MessageSnapshot,
+  part: Exclude<SnapshotPart, { type: "tool" }>,
+  ended: boolean
+): TranscriptEntry {
+  return {
+    id: `${runId}:${snapshot.messageId}:${part.index}`,
+    kind: part.type,
+    streaming: !(ended || snapshot.finished) && part.endedAt === null,
+    text: part.text,
+    ...(part.endedAt && !snapshot.recovery
+      ? {
+          duration: Math.max(
+            0,
+            (Date.parse(part.endedAt) - Date.parse(part.startedAt)) / 1000
+          ),
+        }
+      : {}),
+  };
+}
+
 function messageEntries(
   runId: string,
   snapshot: MessageSnapshot,
@@ -343,29 +456,12 @@ function messageEntries(
   const entries: TranscriptEntry[] = [];
   for (const part of snapshot.parts) {
     if (part.type === "tool") {
-      const tool = tools.get(part.toolCallId);
-      if (tool) {
-        entries.push({
-          id: `${runId}:tool:${part.toolCallId}`,
-          kind: "tool",
-          tool,
-        });
+      const entry = toolPartEntry(runId, part, tools);
+      if (entry) {
+        entries.push(entry);
       }
     } else {
-      entries.push({
-        id: `${runId}:${snapshot.messageId}:${part.index}`,
-        kind: part.type,
-        streaming: !(ended || snapshot.finished) && part.endedAt === null,
-        text: part.text,
-        ...(part.endedAt && !snapshot.recovery
-          ? {
-              duration: Math.max(
-                0,
-                (Date.parse(part.endedAt) - Date.parse(part.startedAt)) / 1000
-              ),
-            }
-          : {}),
-      });
+      entries.push(textPartEntry(runId, snapshot, part, ended));
     }
   }
   return entries;
@@ -404,6 +500,153 @@ function steeringEntry(
   };
 }
 
+function findPlanDecision(
+  events: RunEventEnvelope[],
+  planToolCallId: string
+):
+  | { approved: boolean; cancelled?: boolean; feedback?: string | undefined }
+  | undefined {
+  const decisionEvent = events.findLast(
+    (e) =>
+      e.type === "run.plan_decided" &&
+      typeof e.payload.approved === "boolean" &&
+      e.payload.toolCallId === planToolCallId
+  );
+  if (!decisionEvent) {
+    const cancelled = events.some(
+      (e) =>
+        e.type === "run.cancelled" ||
+        e.type === "run.failed" ||
+        (e.type === "approval.resolved" &&
+          e.payload.toolCallId === planToolCallId &&
+          e.payload.resolution === "cancelled")
+    );
+    return cancelled ? { approved: false, cancelled: true } : undefined;
+  }
+  return {
+    approved: decisionEvent.payload.approved === true,
+    feedback:
+      typeof decisionEvent.payload.feedback === "string"
+        ? decisionEvent.payload.feedback
+        : undefined,
+  };
+}
+
+function extractPlanProposalEntry(
+  runId: string,
+  event: RunEventEnvelope,
+  events: RunEventEnvelope[]
+): { entry: TranscriptEntry; toolCallId: string } | undefined {
+  const isPlanProposed =
+    (event.type === "run.plan_proposed" ||
+      (event.type === "approval.requested" &&
+        event.payload.toolName === "submit_plan") ||
+      (event.payload.kind === "tool_suspended" &&
+        event.payload.toolName === "submit_plan")) &&
+    typeof event.payload.toolCallId === "string";
+  if (!isPlanProposed) {
+    return;
+  }
+  const planToolCallId = string(event.payload.toolCallId);
+  const rawPlan =
+    event.payload.plan ?? event.payload.suspendPayload ?? event.payload.args;
+  const parsed = PlanProposalSchema.safeParse(rawPlan);
+  if (!parsed.success) {
+    return;
+  }
+  const resolved = findPlanDecision(events, planToolCallId);
+  return {
+    entry: {
+      id: `${runId}:plan:${planToolCallId}`,
+      kind: "plan",
+      plan: parsed.data,
+      resolved,
+      toolCallId: planToolCallId,
+    },
+    toolCallId: planToolCallId,
+  };
+}
+
+function resolvePendingPlans(
+  ordered: { sequence: number; entries: TranscriptEntry[] }[],
+  events: RunEventEnvelope[]
+): void {
+  for (const item of ordered) {
+    for (const entry of item.entries) {
+      if (entry.kind === "plan" && !entry.resolved) {
+        entry.resolved = findPlanDecision(events, entry.toolCallId);
+      }
+    }
+  }
+}
+
+function collectEventEntries(
+  runId: string,
+  events: RunEventEnvelope[],
+  tools: Map<string, ToolEntry>,
+  ownedTools: Set<string>,
+  messages: Map<string, { sequence: number; snapshot: MessageSnapshot }>
+): { sequence: number; entries: TranscriptEntry[] }[] {
+  const result: { sequence: number; entries: TranscriptEntry[] }[] = [];
+  const seenTools = new Set<string>();
+
+  for (const event of events) {
+    const steering = steeringEntry(event, events);
+    if (steering) {
+      result.push({ entries: [steering], sequence: event.sequence });
+    }
+
+    const planItem = extractPlanProposalEntry(runId, event, events);
+    if (
+      planItem &&
+      !ownedTools.has(planItem.toolCallId) &&
+      !seenTools.has(planItem.toolCallId)
+    ) {
+      seenTools.add(planItem.toolCallId);
+      result.push({ entries: [planItem.entry], sequence: event.sequence });
+    }
+
+    const id = string(event.payload.toolCallId);
+    const tool = tools.get(id);
+    if (
+      tool &&
+      tool.name !== "submit_plan" &&
+      !ownedTools.has(id) &&
+      !seenTools.has(id)
+    ) {
+      seenTools.add(id);
+      result.push({
+        entries: [{ id: `${runId}:tool:${id}`, kind: "tool", tool }],
+        sequence: event.sequence,
+      });
+    }
+
+    if (
+      event.payload.kind === "message_end" &&
+      event.payload.role === "assistant" &&
+      !messages.has(string(event.payload.messageId))
+    ) {
+      const text = string(event.payload.text);
+      if (text) {
+        result.push({
+          entries: [
+            {
+              id: `${runId}:${event.eventId}`,
+              kind: "text",
+              legacy: true,
+              streaming: false,
+              text,
+            },
+          ],
+          sequence: event.sequence,
+        });
+      }
+    }
+  }
+
+  return result;
+}
+
 function projectRun(runId: string, run: RunTimeline): TranscriptEntry[] {
   const events = Object.values(run.events).sort(
     (a, b) => a.sequence - b.sequence
@@ -423,43 +666,13 @@ function projectRun(runId: string, run: RunTimeline): TranscriptEntry[] {
     const entries = messageEntries(runId, snapshot, tools, ended);
     ordered.push({ entries, sequence });
   }
-  const seenTools = new Set<string>();
-  for (const event of events) {
-    const steering = steeringEntry(event, events);
-    if (steering) {
-      ordered.push({ entries: [steering], sequence: event.sequence });
-    }
-    const id = string(event.payload.toolCallId);
-    const tool = tools.get(id);
-    if (tool && !ownedTools.has(id) && !seenTools.has(id)) {
-      seenTools.add(id);
-      ordered.push({
-        entries: [{ id: `${runId}:tool:${id}`, kind: "tool", tool }],
-        sequence: event.sequence,
-      });
-    }
-    if (
-      event.payload.kind === "message_end" &&
-      event.payload.role === "assistant" &&
-      !messages.has(string(event.payload.messageId))
-    ) {
-      const text = string(event.payload.text);
-      if (text) {
-        ordered.push({
-          entries: [
-            {
-              id: `${runId}:${event.eventId}`,
-              kind: "text",
-              legacy: true,
-              streaming: false,
-              text,
-            },
-          ],
-          sequence: event.sequence,
-        });
-      }
-    }
-  }
+
+  ordered.push(
+    ...collectEventEntries(runId, events, tools, ownedTools, messages)
+  );
+
+  resolvePendingPlans(ordered, events);
+
   return ordered
     .sort((a, b) => a.sequence - b.sequence)
     .flatMap((item) => item.entries);

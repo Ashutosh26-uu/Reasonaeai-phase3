@@ -45,7 +45,7 @@ The product includes:
 - Speech-to-text intake and text-to-speech milestone reporting behind replaceable ASR and TTS adapters.
 - Vision-to-architecture extraction that converts wireframes, screenshots, and flowcharts into a reviewable structured specification.
 - Editable requirements, architecture, acceptance criteria, API contract, and plan.
-- A run-scoped autonomous CTO with the full approved tool, skill, workspace, browser, command, debugging, verification, and deployment surface; it may execute directly or delegate bounded work to scout, coder, debugger, and ephemeral custom agents.
+- A run-scoped autonomous CTO with the full approved tool, skill, workspace, browser, command, debugging, verification, and deployment surface; it may execute directly or delegate bounded work to scout, coder, debugger, reviewer, and ephemeral custom agents.
 - A central, typed, tenant-scoped project-state and event log through which agents coordinate; it is authoritative over agent memory. Optional vector retrieval is scoped and supplemental.
 - Workspace read, search, edit, language intelligence, debugging, execution, browser, and Git checkpoint tools.
 - Persistent organizations, projects, authenticated sessions, build sessions, decisions, runs, artifacts, evidence, previews, deployments, and recovery checkpoints.
@@ -135,7 +135,7 @@ Passkeys, MFA, recovery codes, enterprise SSO, domain verification, and SCIM are
 
 ## Agent architecture
 
-ReasonateAI uses Mastra as the agent platform. Each project build session has one run-scoped ReasonateAI CTO with the complete approved tool, skill, workspace, browser, command, debugging, verification, and deployment surface. The CTO preserves lifecycle context and may perform work directly. It delegates only when specialization or parallelism improves delivery, using a small worker vocabulary: a read-only scout, a full-capability coder, an evidence-driven debugger that can diagnose and repair, and ephemeral custom agents whose system instructions are authored by the CTO for one bounded objective. Frontend, backend, database, infrastructure, accessibility, security, and release engineering are task objectives, not permanent agent identities.
+ReasonateAI uses Mastra as the agent platform. Each project build session has one run-scoped ReasonateAI CTO with the complete approved tool, skill, workspace, browser, command, debugging, verification, and deployment surface. The CTO preserves lifecycle context and may perform work directly. It delegates only when specialization or parallelism improves delivery, using a small worker vocabulary: a read-only scout, a full-capability coder, an evidence-driven debugger, an independent verification-capable reviewer, and ephemeral custom agents for bounded objectives. The reviewer examines coherent implementation changes for correctness and exploitable security flaws and may run scoped check-mode commands; it has no direct source mutation tools, but shell execution is not a read-only guarantee. The CTO owns repairs, integration, final gates, and acceptance. Frontend, backend, database, infrastructure, accessibility, security, and release engineering are task objectives, not permanent agent identities.
 
 An authorized project can contain multiple build sessions, each representing one CTO conversation. The first request for a conversation binds its organization, project, run, sandbox identity, conversation thread, approvals, budget, and eventual deployment records. A repeat request with the same idempotency key reconnects to that conversation; a new key starts a separate one. Later user turns create new runs in the same conversation. Project checkpoints preserve the source workspace across conversations, while at most one run mutates a project's workspace at a time.
 
@@ -157,9 +157,15 @@ The workspace URL includes both selected resource identifiers as query parameter
 
 Mastra `AgentController` session state is process-local and therefore non-authoritative. ReasonateAI reconstructs a controller session from the durable build-session, run, approval, and thread binding after restart; no correctness, authorization, or recovery decision depends on an in-memory controller session.
 
+`submit_plan` pauses a run when the agent submits a structured proposal. An authorized decision resumes that exact tool call. History uses the explicit `run.plan_decided` approval boolean and preserves feedback independently; a generic answer acknowledgement is not an approval. Cancellation is displayed separately. This is a run-level review step, not a separate user-selectable Plan mode or a blanket gate on every source edit.
+
 ### Source, workspace, and artifact storage
 
 An active build session owns one mutable isolated workspace filesystem. It is backed by a sandbox provider or persistent project volume and is scoped by organization, project, and build session. The workspace is disposable infrastructure: it is restored from the latest accepted private Git checkpoint and durable project state after worker or sandbox failure. Authorized workers may share a workspace only under task ownership and per-file mutation locks; unconstrained concurrent writes are forbidden.
+
+An authorized checkpoint restore takes the same project lock as worker admission and refuses queued, running, awaiting-approval, or live-leased work. It first saves a recovery checkpoint, restores the selected source, then publishes a new immutable checkpoint used by workspace readers and subsequent workers. A failed restore attempts recovery and reports the saved recovery reference. PostgreSQL and checkpoint storage do not form a distributed transaction. Restoring source does not itself rewind conversation history.
+
+The existing local Docker build policy remains accepted: bridge networking by default, with `REASONATE_SANDBOX_NETWORK_MODE=none` available. This integration does not change networking. Production egress must still meet the security invariant below; bridge mode alone is not an allowlist.
 
 Workspace file tools share one POSIX resolver regardless of the API or worker host OS. Relative paths and the explicit `@/` shortcut resolve under the verified workspace root; absolute paths, Windows drive-prefixed representations, and local file URIs must already identify a location inside that root. An absolute `/src/app.ts` is rejected rather than rebased to `/workspace/src/app.ts`. Genuine names such as `@scope/app.ts` retain their `@`. Read selectors are parsed separately, resource URIs retain their authorized handlers, and shell command text is not rewritten. Sandbox-side symlink checks remain enforced.
 
@@ -180,6 +186,8 @@ The composer has one primary action: voice mode in a fresh empty chat, Send when
 The in-memory composer queue supports up to ten messages with bounded retained attachments, thumbnails, editing, removal, side chats, and a queuing toggle. Stop or a failed/cancelled generation pauses automatic follow-ups. A delivery attempt keeps its command type, target run, and idempotency key across retry; uncertain steering never becomes a new turn automatically. An explicit retry of a failed/cancelled generation reuses its server-stored input and files, creates a new scoped run, and remains subject to admission limits. Accepted commands remain accepted when a subsequent history refresh fails. Checkpoint source viewing uses escaped syntax tokens, line numbers, wrap/copy controls, and explicit plaintext fallback.
 
 Preview chrome displays the app route (starting at `/`), and Files displays `/workspace/<file>`; these are presentation paths over authorized product routes, never an alternative filesystem or authorization boundary. Each saved turn exposes a versioned checkpoint summary with real file and line changes against its restored base and bounded authorized file diffs. Failed or cancelled runs retain their actual outcome. Legacy or unavailable diffs show that limitation rather than fabricated zero counts.
+
+Loaded chats expose a compact message minimap inspired by the TOC Minimap reference. Hover or activation reveals user-message previews, including steering messages. Selecting an entry scrolls and focuses its stable target inside the chat, releases automatic bottom-following, and respects reduced motion. Assistant output is excluded from the navigation list; an empty chat has no minimap.
 
 ## Unified resources
 
@@ -209,7 +217,8 @@ Resource invariants:
 - Selectors, ranges, pagination, raw mode, conversion, and artifact recovery are consistent across resource types.
 - Handlers reject traversal, symlink escape, unauthorized scope, ownership violations, and oversized output.
 - Large output returns a stable authorized artifact reference instead of disappearing after truncation.
-- Skills and rules are loaded on demand rather than permanently occupying model context.
+- Rules define constraints; skills describe task procedures. A short bundled policy is automatically included for the CTO and workers, with named immutable `rule://` resources for revisiting it. Detailed skills load on demand through the explicit `skill://` catalog. Project instruction files and bounded relative imports come only from the verified sandbox filesystem; they cannot override platform policy. An empty project-rule listing is normal, and startup enumeration is unnecessary.
+- Safety decisions follow the operation's actual effect, scope, and existing authorization. Ordinary authorized development proceeds without repeated approval; sensitive external effects remain subject to control-plane policy. Prompt guidance supplements enforced controls and never constitutes a security boundary or proof that a review happened.
 
 ## Execution and verification
 
@@ -222,6 +231,7 @@ The product lifecycle is:
 3. Understand multimodal intent; produce editable requirements, architecture, acceptance criteria, and an implementation plan.
 4. Obtain required approval, then create a Git checkpoint.
 5. Implement the smallest coherent change directly or through bounded workers.
+   Review coherent changes independently for correctness, security, and applicable quality gates. Scale review to changed boundaries and retain evidence; after repairs, re-review affected changes.
 6. Start the real application in the sandbox and expose an authorized preview.
 7. Exercise the changed user path in a real browser.
 8. Capture relevant logs, console output, network activity, screenshots, security results, and test evidence.
@@ -270,7 +280,7 @@ TypeScript is pinned to 6.0.3 because Mastra 1.67.0 uses `typescript-paths` 1.5.
 
 ## Agent orchestration foundation
 
-Mastra is the executive-agent foundation. `@reasonateai/cto-runtime` owns the branded ReasonateAI CTO instructions, bounded loop defaults, core scout/coder/debugger definitions, verified run scope, and `AgentController` composition. Ephemeral custom agents remain a product requirement but are not currently registered, because their previous standalone execution bypassed controller governance; they must be reintroduced through the controller with the same verified workload grant. The `apps/api/src/mastra` composition root owns no product policy: it supplies configuration for both the authenticated API artifact and private worker artifact. It receives trusted request context only after company-owned authorization has resolved organization, project, build session, run, and workload grant.
+Mastra is the executive-agent foundation. `@reasonateai/cto-runtime` owns the branded ReasonateAI CTO instructions, configured loop budgets, core scout/coder/debugger/reviewer definitions, bundled guidance, verified run scope, and `AgentController` composition. Ephemeral custom agents remain a product requirement but are not currently registered, because their previous standalone execution bypassed controller governance; they must be reintroduced through the controller with the same verified workload grant. The `apps/api/src/mastra` composition root owns no product policy: it supplies configuration for both the authenticated API artifact and private worker artifact. It receives trusted request context only after company-owned authorization has resolved organization, project, build session, run, and workload grant.
 
 The runtime follows the useful coding-harness properties proven by Spectra and Mastra Code—fresh bounded workers, explicit capability profiles, focused assignments, task state, resumable approvals, child-result correlation, and evidence-based reporting—without copying their product boundary. ReasonateAI remains an autonomous product CTO and software factory that owns intake through deployed product, not a coding TUI.
 

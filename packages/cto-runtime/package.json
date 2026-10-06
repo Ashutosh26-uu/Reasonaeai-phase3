@@ -69,6 +69,10 @@
       "types": "./src/tools/edit.ts",
       "import": "./dist/tools/edit.js"
     },
+    "./tools/submit-plan": {
+      "types": "./src/tools/submit-plan.ts",
+      "import": "./dist/tools/submit-plan.js"
+    },
     "./tools/read-snapshots": {
       "types": "./src/tools/read-snapshots.ts",
       "import": "./dist/tools/read-snapshots.js"

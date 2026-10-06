@@ -254,6 +254,98 @@ describeWithDatabase("run execution", () => {
     expect(await leaseRow(harness, allocated.candidate.runId)).toBeUndefined();
   });
 
+  it("keeps a suspended submit_plan run leased, then resumes the same session with the plan decision", async () => {
+    const scripted = scriptedRuntime({
+      events: [
+        {
+          message: streamed("plan-message", "Here is the implementation plan."),
+          type: "message_update",
+        },
+      ],
+    });
+    const executor = createExecutor({
+      harness,
+      holder: "worker-plan",
+      runtime: scripted.runtime,
+    });
+    const allocated = await fixture("Review the plan");
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+    session.complete([
+      {
+        args: {
+          files: [
+            {
+              action: "create",
+              description: "New file",
+              path: "src/new.ts",
+            },
+          ],
+          rationale: "Needed for feature",
+          risk: "low",
+          steps: ["Create file"],
+          summary: "Plan summary",
+          title: "Plan Title",
+        },
+        resumeSchema: '{"type":"object"}',
+        suspendPayload: {
+          files: [
+            {
+              action: "create",
+              description: "New file",
+              path: "src/new.ts",
+            },
+          ],
+          rationale: "Needed for feature",
+          risk: "low",
+          steps: ["Create file"],
+          summary: "Plan summary",
+          title: "Plan Title",
+        },
+        toolCallId: "plan-1",
+        toolName: "submit_plan",
+        type: "tool_suspended",
+      },
+      { reason: "suspended", type: "agent_end" },
+    ]);
+    await vi.waitFor(async () => {
+      expect(await runStatus(harness, allocated)).toBe("awaiting_approval");
+    });
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeDefined();
+
+    const runRow = await harness.pool.query<{
+      pending_tool_name: string | null;
+    }>("select pending_tool_name from runs where run_id = $1", [
+      allocated.candidate.runId,
+    ]);
+    expect(runRow.rows[0]?.pending_tool_name).toBe("submit_plan");
+
+    const decision = { approved: true, feedback: "Approved, go ahead" };
+    expect(
+      await harness.store.answerRunQuestion({
+        answer: JSON.stringify(decision),
+        buildSessionId: allocated.buildSessionId,
+        requestedByUserId: UserIdSchema.parse(randomUUID()),
+        runId: allocated.candidate.runId,
+        scope: allocated.scope,
+        toolCallId: "plan-1",
+      })
+    ).toBe("accepted");
+
+    await vi.waitFor(
+      () => {
+        expect(session.lastResumeData).toBe(JSON.stringify(decision));
+      },
+      { timeout: 3000 }
+    );
+    expect(session.lastResumedToolCallId).toBe("plan-1");
+    session.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await attempt).toBe("succeeded");
+    expect(await runStatus(harness, allocated)).toBe("completed");
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeUndefined();
+  });
+
   it("reclaims an expired suspended run from its durable controller identity", async () => {
     const allocated = await fixture("Ask for the region");
     const oldLease = await harness.store.beginRun({
@@ -317,6 +409,223 @@ describeWithDatabase("run execution", () => {
     session.complete([{ reason: "complete", type: "agent_end" }]);
     expect(await attempt).toBe("succeeded");
     expect(session.sendCalls).toBe(0);
+  });
+
+  it("parks an unanswered suspended run upon suspension timeout, releasing lease and container, and resumes when answered", async () => {
+    const allocated = await fixture("Configure environment");
+    const scripted = scriptedRuntime();
+    const executor = createExecutor({
+      harness,
+      holder: "worker-suspension-test",
+      runtime: scripted.runtime,
+      suspensionTimeoutMs: 300,
+    });
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+    session.complete([
+      {
+        args: { question: "Which region?" },
+        resumeSchema: "string",
+        suspendPayload: { question: "Which region?" },
+        toolCallId: "ask-park-1",
+        toolName: "ask_user",
+        type: "tool_suspended",
+      },
+      { reason: "suspended", type: "agent_end" },
+    ]);
+
+    const outcome = await attempt;
+    expect(outcome).toBe("parked");
+
+    expect(await runStatus(harness, allocated)).toBe("awaiting_approval");
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeUndefined();
+    expect(await containerCount(allocated.volume)).toBe(0);
+
+    const parkedRow = await harness.pool.query<{ parked_at: Date | null }>(
+      "select parked_at from runs where run_id = $1",
+      [allocated.candidate.runId]
+    );
+    expect(parkedRow.rows[0]?.parked_at).not.toBeNull();
+
+    const events = await ledger(harness, allocated);
+    const parkEvent = events.find((e) => e.type === "run.parked");
+    expect(parkEvent).toBeDefined();
+    expect(parkEvent?.payload).toMatchObject({
+      toolCallId: "ask-park-1",
+    });
+
+    const runnablesBeforeAnswer = await harness.store.listRunnableRuns({
+      limit: 64,
+    });
+    expect(
+      runnablesBeforeAnswer.some(
+        (run) => run.runId === allocated.candidate.runId
+      )
+    ).toBe(false);
+
+    expect(
+      await harness.store.answerRunQuestion({
+        answer: "us-east-1",
+        buildSessionId: allocated.buildSessionId,
+        requestedByUserId: UserIdSchema.parse(randomUUID()),
+        runId: allocated.candidate.runId,
+        scope: allocated.scope,
+        toolCallId: "ask-park-1",
+      })
+    ).toBe("accepted");
+
+    const runnablesAfterAnswer = await harness.store.listRunnableRuns({
+      limit: 64,
+    });
+    const resumedCandidate = runnablesAfterAnswer.find(
+      (run) => run.runId === allocated.candidate.runId
+    );
+    expect(resumedCandidate).toBeDefined();
+    if (resumedCandidate === undefined) {
+      throw new Error("Expected resumedCandidate to be defined");
+    }
+    expect(resumedCandidate.pendingToolCallId).toBe("ask-park-1");
+
+    const resumeScripted = scriptedRuntime();
+    const resumeExecutor = createExecutor({
+      harness,
+      holder: "worker-resumer",
+      runtime: resumeScripted.runtime,
+    });
+    const resumeAttempt = resumeExecutor.execute(
+      resumedCandidate,
+      createStopSignal()
+    );
+    const resumeSession = await resumeScripted.waitForSession();
+    await vi.waitFor(
+      () => {
+        expect(resumeSession.lastResumeData).toBe("us-east-1");
+      },
+      { timeout: 3000 }
+    );
+    expect(resumeSession.lastResumedToolCallId).toBe("ask-park-1");
+    resumeSession.complete([{ reason: "complete", type: "agent_end" }]);
+
+    expect(await resumeAttempt).toBe("succeeded");
+    expect(await runStatus(harness, allocated)).toBe("completed");
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeUndefined();
+  });
+
+  it("supports multiple sequential parking cycles across successive questions in the same session", async () => {
+    const allocated = await fixture("Configure multi-turn session");
+    const scripted = scriptedRuntime();
+    const executor = createExecutor({
+      harness,
+      holder: "worker-multi-park-test",
+      runtime: scripted.runtime,
+      suspensionTimeoutMs: 300,
+    });
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await session.started;
+
+    // First question: controller turn ends in tool_suspended
+    session.complete([
+      {
+        args: { question: "First choice?" },
+        resumeSchema: "string",
+        suspendPayload: { question: "First choice?" },
+        toolCallId: "ask-q1",
+        toolName: "ask_user",
+        type: "tool_suspended",
+      },
+      { reason: "suspended", type: "agent_end" },
+    ]);
+    await vi.waitFor(async () => {
+      expect(await runStatus(harness, allocated)).toBe("awaiting_approval");
+    });
+
+    // Answer first question before timeout
+    expect(
+      await harness.store.answerRunQuestion({
+        answer: "Choice-A",
+        buildSessionId: allocated.buildSessionId,
+        requestedByUserId: UserIdSchema.parse(randomUUID()),
+        runId: allocated.candidate.runId,
+        scope: allocated.scope,
+        toolCallId: "ask-q1",
+      })
+    ).toBe("accepted");
+
+    // Worker resumes session with Choice-A
+    await vi.waitFor(
+      () => {
+        expect(session.lastResumeData).toBe("Choice-A");
+      },
+      { timeout: 3000 }
+    );
+
+    // Agent continues execution and asks second question, then suspends again
+    session.complete([
+      {
+        args: { question: "Second choice?" },
+        resumeSchema: "string",
+        suspendPayload: { question: "Second choice?" },
+        toolCallId: "ask-q2",
+        toolName: "ask_user",
+        type: "tool_suspended",
+      },
+      { reason: "suspended", type: "agent_end" },
+    ]);
+
+    // Second question is unanswered -> worker times out and parks the run!
+    const outcome = await attempt;
+    expect(outcome).toBe("parked");
+    expect(await runStatus(harness, allocated)).toBe("awaiting_approval");
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeUndefined();
+    expect(await containerCount(allocated.volume)).toBe(0);
+
+    // Answer second question
+    expect(
+      await harness.store.answerRunQuestion({
+        answer: "Choice-B",
+        buildSessionId: allocated.buildSessionId,
+        requestedByUserId: UserIdSchema.parse(randomUUID()),
+        runId: allocated.candidate.runId,
+        scope: allocated.scope,
+        toolCallId: "ask-q2",
+      })
+    ).toBe("accepted");
+
+    const runnables = await harness.store.listRunnableRuns({ limit: 64 });
+    const resumedCandidate = runnables.find(
+      (run) => run.runId === allocated.candidate.runId
+    );
+    expect(resumedCandidate).toBeDefined();
+    if (resumedCandidate === undefined) {
+      throw new Error("Expected resumedCandidate to be defined");
+    }
+    expect(resumedCandidate.pendingToolCallId).toBe("ask-q2");
+
+    const resumeScripted = scriptedRuntime();
+    const resumeExecutor = createExecutor({
+      harness,
+      holder: "worker-multi-resumer",
+      runtime: resumeScripted.runtime,
+    });
+    const resumeAttempt = resumeExecutor.execute(
+      resumedCandidate,
+      createStopSignal()
+    );
+    const resumeSession = await resumeScripted.waitForSession();
+    await vi.waitFor(
+      () => {
+        expect(resumeSession.lastResumeData).toBe("Choice-B");
+      },
+      { timeout: 3000 }
+    );
+    expect(resumeSession.lastResumedToolCallId).toBe("ask-q2");
+    resumeSession.complete([{ reason: "complete", type: "agent_end" }]);
+
+    expect(await resumeAttempt).toBe("succeeded");
+    expect(await runStatus(harness, allocated)).toBe("completed");
+    expect(await leaseRow(harness, allocated.candidate.runId)).toBeUndefined();
   });
 
   it("publishes the text its agent streams as live deltas, and the ledger keeps the message", async () => {

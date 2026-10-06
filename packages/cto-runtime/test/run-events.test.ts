@@ -223,6 +223,26 @@ const DURABLE: DurableCase[] = [
   },
   {
     event: {
+      args: { title: "Implementation Plan" },
+      resumeSchema: '{"type":"object"}',
+      suspendPayload: { title: "Implementation Plan" },
+      toolCallId: "call-plan",
+      toolName: "submit_plan",
+      type: "tool_suspended",
+    },
+    name: "submit_plan suspended mapping to run.plan_proposed",
+    payload: {
+      args: { title: "Implementation Plan" },
+      kind: "tool_suspended",
+      resumeSchema: '{"type":"object"}',
+      suspendPayload: { title: "Implementation Plan" },
+      toolCallId: "call-plan",
+      toolName: "submit_plan",
+    },
+    type: "run.plan_proposed",
+  },
+  {
+    event: {
       args: { question: "Which region?" },
       suspendPayload: { question: "Which region?" },
       toolCallId: "call-ask",

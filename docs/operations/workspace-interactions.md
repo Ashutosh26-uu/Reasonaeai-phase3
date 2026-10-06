@@ -111,3 +111,26 @@ Full branch release acceptance stays in progress until the guarded repository bu
 ### Feature branch preservation — October 5, 2026
 
 The UI changes are isolated in one feature commit on `codex/sketch-canvas-composer-ui`, based on current `main` at `2135030` after workspace PR #20 merged. Rebase required no conflict resolution. On this integrated snapshot, `pnpm check` passed 370 files, `pnpm typecheck` passed all ten workspace tasks, and `pnpm --filter @reasonateai/web test` passed 116 tests across 17 files. Earlier build/browser evidence above remains evidence for the UI implementation; the rebased branch still requires the full CI build and isolated integration gates. The user's generated Next.js development file remains a local-only change.
+
+### Main integration and message navigation — October 6, 2026
+
+Merge main at `c58ff4b` (PRs #30–#33) into PR #29 without rewriting shared history. Resolve the sole phase-document conflict by retaining incoming features and the verified Sketch/composer work. The reviewer authorized merging this integration on October 6. No unrelated open feature PR is included.
+
+Fix approval replay so `approved: true` remains approved even with feedback, generic answer acknowledgements do not invent approval, cancelled reviews remain cancelled, and snapshot/proposal replay yields one plan entry. A `submit_plan` pause is not a separate Plan mode.
+
+Checkpoint restoration refuses active or queued project work and holds the worker-admission project lock during restoration. Save the current tracked and untracked source in a recovery checkpoint before replacing it, publish the restored tree as a new immutable checkpoint, and recover the preceding source if publication fails. Response fields `recoveryCheckpointId` and `workspaceCheckpointId` are additive and optional for compatibility. Stop the restore container while retaining its workspace volume. Git checkpoint repositories explicitly disable automatic line-ending conversion so restored source bytes are stable across hosts. Audit rows contain the requested, recovery, and published checkpoint references. Database and filesystem storage do not share a distributed transaction; a failed database commit after publication requires reconciliation using the saved checkpoint references rather than claiming atomicity.
+
+The message minimap follows the visual reference at https://chanhdai.com/components/toc-minimap with local React/CSS and existing scrolling infrastructure. It lists user and steering messages, shows the active location, scrolls only the transcript, focuses the target, releases bottom-following, and supports keyboard dismissal and reduced motion. It adds no dependency, external asset, or sound request. Retry/Edit history rewind and branching are separately planned and are not included here.
+
+Verification on the combined local snapshot:
+
+- Frozen installation passed. `pnpm check` passed 397 files; `pnpm typecheck` passed ten tasks.
+- `pnpm test` passed all 17 tasks with disposable PostgreSQL, Redis, real Git, and Docker. Final web tests passed 162 tests across 23 files.
+- Restore regressions passed all 15 tests: authentication/tenant denial, active-state refusal, fresh-host restored source, recovery of preceding tracked/untracked edits, storage failures, competing restores, and worker admission after restoration. A separate run initially collided with another suite's migration; the isolated rerun passed without changing locking assertions.
+- `pnpm build` passed all ten tasks, including Mastra and Next production artifacts. The final minimap popup positioning is additionally rebuilt/browser-checked before push.
+- `smoke:checkpoint` passed against real Docker: snapshot, fresh-container restore, successful teardown, and volume retention after induced checkpoint failure.
+- A disposable account against the built API exercised unauthenticated HTTP restore denial, authenticated Docker restoration, and an authorized file read of the restored source. Recovery and published checkpoint identifiers were returned.
+- The built chat replayed an approved plan with feedback and delivered steering as an ordinary message. Minimap navigation focused and scrolled to the first request and a steering message; Escape dismissed the popup. The compact popup remained within the 390-pixel viewport. Appearance evidence: [desktop](../../.context/evidence/message-minimap-desktop.jpg), [mobile](../../.context/evidence/message-minimap-mobile.jpg). Screenshots use the disposable account's existing light appearance; the previously verified dark Sketch appearance is unchanged.
+- Production dependency audit passed the high/critical threshold (two low and two moderate advisories remain). The pushed commit must pass the repository dependency/secret scan and all CI gates before merging.
+
+Incoming main's schema version 6 adds parked suspension fields; this integration adds no further database migration. Keep those columns when rolling back application artifacts. Rollback uses the preceding web/API/worker artifacts together; durable ledger events and immutable recovery checkpoints remain readable. Networking stays as merged (bridge by default, none configurable), without an egress change in this PR. No deploy, live inference, or overall phase-completion claim is made.

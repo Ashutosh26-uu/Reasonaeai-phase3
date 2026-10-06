@@ -675,6 +675,75 @@ describeWithDatabase("build session routes", () => {
     });
   });
 
+  it("accepts a submit_plan decision and records run.plan_decided event", async () => {
+    const allocated = await handlers.allocate(
+      allocationRequest({ idempotencyKey: `plan-${randomUUID()}` })
+    );
+    expect(allocated.status).toBe(202);
+    const { buildSession } = await allocated.json();
+    const scope = { organizationId, projectId };
+    const lease = await store.beginRun({
+      holder: "plan-route-test",
+      runId: buildSession.runId,
+      ttlMs: 60_000,
+    });
+    expect(lease).toBeDefined();
+    await store.appendRunEvent({
+      controllerRunId: "test-controller-run",
+      payload: {
+        args: { title: "New Feature Plan" },
+        kind: "tool_suspended",
+        suspendPayload: { title: "New Feature Plan" },
+        toolCallId: "plan-call-1",
+        toolName: "submit_plan",
+      },
+      runId: buildSession.runId,
+      scope,
+      type: "run.plan_proposed",
+    });
+    const params = {
+      buildSessionId: buildSession.buildSessionId,
+      runId: buildSession.runId,
+    };
+    const query = scope;
+    const planDecisionBody = {
+      approved: true,
+      feedback: "Looks great, proceed",
+      toolCallId: "plan-call-1",
+    };
+    const res = await handlers.answerRun(
+      context({ body: planDecisionBody, cookie: ownerCookie, params, query })
+    );
+    expect(res.status).toBe(202);
+
+    const takenAnswer = await store.takeRunAnswer({
+      runId: buildSession.runId,
+      scope,
+      toolCallId: "plan-call-1",
+    });
+    expect(takenAnswer).toBe(
+      JSON.stringify({ approved: true, feedback: "Looks great, proceed" })
+    );
+
+    const events = await store.listRunEvents({
+      afterSequence: 0,
+      limit: 20,
+      runId: buildSession.runId,
+      scope,
+    });
+    const planDecided = events.find((e) => e.type === "run.plan_decided");
+    expect(planDecided).toBeDefined();
+    expect(planDecided?.payload.approved).toBe(true);
+    expect(planDecided?.payload.feedback).toBe("Looks great, proceed");
+
+    await store.finishRun({
+      holder: "plan-route-test",
+      leaseId: lease?.leaseId ?? "",
+      runId: buildSession.runId,
+      status: "succeeded",
+    });
+  });
+
   it("denies a member whose role lacks the capability", async () => {
     const response = await handlers.allocate(
       context({

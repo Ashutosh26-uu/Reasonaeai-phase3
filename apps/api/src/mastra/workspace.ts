@@ -1,3 +1,7 @@
+import type {
+  ExecuteCommandOptions,
+  WorkspaceSandbox,
+} from "@mastra/core/workspace";
 import { WORKSPACE_TOOLS, Workspace } from "@mastra/core/workspace";
 import { DockerSandbox } from "@mastra/docker";
 import type {
@@ -9,7 +13,64 @@ import {
   readRunScope,
   sandboxIdFor,
 } from "@reasonateai/cto-runtime/run-scope";
+import type { CheckpointSandbox } from "@reasonateai/sandbox/checkpoint";
 import { SandboxFilesystem } from "./sandbox-filesystem";
+
+export function checkpointSandboxFor(
+  sandbox: WorkspaceSandbox
+): CheckpointSandbox {
+  const executeCommand = sandbox.executeCommand?.bind(sandbox);
+  const writeFiles = sandbox.writeFiles?.bind(sandbox);
+
+  return {
+    runCommand: async (request) => {
+      if (executeCommand === undefined) {
+        throw new Error("The resolved sandbox cannot execute commands.");
+      }
+
+      const options: ExecuteCommandOptions = {};
+      if (request.cwd !== undefined) {
+        options.cwd = request.cwd;
+      }
+      if (request.env !== undefined) {
+        options.env = request.env;
+      }
+      if (request.timeoutMs !== undefined) {
+        options.timeout = request.timeoutMs;
+      }
+
+      const startedAt = Date.now();
+      const result = await executeCommand(
+        request.command,
+        request.args,
+        options
+      );
+      if (result.stdoutTruncated === true) {
+        throw new Error(
+          "The sandbox truncated checkpoint output; partial checkpoints cannot be used."
+        );
+      }
+      return {
+        durationMs: result.executionTimeMs ?? Date.now() - startedAt,
+        exitCode: result.exitCode,
+        stderr: result.stderr,
+        stdout: result.stdout,
+        timedOut: result.timedOut ?? result.killed ?? false,
+      };
+    },
+    writeFile: async (relativePath, content) => {
+      if (writeFiles === undefined) {
+        throw new Error("The resolved sandbox cannot write files.");
+      }
+      await writeFiles([
+        {
+          content: typeof content === "string" ? content : Buffer.from(content),
+          path: relativePath,
+        },
+      ]);
+    },
+  };
+}
 
 const SANDBOX_CPU_PERIOD = 100_000;
 const SANDBOX_CPU_QUOTA = 100_000;
@@ -46,25 +107,72 @@ export const buildSandboxEnvironment: {
   },
 };
 
-function createBuildSandbox(scope: RunScope) {
+export function resolveBuildSandboxNetworkMode(
+  env: NodeJS.ProcessEnv = process.env
+): "bridge" | "none" {
+  const candidate = (
+    env.REASONATE_SANDBOX_NETWORK_MODE ??
+    env.SANDBOX_NETWORK_MODE ??
+    "bridge"
+  )
+    .trim()
+    .toLowerCase();
+  return candidate === "none" ? "none" : "bridge";
+}
+
+export function resolveBuildSandboxCacheVolume(
+  env: NodeJS.ProcessEnv = process.env
+): string | undefined {
+  const candidate = (
+    env.REASONATE_PACKAGE_CACHE_VOLUME ?? env.SANDBOX_CACHE_VOLUME
+  )?.trim();
+  if (!candidate || candidate.length === 0) {
+    return undefined;
+  }
+  if (candidate.toLowerCase().includes("docker.sock")) {
+    throw new Error("Mounting the host Docker socket is forbidden.");
+  }
+  return candidate;
+}
+
+export function createBuildSandbox(scope: RunScope) {
   const sandboxId = sandboxIdFor(scope);
+  const network = resolveBuildSandboxNetworkMode();
+  const cacheVolume = resolveBuildSandboxCacheVolume();
+  const mounts: Array<{
+    source: string;
+    target: string;
+    type: "volume";
+  }> = [
+    {
+      source: `${sandboxId}-workspace`,
+      target: SANDBOX_WORKING_DIRECTORY,
+      type: "volume",
+    },
+  ];
+  const env: Record<string, string> = {
+    HOME: SANDBOX_WORKING_DIRECTORY,
+  };
+  if (cacheVolume) {
+    mounts.push({
+      source: cacheVolume,
+      target: "/root/.npm",
+      type: "volume",
+    });
+    env.npm_config_cache = "/root/.npm";
+  }
+
   return new DockerSandbox({
     capDrop: ["ALL"],
     cpuPeriod: SANDBOX_CPU_PERIOD,
     cpuQuota: SANDBOX_CPU_QUOTA,
-    env: { HOME: SANDBOX_WORKING_DIRECTORY },
+    env,
     id: sandboxId,
     image: SANDBOX_IMAGE,
     memory: SANDBOX_MEMORY_BYTES,
     memorySwap: SANDBOX_MEMORY_BYTES,
-    mounts: [
-      {
-        source: `${sandboxId}-workspace`,
-        target: SANDBOX_WORKING_DIRECTORY,
-        type: "volume",
-      },
-    ],
-    network: "none",
+    mounts,
+    network,
     pidsLimit: 256,
     securityOpt: ["no-new-privileges:true"],
     timeout: 120_000,

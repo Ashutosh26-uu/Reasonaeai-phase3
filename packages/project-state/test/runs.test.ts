@@ -4,6 +4,7 @@ import {
   ProjectIdSchema,
   type RunId,
   SessionIdSchema,
+  UserIdSchema,
 } from "@reasonateai/contracts/identity";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -120,6 +121,7 @@ describeWithDatabase("run dispatch", () => {
       organizationId: scope.organizationId,
       pendingMastraRunId: null,
       pendingToolCallId: null,
+      pendingToolName: null,
       projectId: scope.projectId,
       runId: allocation.buildSession.runId,
       sandboxEnvironmentId: allocation.sandbox.sandboxEnvironmentId,
@@ -581,5 +583,309 @@ describeWithDatabase("run dispatch", () => {
         runId,
       })
     ).toBeUndefined();
+  });
+
+  it("parks an unanswered run, keeps it from runnable poll until answered, then re-offers it", async () => {
+    const { allocation, scope } = await queuedRun();
+    const { runId } = allocation.buildSession;
+
+    // Begin run
+    const lease = await store.beginRun({
+      holder: "worker-park-test",
+      runId,
+      ttlMs: 60_000,
+    });
+    expect(lease).toBeDefined();
+
+    // Suspend for ask_user
+    await store.appendRunEvent({
+      controllerRunId: "ctrl-park-run-1",
+      payload: {
+        kind: "tool_suspended",
+        toolCallId: "call-park-1",
+        toolName: "ask_user",
+      },
+      runId,
+      scope,
+      type: "approval.requested",
+    });
+
+    // Verify run is in awaiting_approval
+    const suspended = await store.getRun({
+      organizationId: scope.organizationId,
+      projectId: scope.projectId,
+      runId,
+    });
+    expect(suspended?.status).toBe("awaiting_approval");
+
+    // Park the run and release lease (simulating suspension timeout)
+    const parked = await store.parkRunSuspension({ runId, scope });
+    expect(parked).toBe(true);
+    if (lease) {
+      await store.releaseRunLease({
+        leaseId: lease.leaseId,
+        runId,
+        scope,
+      });
+    }
+
+    // Since the run is parked and unanswered, listRunnableRuns MUST NOT return it
+    const listBeforeAnswer = (
+      await store.listRunnableRuns({ limit: 500 })
+    ).find((r) => r.runId === runId);
+    expect(listBeforeAnswer).toBeUndefined();
+
+    // User answers the question
+    const answerResult = await store.answerRunQuestion({
+      answer: "User answered here",
+      buildSessionId: allocation.buildSession.buildSessionId,
+      requestedByUserId: UserIdSchema.parse(randomUUID()),
+      runId,
+      scope,
+      toolCallId: "call-park-1",
+    });
+    expect(answerResult).toBe("accepted");
+
+    // Now listRunnableRuns MUST detect the answering run!
+    const listAfterAnswer = (await store.listRunnableRuns({ limit: 500 })).find(
+      (r) => r.runId === runId
+    );
+    expect(listAfterAnswer).toBeDefined();
+    expect(listAfterAnswer?.pendingToolCallId).toBe("call-park-1");
+    expect(listAfterAnswer?.pendingMastraRunId).toBe("ctrl-park-run-1");
+
+    // A worker re-claims the lease
+    const resumeLease = await store.beginRun({
+      holder: "worker-resume-test",
+      runId,
+      ttlMs: 60_000,
+    });
+    expect(resumeLease).toBeDefined();
+
+    // Worker consumes the answer
+    const answer = await store.takeRunAnswer({
+      runId,
+      scope,
+      toolCallId: "call-park-1",
+    });
+    expect(answer).toBe("User answered here");
+
+    // Run status is now running and parked_at is cleared
+    const resumed = await store.getRun({
+      organizationId: scope.organizationId,
+      projectId: scope.projectId,
+      runId,
+    });
+    expect(resumed?.status).toBe("running");
+
+    if (resumeLease) {
+      await store.finishRun({
+        holder: "worker-resume-test",
+        leaseId: resumeLease.leaseId,
+        runId,
+        status: "succeeded",
+      });
+    }
+  });
+
+  it("suspends, records plan proposal, accepts plan decision, and resumes for submit_plan", async () => {
+    const { allocation, scope } = await queuedRun();
+    const { runId } = allocation.buildSession;
+    fixtureRuns.push(runId);
+
+    const lease = await store.beginRun({
+      holder: "worker-plan-test",
+      runId,
+      ttlMs: 60_000,
+    });
+    expect(lease).toBeDefined();
+
+    // Suspend for submit_plan with run.plan_proposed
+    await store.appendRunEvent({
+      controllerRunId: "ctrl-plan-run-1",
+      payload: {
+        kind: "tool_suspended",
+        plan: {
+          files: [
+            {
+              action: "create",
+              description: "New schema",
+              path: "src/schema.ts",
+            },
+          ],
+          rationale: "Upgrade database schema for plan approvals",
+          risk: "Low",
+          steps: ["Add column", "Run migration"],
+          summary: "Upgrade schema",
+          title: "Database Migration Plan",
+        },
+        toolCallId: "call-plan-1",
+        toolName: "submit_plan",
+      },
+      runId,
+      scope,
+      type: "run.plan_proposed",
+    });
+
+    // Run status is awaiting_approval
+    const suspended = await store.getRun({
+      organizationId: scope.organizationId,
+      projectId: scope.projectId,
+      runId,
+    });
+    expect(suspended?.status).toBe("awaiting_approval");
+
+    // Release the lease so listRunnableRuns can see the run waiting for approval
+    if (lease) {
+      await store.releaseRunLease({
+        leaseId: lease.leaseId,
+        runId,
+        scope,
+      });
+    }
+
+    // Runnable runs shows pending tool name as submit_plan
+    const runnable = (await store.listRunnableRuns({ limit: 500 })).find(
+      (r) => r.runId === runId
+    );
+    expect(runnable?.pendingToolName).toBe("submit_plan");
+    expect(runnable?.pendingToolCallId).toBe("call-plan-1");
+
+    // User approves the plan
+    const planDecision = JSON.stringify({
+      approved: true,
+      feedback: "Looks good",
+    });
+    const answerResult = await store.answerRunQuestion({
+      answer: planDecision,
+      buildSessionId: allocation.buildSession.buildSessionId,
+      requestedByUserId: UserIdSchema.parse(randomUUID()),
+      runId,
+      scope,
+      toolCallId: "call-plan-1",
+    });
+    expect(answerResult).toBe("accepted");
+
+    // Check that run.plan_decided was appended
+    const events = await store.listRunEvents({
+      afterSequence: 0,
+      limit: 50,
+      runId,
+      scope,
+    });
+    const planDecided = events.find((e) => e.type === "run.plan_decided");
+    expect(planDecided).toBeDefined();
+    expect(planDecided?.payload.approved).toBe(true);
+    expect(planDecided?.payload.feedback).toBe("Looks good");
+
+    // A worker re-claims the lease
+    const resumeLease = await store.beginRun({
+      holder: "worker-plan-test",
+      runId,
+      ttlMs: 60_000,
+    });
+    expect(resumeLease).toBeDefined();
+
+    // Worker takes answer
+    const answer = await store.takeRunAnswer({
+      runId,
+      scope,
+      toolCallId: "call-plan-1",
+    });
+    expect(answer).toBe(planDecision);
+
+    const resumed = await store.getRun({
+      organizationId: scope.organizationId,
+      projectId: scope.projectId,
+      runId,
+    });
+    expect(resumed?.status).toBe("running");
+
+    if (resumeLease) {
+      await store.finishRun({
+        holder: "worker-plan-test",
+        leaseId: resumeLease.leaseId,
+        runId,
+        status: "succeeded",
+      });
+    }
+  });
+
+  it("records run.plan_decided with approved: false when answered with text feedback", async () => {
+    const { allocation, scope } = await queuedRun();
+    const { runId } = allocation.buildSession;
+    fixtureRuns.push(runId);
+
+    const lease = await store.beginRun({
+      holder: "worker-plan-test-2",
+      runId,
+      ttlMs: 60_000,
+    });
+    expect(lease).toBeDefined();
+
+    await store.appendRunEvent({
+      controllerRunId: "ctrl-plan-run-2",
+      payload: {
+        kind: "tool_suspended",
+        plan: {
+          files: [
+            {
+              action: "delete",
+              description: "Drop legacy table",
+              path: "src/legacy.ts",
+            },
+          ],
+          rationale: "Clean up codebase",
+          risk: "High",
+          steps: ["Delete legacy file"],
+          summary: "Remove legacy code",
+          title: "Delete Legacy Code Plan",
+        },
+        toolCallId: "call-plan-2",
+        toolName: "submit_plan",
+      },
+      runId,
+      scope,
+      type: "run.plan_proposed",
+    });
+
+    const rejectionFeedback =
+      "Do not delete legacy code yet; dependencies still exist.";
+    const answerResult = await store.answerRunQuestion({
+      answer: rejectionFeedback,
+      buildSessionId: allocation.buildSession.buildSessionId,
+      requestedByUserId: UserIdSchema.parse(randomUUID()),
+      runId,
+      scope,
+      toolCallId: "call-plan-2",
+    });
+    expect(answerResult).toBe("accepted");
+
+    const events = await store.listRunEvents({
+      afterSequence: 0,
+      limit: 50,
+      runId,
+      scope,
+    });
+    const planDecided = events.find((e) => e.type === "run.plan_decided");
+    expect(planDecided).toBeDefined();
+    expect(planDecided?.payload.approved).toBe(false);
+    expect(planDecided?.payload.feedback).toBe(rejectionFeedback);
+
+    const takenAnswer = await store.takeRunAnswer({
+      runId,
+      scope,
+      toolCallId: "call-plan-2",
+    });
+    expect(takenAnswer).toBe(rejectionFeedback);
+
+    if (lease) {
+      await store.finishRun({
+        holder: "worker-plan-test-2",
+        leaseId: lease.leaseId,
+        runId,
+        status: "succeeded",
+      });
+    }
   });
 });

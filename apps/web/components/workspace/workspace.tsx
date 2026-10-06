@@ -33,14 +33,25 @@ import {
   type SetStateAction,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
+import { turnCheckpoint } from "@/components/chat/checkpoint-state";
 import { Composer } from "@/components/chat/composer";
 import { EmptyState } from "@/components/chat/empty-state";
+import { PlanCard } from "@/components/chat/plan-card";
 import { QuestionCard } from "@/components/chat/question-card";
 import { runProgressLabel, runStreamEnded } from "@/components/chat/run-state";
-import { pendingQuestion, projectTranscript } from "@/components/chat/timeline";
+import {
+  generatePromptSuggestions,
+  type PromptSuggestion,
+} from "@/components/chat/suggestions";
+import {
+  pendingPlan,
+  pendingQuestion,
+  projectTranscript,
+} from "@/components/chat/timeline";
 import { Transcript } from "@/components/chat/transcript";
 import { useRunStream } from "@/components/chat/use-run-stream";
 import { VoiceMode } from "@/components/chat/voice-mode";
@@ -263,6 +274,7 @@ function ResizableWorkspacePanel({
   organizationId,
   panelWidth,
   projectId,
+  refreshKey,
   workAreaRef,
 }: {
   buildSessionId: string;
@@ -275,6 +287,7 @@ function ResizableWorkspacePanel({
   organizationId: string;
   panelWidth: number;
   projectId: string;
+  refreshKey?: number;
   workAreaRef: { current: HTMLDivElement | null };
 }) {
   if (!isOpen) {
@@ -309,6 +322,7 @@ function ResizableWorkspacePanel({
         onClose={onClose}
         organizationId={organizationId}
         projectId={projectId}
+        refreshKey={refreshKey}
       />
     </>
   );
@@ -540,6 +554,21 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   const [answeredToolCallId, setAnsweredToolCallId] = useState<string | null>(
     null
   );
+  const [decidingPlan, setDecidingPlan] = useState(false);
+  const [decidedPlanToolCallId, setDecidedPlanToolCallId] = useState<
+    string | null
+  >(null);
+  const [workspaceRefreshKey, setWorkspaceRefreshKey] = useState(0);
+  const [suggestionSeed, setSuggestionSeed] = useState(0);
+  const [dismissedSuggestionTurnId, setDismissedSuggestionTurnId] = useState<
+    string | null
+  >(null);
+
+  useEffect(() => {
+    setDismissedSuggestionTurnId(null);
+    setSuggestionSeed(0);
+  }, [conversationId]);
+
   const [panelOpen, setPanelOpen] = useState(
     () => route.conversationId.length > 0
   );
@@ -795,6 +824,9 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   const question = pendingRunId
     ? pendingQuestion(timeline, pendingRunId)
     : undefined;
+  const planProposal = pendingRunId
+    ? pendingPlan(timeline, pendingRunId)
+    : undefined;
   const answerQuestion = useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
@@ -847,6 +879,77 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     },
     []
   );
+
+  const approvePlan = useCallback(
+    async (toolCallId: string) => {
+      if (!(pendingRunId && conversationId && organizationId && projectId)) {
+        return;
+      }
+      setDecidingPlan(true);
+      setError("");
+      try {
+        await request(
+          `/v1/build-sessions/${conversationId}/runs/${pendingRunId}/answers?${scopeQuery(organizationId, projectId)}`,
+          RunAnswerAcceptedSchema.parse,
+          {
+            body: JSON.stringify({ approved: true, toolCallId }),
+            method: "POST",
+          }
+        );
+        setDecidedPlanToolCallId(toolCallId);
+      } catch (cause) {
+        setError(describeError(cause, "Could not approve the plan."));
+      } finally {
+        setDecidingPlan(false);
+      }
+    },
+    [conversationId, organizationId, pendingRunId, projectId]
+  );
+
+  const rejectPlan = useCallback(
+    async (toolCallId: string, feedback: string) => {
+      if (!(pendingRunId && conversationId && organizationId && projectId)) {
+        return;
+      }
+      setDecidingPlan(true);
+      setError("");
+      try {
+        await request(
+          `/v1/build-sessions/${conversationId}/runs/${pendingRunId}/answers?${scopeQuery(organizationId, projectId)}`,
+          RunAnswerAcceptedSchema.parse,
+          {
+            body: JSON.stringify({ approved: false, feedback, toolCallId }),
+            method: "POST",
+          }
+        );
+        setDecidedPlanToolCallId(toolCallId);
+      } catch (cause) {
+        setError(describeError(cause, "Could not reject the plan."));
+      } finally {
+        setDecidingPlan(false);
+      }
+    },
+    [conversationId, organizationId, pendingRunId, projectId]
+  );
+
+  const handleApprovePlan = useCallback(() => {
+    if (planProposal) {
+      approvePlan(planProposal.toolCallId);
+    }
+  }, [approvePlan, planProposal]);
+
+  const handleRejectPlan = useCallback(
+    (feedback: string) => {
+      if (planProposal) {
+        rejectPlan(planProposal.toolCallId, feedback);
+      }
+    },
+    [planProposal, rejectPlan]
+  );
+
+  const handleWorkspaceRestore = useCallback(() => {
+    setWorkspaceRefreshKey((key) => key + 1);
+  }, []);
 
   const updateDraft = useCallback(
     (event: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -1377,69 +1480,12 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   let progressLabel = runProgressLabel(activeRunEvents);
   if (question) {
     progressLabel = "Waiting for your answer";
+  } else if (planProposal) {
+    progressLabel = "Waiting for plan approval";
   }
   if (stoppingRunId === pendingRunId && pendingRunId !== null) {
     progressLabel = "Stopping…";
   }
-  const composer = (
-    <Composer
-      busy={submitting || savingStoppedRun}
-      count={draft.length}
-      draft={draft}
-      hasConversation={conversationId.length > 0}
-      key={`${organizationId}:${projectId}:${conversationId}`}
-      limit={DRAFT_LIMIT}
-      listFiles={listFiles}
-      model={MODEL}
-      onChange={updateDraft}
-      onCreateProject={createProjectNamed}
-      onKeyDown={promptKeyDown}
-      onOpenSideChat={openSideChat}
-      onProjectSelect={selectProject}
-      onSteer={steerMessage}
-      onStop={stopRun}
-      onSubmit={submitMessage}
-      onTranscribe={transcribe}
-      onVoiceMode={openVoice}
-      pending={working || !selectedProject}
-      pendingRunId={pendingRunId}
-      placeholder={
-        selectedProject
-          ? "Describe the product, or the change you want next…"
-          : "Choose a project first…"
-      }
-      preventAutoQueueDispatch={
-        queuePausedConversation === conversationId ||
-        active?.status === "failed" ||
-        active?.status === "cancelled" ||
-        activeRunEvents.some(
-          (event) =>
-            (event.type === "run.failed" || event.type === "run.cancelled") &&
-            typeof event.payload.outcome === "string"
-        )
-      }
-      projectId={projectId}
-      projectPickerDisabled={working || submitting}
-      projects={projects}
-      queueScopeKey={historyIdentity}
-      stopping={pendingRunId !== null && stoppingRunId === pendingRunId}
-    />
-  );
-  const questionForm =
-    question &&
-    !streamEnded &&
-    stoppingRunId !== pendingRunId &&
-    answeredToolCallId !== question.toolCallId ? (
-      <QuestionCard
-        busy={answering}
-        key={question.toolCallId}
-        limit={DRAFT_LIMIT}
-        onChange={updateAnswerDraft}
-        onSubmit={answerQuestion}
-        question={question.question}
-        value={answerDraft}
-      />
-    ) : null;
   const emptyConversation =
     messages.length === 0 && Object.keys(timeline.runs).length === 0;
   const heading = conversationHeading(active, conversationId);
@@ -1467,6 +1513,171 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     completedVoiceTurn && voiceResponseText
       ? { id: completedVoiceTurn.id, text: voiceResponseText }
       : null;
+
+  const latestCompletedTurn = useMemo(() => {
+    const transcriptTurns = projectTranscript(timeline, renderedMessages);
+    const mostRecentTurn = transcriptTurns.at(-1);
+    if (!mostRecentTurn) {
+      return;
+    }
+    const events = Object.values(
+      timeline.runs[mostRecentTurn.id]?.events ?? {}
+    );
+    const succeeded = events.some(
+      (event) =>
+        event.type === "run.completed" && event.payload.outcome === "succeeded"
+    );
+    if (succeeded) {
+      return mostRecentTurn;
+    }
+  }, [renderedMessages, timeline]);
+
+  const latestAssistantText = useMemo(() => {
+    if (!latestCompletedTurn) {
+      return "";
+    }
+    return (
+      latestCompletedTurn.entries
+        .filter((entry) => entry.kind === "text" && !entry.streaming)
+        .map((entry) => (entry.kind === "text" ? entry.text : ""))
+        .join("\n\n") ?? ""
+    );
+  }, [latestCompletedTurn]);
+
+  const latestCheckpoint = useMemo(() => {
+    if (!latestCompletedTurn) {
+      return;
+    }
+    const events = Object.values(
+      timeline.runs[latestCompletedTurn.id]?.events ?? {}
+    );
+    return turnCheckpoint(events);
+  }, [latestCompletedTurn, timeline]);
+
+  const suggestions = useMemo(() => {
+    if (
+      !latestCompletedTurn ||
+      working ||
+      emptyConversation ||
+      dismissedSuggestionTurnId === latestCompletedTurn.id
+    ) {
+      return [];
+    }
+    const checkpointFiles =
+      latestCheckpoint?.checkpoint && "files" in latestCheckpoint.checkpoint
+        ? latestCheckpoint.checkpoint.files
+        : undefined;
+
+    return generatePromptSuggestions({
+      assistantText: latestAssistantText,
+      checkpointFiles,
+      projectName: project?.name,
+      seed: suggestionSeed,
+      userPrompt: latestCompletedTurn.user?.text,
+    });
+  }, [
+    latestCompletedTurn,
+    working,
+    emptyConversation,
+    dismissedSuggestionTurnId,
+    latestCheckpoint,
+    latestAssistantText,
+    project?.name,
+    suggestionSeed,
+  ]);
+
+  const dismissSuggestions = useCallback(() => {
+    if (latestCompletedTurn) {
+      setDismissedSuggestionTurnId(latestCompletedTurn.id);
+    }
+  }, [latestCompletedTurn]);
+
+  const refreshSuggestions = useCallback(() => {
+    setSuggestionSeed((s) => s + 1);
+  }, []);
+
+  const selectSuggestion = useCallback((suggestion: PromptSuggestion) => {
+    setDraft(suggestion.prompt);
+    document.getElementById("prompt")?.focus();
+  }, []);
+
+  const composer = (
+    <Composer
+      busy={submitting || savingStoppedRun}
+      count={draft.length}
+      draft={draft}
+      hasConversation={conversationId.length > 0}
+      key={`${organizationId}:${projectId}:${conversationId}`}
+      limit={DRAFT_LIMIT}
+      listFiles={listFiles}
+      model={MODEL}
+      onChange={updateDraft}
+      onCreateProject={createProjectNamed}
+      onDismissSuggestions={dismissSuggestions}
+      onKeyDown={promptKeyDown}
+      onOpenSideChat={openSideChat}
+      onProjectSelect={selectProject}
+      onRefreshSuggestions={refreshSuggestions}
+      onSelectSuggestion={selectSuggestion}
+      onSteer={steerMessage}
+      onStop={stopRun}
+      onSubmit={submitMessage}
+      onTranscribe={transcribe}
+      onVoiceMode={openVoice}
+      pending={working || !selectedProject}
+      pendingRunId={pendingRunId}
+      placeholder={
+        selectedProject
+          ? "Describe the product, or the change you want next…"
+          : "Choose a project first…"
+      }
+      preventAutoQueueDispatch={
+        queuePausedConversation === conversationId ||
+        active?.status === "failed" ||
+        active?.status === "cancelled" ||
+        activeRunEvents.some(
+          (event) =>
+            (event.type === "run.failed" || event.type === "run.cancelled") &&
+            typeof event.payload.outcome === "string"
+        )
+      }
+      projectId={projectId}
+      projectPickerDisabled={working || submitting}
+      projects={projects}
+      queueScopeKey={historyIdentity}
+      stopping={pendingRunId !== null && stoppingRunId === pendingRunId}
+      suggestions={suggestions}
+    />
+  );
+  const questionForm =
+    question &&
+    !streamEnded &&
+    stoppingRunId !== pendingRunId &&
+    answeredToolCallId !== question.toolCallId ? (
+      <QuestionCard
+        busy={answering}
+        key={question.toolCallId}
+        limit={DRAFT_LIMIT}
+        onChange={updateAnswerDraft}
+        onSubmit={answerQuestion}
+        question={question.question}
+        value={answerDraft}
+      />
+    ) : null;
+  const planForm =
+    planProposal &&
+    !streamEnded &&
+    stoppingRunId !== pendingRunId &&
+    decidedPlanToolCallId !== planProposal.toolCallId ? (
+      <PlanCard
+        busy={decidingPlan}
+        key={planProposal.toolCallId}
+        onApprove={handleApprovePlan}
+        onReject={handleRejectPlan}
+        plan={planProposal.plan}
+      />
+    ) : null;
+  const interactiveForm = questionForm ?? planForm;
   const organizationName =
     organizations.find((item) => item.organizationId === organizationId)
       ?.name ?? "This workspace";
@@ -1544,14 +1755,14 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
             {selectedProject && voiceOpen ? (
               <VoiceMode
                 busy={working || submitting}
-                disabled={questionForm !== null}
+                disabled={interactiveForm !== null}
                 key={`${organizationId}:${projectId}`}
                 onClose={closeVoice}
                 onStop={stopRun}
                 onSubmit={sendTurn}
                 onTranscribe={transcribe}
                 projectName={project?.name ?? "Your project"}
-                question={questionForm}
+                question={interactiveForm}
                 response={voiceResponse}
               />
             ) : null}
@@ -1568,11 +1779,14 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
                 messages={
                   visibleHistory(historyIdentity, history, messages).messages
                 }
+                onApprovePlan={approvePlan}
                 onEdit={editMessage}
+                onRejectPlan={rejectPlan}
+                onRestore={handleWorkspaceRestore}
                 onRetry={retry}
                 onStarter={selectStarter}
                 pending={working}
-                questionForm={questionForm}
+                questionForm={interactiveForm}
                 starters={promptStarters}
                 timeline={timeline}
               />
@@ -1604,6 +1818,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
           organizationId={organizationId}
           panelWidth={panelWidth}
           projectId={projectId}
+          refreshKey={workspaceRefreshKey}
           workAreaRef={workAreaRef}
         />
       </div>
@@ -1636,7 +1851,10 @@ function ConversationPane({
   empty,
   live,
   messages,
+  onApprovePlan,
   onEdit,
+  onRejectPlan,
+  onRestore,
   onRetry,
   onStarter,
   pending,
@@ -1653,7 +1871,10 @@ function ConversationPane({
   empty: boolean;
   live: boolean;
   messages: ConversationMessage[];
+  onApprovePlan?: (toolCallId: string) => void;
   onEdit: (text: string) => void;
+  onRejectPlan?: (toolCallId: string, feedback: string) => void;
+  onRestore?: () => void;
   onRetry: (text: string, sourceRunId?: string) => void;
   onStarter: (event: React.MouseEvent<HTMLButtonElement>) => void;
   pending: boolean;
@@ -1687,7 +1908,10 @@ function ConversationPane({
         checkpointScope={checkpointScope}
         live={live}
         messages={messages}
+        onApprovePlan={onApprovePlan}
         onEdit={onEdit}
+        onRejectPlan={onRejectPlan}
+        onRestore={onRestore}
         onRetry={onRetry}
         pending={pending}
         timeline={timeline}

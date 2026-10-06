@@ -245,7 +245,12 @@ describe("catalog", () => {
   it("keeps hidden and primary agents out of the offered lists", () => {
     const catalog = buildCatalogFromDefinitions(BUILTIN_AGENT_DEFINITIONS);
 
-    expect(catalog.subagents).toEqual(["coder", "debugger", "scout"]);
+    expect(catalog.subagents).toEqual([
+      "coder",
+      "debugger",
+      "reviewer",
+      "scout",
+    ]);
     expect(catalog.subagents).not.toContain("title");
     expect(catalog.subagents).not.toContain("compaction");
     // Hidden agents stay resolvable: that is what makes them useful.
@@ -340,7 +345,7 @@ describe("materialisation", () => {
   it("does not offer hidden agents as delegation targets", () => {
     const ids = materializeDelegatableSubagents().map(({ id }) => id);
 
-    expect(ids).toEqual(["coder", "debugger", "scout"]);
+    expect(ids).toEqual(["coder", "debugger", "reviewer", "scout"]);
     expect(ids).not.toContain("title");
     expect(ids).not.toContain("compaction");
   });

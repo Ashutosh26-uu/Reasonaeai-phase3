@@ -38,9 +38,12 @@ import {
   type PromptSubmissionInput,
 } from "./message-queue";
 import { QueuedMessageRow } from "./queued-messages";
+import { SuggestionBubbles } from "./suggestion-bubbles";
+import type { PromptSuggestion } from "./suggestions";
 import { useMessageQueue } from "./use-message-queue";
 
 export type { PromptSubmissionInput } from "./message-queue";
+export type { PromptSuggestion } from "./suggestions";
 
 /**
  * What the line under the card says: an error, what the microphone is doing, or
@@ -165,9 +168,15 @@ export interface ComposerProps {
   model: string;
   onChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => void;
   onCreateProject: (name: string) => Promise<boolean>;
+  /** Callback to dismiss suggestions for the current turn. */
+  onDismissSuggestions?: (() => void) | undefined;
   onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onOpenSideChat?: (input: PromptSubmissionInput) => Promise<boolean>;
   onProjectSelect: (projectId: string) => void;
+  /** Callback to refresh / cycle alternative suggestions. */
+  onRefreshSuggestions?: (() => void) | undefined;
+  /** Callback when user selects an AI-suggested action bubble. */
+  onSelectSuggestion?: ((suggestion: PromptSuggestion) => void) | undefined;
   /** Sends text guidance into the active run through the authorized API. */
   onSteer?: (input: PromptSubmissionInput) => Promise<boolean>;
   /** Stops the active CTO run while its response is streaming. */
@@ -186,6 +195,8 @@ export interface ComposerProps {
   projects: ProjectSummary[];
   queueScopeKey?: string;
   stopping: boolean;
+  /** AI-suggested next actions displayed dynamically in compact bubble cards. */
+  suggestions?: PromptSuggestion[] | undefined;
 }
 
 function ProjectPicker({
@@ -884,6 +895,37 @@ function MentionMenu({
   );
 }
 
+function ComposerSuggestionRow({
+  busy,
+  onDismiss,
+  onRefresh,
+  onSelect,
+  pending,
+  queueSendingId,
+  suggestions,
+}: {
+  busy: boolean;
+  onDismiss?: (() => void) | undefined;
+  onRefresh?: (() => void) | undefined;
+  onSelect: (suggestion: PromptSuggestion) => void;
+  pending: boolean;
+  queueSendingId: string | null;
+  suggestions?: PromptSuggestion[] | undefined;
+}) {
+  if (!suggestions || suggestions.length === 0 || pending) {
+    return null;
+  }
+  return (
+    <SuggestionBubbles
+      disabled={busy || Boolean(queueSendingId)}
+      onDismiss={onDismiss}
+      onRefresh={onRefresh}
+      onSelect={onSelect}
+      suggestions={suggestions}
+    />
+  );
+}
+
 /**
  * The one place a message is written.
  *
@@ -918,6 +960,10 @@ export function Composer({
   pendingRunId = null,
   stopping,
   placeholder,
+  suggestions,
+  onSelectSuggestion,
+  onDismissSuggestions,
+  onRefreshSuggestions,
 }: ComposerProps) {
   const [menu, setMenu] = useState<"files" | "none" | "notes">("none");
   const [files, setFiles] = useState<string[]>([]);
@@ -946,6 +992,15 @@ export function Composer({
   const setDraft = useCallback(
     (value: string) => onChange(valueEvent(value)),
     [onChange]
+  );
+
+  const handleSelectSuggestion = useCallback(
+    (suggestion: PromptSuggestion) => {
+      onSelectSuggestion?.(suggestion);
+      setDraft(suggestion.prompt);
+      document.getElementById("prompt")?.focus();
+    },
+    [onSelectSuggestion, setDraft]
   );
 
   const voice = useVoiceCapture({ draft, onTranscribe, setDraft });
@@ -1146,6 +1201,15 @@ export function Composer({
             )}
           </section>
         )}
+        <ComposerSuggestionRow
+          busy={busy}
+          onDismiss={onDismissSuggestions}
+          onRefresh={onRefreshSuggestions}
+          onSelect={handleSelectSuggestion}
+          pending={pending}
+          queueSendingId={queue.sendingId}
+          suggestions={suggestions}
+        />
         <VoiceBeam
           active={listening}
           processing={voice.transcribing}

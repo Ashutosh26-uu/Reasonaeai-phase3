@@ -210,6 +210,12 @@ export async function snapshotSandbox(
   // put a checkpoint's own staging file into the next checkpoint.
   await runChecked(sandbox, workdir, "rm", ["-rf", STAGING_DIRECTORY]);
   await runChecked(sandbox, workdir, "git", ["init", "-q"]);
+  await runChecked(sandbox, workdir, "git", [
+    "config",
+    "--local",
+    "core.autocrlf",
+    "false",
+  ]);
   await runChecked(sandbox, workdir, "git", ["add", "-A"]);
   await runChecked(
     sandbox,
@@ -444,6 +450,12 @@ export async function restoreSandbox(
 
   try {
     await runChecked(sandbox, workdir, "git", ["init", "-q"]);
+    await runChecked(sandbox, workdir, "git", [
+      "config",
+      "--local",
+      "core.autocrlf",
+      "false",
+    ]);
     // Fetching the bundle's HEAD rather than its branches leaves the working
     // tree on the sandbox's own branch, which is also the branch the next
     // snapshot has to commit to.
@@ -469,7 +481,7 @@ function checkpointIdFor(scope: CheckpointScope, digest: string): string {
   return `${scope.organizationId}.${scope.projectId}.${digest}`;
 }
 
-function parseCheckpointId(checkpointId: string): {
+export function parseCheckpointId(checkpointId: string): {
   digest: string;
   organizationId: OrganizationId;
   projectId: ProjectId;
