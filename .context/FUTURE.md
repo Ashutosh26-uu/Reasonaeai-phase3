@@ -30,6 +30,7 @@ Rejecting an item requires recording the decision and reason before removing it.
 
 ## Agent capabilities
 
+- Conditional mid-turn rule matching is deferred. The current CTO uses concise bundled policy, relevant procedures, and effect-based authorization. Do not add blanket keyword-triggered interruptions; revisit a matcher only with a specific evidenced failure and evaluation of false positives, provenance, and resume behavior.
 - Safe user-authored executable skills after isolation, provenance, review, signing, permission, and revocation controls exist.
 - Additional specialist models selected through repeatable cost-per-verified-task evaluation.
 - Organization-managed agent policies, model allowlists, and budget controls.
