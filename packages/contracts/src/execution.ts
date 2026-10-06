@@ -217,6 +217,7 @@ export type ConversationMessageRole = z.infer<
 export const ConversationMessageSchema = z.strictObject({
   attachments: z.array(ConversationAttachmentSchema).max(5).optional(),
   createdAt: IsoDateTimeSchema,
+  feedback: z.enum(["positive", "negative"]).nullable().optional(),
   id: z.string().min(1).max(256),
   /**
    * What the model reasoned before writing this message, when it produced any.
@@ -241,6 +242,19 @@ export const ConversationMessageSchema = z.strictObject({
   text: z.string().max(1_000_000),
 });
 export type ConversationMessage = z.infer<typeof ConversationMessageSchema>;
+
+export const ConversationReplayRequestSchema = z.strictObject({
+  message: z.string().trim().min(1).max(100_000).optional(),
+});
+export const ConversationBranchRequestSchema = z.strictObject({
+  runId: RunIdSchema,
+});
+export const ConversationFeedbackRequestSchema = z.strictObject({
+  feedback: z.enum(["positive", "negative"]).nullable(),
+  runId: RunIdSchema,
+});
+export const ConversationFeedbackResponseSchema =
+  ConversationFeedbackRequestSchema;
 
 export const ConversationHistorySchema = z.strictObject({
   messages: z.array(ConversationMessageSchema),

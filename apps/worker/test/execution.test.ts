@@ -6,7 +6,12 @@ import {
   RunCheckpointSchema,
   type RunEventEnvelope,
 } from "@reasonateai/contracts/execution-protocol";
-import { type RunId, UserIdSchema } from "@reasonateai/contracts/identity";
+import {
+  AuditEventSchema,
+  type RunId,
+  SessionIdSchema,
+  UserIdSchema,
+} from "@reasonateai/contracts/identity";
 import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
 import {
   afterAll,
@@ -20,6 +25,7 @@ import {
 import {
   checkpointSandboxFor,
   restoreLatestCheckpoint,
+  snapshotWorkspaceCheckpoint,
 } from "../src/checkpoint.js";
 import { candidateScope, createRunRequestContext } from "../src/run-context.js";
 import { createStopSignal } from "../src/stop-signal.js";
@@ -905,9 +911,13 @@ describeWithDatabase("run execution", () => {
     const allocated = await fixture();
     // One operation refuses, which is what a lapsed or stolen lease looks like
     // to the worker: the store no longer honours the renewal.
+    const deniedLeases = new Set<string>();
     const refusing: ProjectStateStore = {
       ...harness.store,
-      renewRunLease: async () => false,
+      renewRunLease: async (input) =>
+        deniedLeases.has(input.leaseId)
+          ? false
+          : await harness.store.renewRunLease(input),
     };
     const executor = createExecutor({
       harness,
@@ -921,7 +931,11 @@ describeWithDatabase("run execution", () => {
     const attempt = executor.execute(allocated.candidate, createStopSignal());
     const session = await scripted.waitForSession();
     await session.started;
-
+    const activeLease = await leaseRow(harness, allocated.candidate.runId);
+    if (!activeLease) {
+      throw new Error("The active lease is missing.");
+    }
+    deniedLeases.add(activeLease.leaseId);
     expect(await attempt).toBe("failed");
     expect(session.aborted).toBe(true);
 
@@ -1257,7 +1271,7 @@ describeWithDatabase("run execution", () => {
     expect(await runStatus(harness, allocated)).toBe("awaiting_approval");
     expect(await volumeCount(allocated.volume)).toBe(1);
     await expect(
-      harness.store.retryConversationRun({
+      retryHistory(harness, {
         buildSessionId: allocated.buildSessionId,
         idempotencyKey: randomUUID(),
         runId: candidate.runId,
@@ -1332,6 +1346,16 @@ describeWithDatabase("run execution", () => {
       sandbox: checkpointSandboxFor(sandbox),
       scope,
     });
+    const boundary = await snapshotWorkspaceCheckpoint({
+      checkpoints: harness.checkpoints,
+      sandbox: checkpointSandboxFor(sandbox),
+      scope,
+    });
+    await harness.store.history.boundary(
+      allocated.scope,
+      interrupted.runId,
+      boundary.checkpointId
+    );
     writeWorkspaceFile(allocated.volume, "notes.txt", "recovered edit\n");
     await harness.store.appendRunEvent({
       payload: {
@@ -1355,7 +1379,7 @@ describeWithDatabase("run execution", () => {
       }).execute(interruptedCandidate, createStopSignal())
     ).toBe("cancelled");
     expect(recovered.initCalls()).toBe(0);
-    const retry = await harness.store.retryConversationRun({
+    const retry = await retryHistory(harness, {
       buildSessionId: allocated.buildSessionId,
       idempotencyKey: randomUUID(),
       runId: interrupted.runId,
@@ -1372,7 +1396,15 @@ describeWithDatabase("run execution", () => {
     const retryAttempt = createExecutor({
       harness,
       holder: "worker-retry",
-      runtime: retryRuntime.runtime,
+      runtime: {
+        ...retryRuntime.runtime,
+        prepareHistory: async () => {
+          await harness.store.listConversationMessages({
+            buildSessionId: allocated.buildSessionId,
+            scope: allocated.scope,
+          });
+        },
+      },
     }).execute(retryCandidate, retryStop);
     const retrySession = await retryRuntime.waitForSession();
     await retrySession.started;
@@ -1388,7 +1420,7 @@ describeWithDatabase("run execution", () => {
           ["exec", container, "cat", "/workspace/notes.txt"],
           { encoding: "utf8" }
         )
-      ).toBe("recovered edit\n");
+      ).toBe("original\n");
       retrySession.complete([{ reason: "complete", type: "agent_end" }]);
       expect(await retryAttempt).toBe("succeeded");
     } finally {
@@ -1435,7 +1467,10 @@ describeWithDatabase("run execution", () => {
       ...harness,
       checkpoints: {
         ...harness.checkpoints,
-        write: () => Promise.reject(new Error("Checkpoint store unavailable")),
+        write: (input: Parameters<Harness["checkpoints"]["write"]>[0]) =>
+          cancellation.sessions.length && cancellation.sessions[0]?.sendCalls
+            ? Promise.reject(new Error("Checkpoint store unavailable"))
+            : harness.checkpoints.write(input),
       },
     };
     const cancelAttempt = createExecutor({
@@ -1460,7 +1495,7 @@ describeWithDatabase("run execution", () => {
     cancelStop.request("test cancellation");
     expect(await cancelAttempt).toBe("cancelled");
     expect(await volumeCount(allocated.volume)).toBe(1);
-    const retry = await harness.store.retryConversationRun({
+    const retry = await retryHistory(harness, {
       buildSessionId: allocated.buildSessionId,
       idempotencyKey: randomUUID(),
       runId: cancelled.runId,
@@ -1477,7 +1512,15 @@ describeWithDatabase("run execution", () => {
     const attempt = createExecutor({
       harness,
       holder: "worker-retained-retry",
-      runtime: runtime.runtime,
+      runtime: {
+        ...runtime.runtime,
+        prepareHistory: async () => {
+          await harness.store.listConversationMessages({
+            buildSessionId: allocated.buildSessionId,
+            scope: allocated.scope,
+          });
+        },
+      },
     }).execute(candidate, stop);
     const session = await runtime.waitForSession();
     await Promise.race([
@@ -1500,7 +1543,7 @@ describeWithDatabase("run execution", () => {
           ["exec", container, "cat", "/workspace/notes.txt"],
           { encoding: "utf8" }
         )
-      ).toBe("preserved cancellation edit\n");
+      ).toBe("original\n");
       session.complete([{ reason: "complete", type: "agent_end" }]);
       expect(await attempt).toBe("succeeded");
       expect(
@@ -1518,3 +1561,35 @@ describeWithDatabase("run execution", () => {
     }
   });
 });
+
+function retryHistory(
+  harness: Harness,
+  input: {
+    buildSessionId: RunFixture["buildSessionId"];
+    idempotencyKey: string;
+    runId: RunId;
+    scope: RunFixture["scope"];
+  }
+) {
+  return harness.store.history.change({
+    ...input,
+    action: "retry",
+    audit: AuditEventSchema.parse({
+      action: "conversation.retry",
+      actor: { kind: "anonymous" },
+      eventId: randomUUID(),
+      metadata: {},
+      occurredAt: new Date().toISOString(),
+      ...input.scope,
+      requestId: randomUUID(),
+      schemaVersion: 1,
+    }),
+    latestCheckpoint: async () =>
+      (await harness.checkpoints.latest(input.scope))?.checkpointId,
+    requestedByUserId: UserIdSchema.parse(randomUUID()),
+    userSessionId: SessionIdSchema.parse(randomUUID()),
+    validateCheckpoint: async (id) => {
+      await harness.checkpoints.read(id);
+    },
+  });
+}

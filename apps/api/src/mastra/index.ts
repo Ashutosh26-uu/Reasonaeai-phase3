@@ -19,6 +19,7 @@ import {
 } from "@reasonateai/project-state/postgres";
 import { resolveAsrAdapter } from "./adapters/asr";
 import { createMagicLinkSender } from "./adapters/magic-link-sender";
+import { conversationCheckpoint } from "./conversation-checkpoint";
 import { createCsrfMiddleware } from "./middleware";
 import { frontierModel } from "./model";
 import { startOutboxRelay } from "./outbox-relay";
@@ -49,6 +50,11 @@ import {
   RUN_CANCELLATION_PATH,
   RUN_RETRY_PATH,
 } from "./routes/build-sessions";
+import {
+  CONVERSATION_BRANCH_PATH,
+  CONVERSATION_FEEDBACK_PATH,
+  createConversationActionHandlers,
+} from "./routes/conversation-actions";
 import {
   createOrganizationHandlers,
   ORGANIZATION_COLLECTION_PATH,
@@ -240,6 +246,10 @@ const buildSessionHandlers = createBuildSessionHandlers({
   resolvePrincipal: resolvePrincipalFrom,
   store: stateStore,
 });
+const conversationActions = createConversationActionHandlers({
+  resolvePrincipal: resolvePrincipalFrom,
+  store: stateStore,
+});
 
 const runEventHandlers = createRunEventHandlers({
   resolvePrincipal: resolvePrincipalFrom,
@@ -281,6 +291,16 @@ const previewService = createPreviewService({
     );
   },
   previewStore: () => stateStore().previews,
+  resolveCheckpoint: (record, checkpoints) =>
+    conversationCheckpoint({
+      buildSessionId: record.buildSessionId,
+      checkpoints,
+      scope: {
+        organizationId: record.organizationId,
+        projectId: record.projectId,
+      },
+      store: stateStore(),
+    }),
 });
 // When configured, ensure schema migrations are applied so the persistent
 // preview registry is available before recovering previews at startup.
@@ -378,12 +398,32 @@ export const mastra = new Mastra({
         method: "POST",
       }),
       registerApiRoute(RUN_RETRY_PATH, {
-        handler: (c) => buildSessionHandlers.retryRun(c),
+        handler: (c) => conversationActions.retry(c),
         method: "POST",
         openapi: {
           description:
-            "Idempotently retries a failed or cancelled generation using its stored input and attachments within the authorized conversation.",
-          summary: "Retry a generation",
+            "Idempotently restores the source before a saved user turn, replaces that turn with its stored or edited input and original attachments, and removes later turns from active history while preserving audit records.",
+          summary: "Retry or edit a saved user turn",
+          tags: ["Build sessions"],
+        },
+      }),
+      registerApiRoute(CONVERSATION_BRANCH_PATH, {
+        handler: (c) => conversationActions.branch(c),
+        method: "POST",
+        openapi: {
+          description:
+            "Idempotently creates an independent conversation through a completed turn with its saved checkpoint, retained history, and separate model thread and workspace identity.",
+          summary: "Branch through a saved answer",
+          tags: ["Build sessions"],
+        },
+      }),
+      registerApiRoute(CONVERSATION_FEEDBACK_PATH, {
+        handler: (c) => conversationActions.feedback(c),
+        method: "PUT",
+        openapi: {
+          description:
+            "Saves or clears the authenticated user's positive or negative feedback for a completed answer in the selected conversation.",
+          summary: "Save answer feedback",
           tags: ["Build sessions"],
         },
       }),
@@ -442,8 +482,8 @@ export const mastra = new Mastra({
         method: "GET",
         openapi: {
           description:
-            "Lists the generated source of the project's latest checkpoint as workspace-relative paths, excluding dependencies, caches, and repository metadata. A project that has not produced a checkpoint yet is an empty listing, not an error.",
-          summary: "List a project's generated source",
+            "Lists the selected conversation's checkpoint as workspace-relative paths, excluding dependencies, caches, and repository metadata. A verified empty starting tree returns an empty listing.",
+          summary: "List a conversation's generated source",
           tags: ["Workspace"],
         },
       }),
@@ -452,7 +492,7 @@ export const mastra = new Mastra({
         method: "GET",
         openapi: {
           description:
-            "Reads one file from the project's latest checkpoint. A binary or oversized file is reported as binary with no body, and the same centralized project authorization guards both workspace reads.",
+            "Reads one file from the selected conversation's checkpoint. A binary or oversized file is reported as binary with no body, and centralized project authorization guards both workspace reads.",
           summary: "Read a generated source file",
           tags: ["Workspace"],
         },

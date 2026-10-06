@@ -16,7 +16,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Attachments } from "@/components/ai-elements/attachments";
 import {
   Conversation,
@@ -36,6 +36,7 @@ import {
   ReasoningTrigger,
 } from "@/components/ai-elements/reasoning";
 import { ActivityOutline, actionIcon } from "./activity";
+import { AnswerActions, type AnswerFeedback } from "./answer-actions";
 import { CheckpointCard } from "./checkpoint-card";
 import { type CheckpointScope, turnCheckpoint } from "./checkpoint-state";
 import { MessageMinimap } from "./message-minimap";
@@ -53,71 +54,49 @@ export interface TranscriptProps {
   live: boolean;
   messages: ConversationMessage[];
   onApprovePlan?: ((toolCallId: string) => void) | undefined;
+  onBranch?: ((runId: string) => Promise<void>) | undefined;
   onEdit: (text: string) => void;
+  onFeedback?:
+    | ((runId: string, value: AnswerFeedback) => Promise<void>)
+    | undefined;
   onRejectPlan?: ((toolCallId: string, feedback: string) => void) | undefined;
   onRestore?: (() => void) | undefined;
-  onRetry: (text: string, sourceRunId?: string) => void;
+  onRetry: (
+    text: string,
+    sourceRunId?: string,
+    replace?: boolean
+  ) => undefined | Promise<boolean>;
   pending: boolean;
   timeline: Timeline;
 }
-function CopyAction({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const [error, setError] = useState("");
-  const copy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setError("");
-    } catch {
-      setError("Could not copy. Select the text and copy it manually.");
-    }
-  }, [text]);
-  return (
-    <>
-      <MessageAction
-        label={copied ? "Copied" : "Copy"}
-        onClick={copy}
-        tooltip={copied ? "Copied" : "Copy"}
-      >
-        {copied ? <Check size={14} /> : <Copy size={14} />}
-      </MessageAction>
-      {error && <span role="alert">{error}</span>}
-    </>
-  );
-}
-function RetryAction({
-  onRetry,
-  text,
-  sourceRunId,
-}: {
-  onRetry: (text: string, sourceRunId?: string) => void;
-  text: string;
-  sourceRunId?: string | undefined;
-}) {
-  const retry = useCallback(
-    () => onRetry(text, sourceRunId),
-    [sourceRunId, onRetry, text]
-  );
-  return (
-    <MessageAction
-      label="Retry request"
-      onClick={retry}
-      tooltip="Retry request"
-    >
-      <RotateCcw size={14} />
-    </MessageAction>
-  );
-}
-
 function UserMessageActions({
   createdAt,
   onEdit,
   text,
+  sourceRunId,
+  pending,
+  onRetry,
 }: {
   createdAt: string;
   onEdit: (text: string) => void;
   text: string;
+  sourceRunId?: string | undefined;
+  pending: boolean;
+  onRetry: TranscriptProps["onRetry"];
 }) {
+  const [editing, setEditing] = useState(false);
+  const [replacement, setReplacement] = useState(text);
+  const editor = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (editing) {
+      editor.current?.focus();
+    }
+  }, [editing]);
+  const updateReplacement = useCallback(
+    (event: React.ChangeEvent<HTMLTextAreaElement>) =>
+      setReplacement(event.currentTarget.value),
+    []
+  );
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const copy = useCallback(async (value: string) => {
@@ -131,7 +110,31 @@ function UserMessageActions({
   }, []);
   const copyMessage = useCallback(async () => copy(text), [copy, text]);
   const copyLink = useCallback(async () => copy(window.location.href), [copy]);
-  const reuseDraft = useCallback(() => onEdit(text), [onEdit, text]);
+  const reuseDraft = useCallback(() => {
+    if (sourceRunId) {
+      setReplacement(text);
+      setEditing(true);
+    } else {
+      onEdit(text);
+    }
+  }, [onEdit, sourceRunId, text]);
+  const retry = useCallback(
+    () => onRetry(text, sourceRunId),
+    [onRetry, sourceRunId, text]
+  );
+  const cancel = useCallback(() => setEditing(false), []);
+  const save = useCallback(
+    async (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (replacement.trim()) {
+        const accepted = await onRetry(replacement, sourceRunId, true);
+        if (accepted !== false) {
+          setEditing(false);
+        }
+      }
+    },
+    [onRetry, replacement, sourceRunId]
+  );
   const timestamp = new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
     minute: "2-digit",
@@ -158,17 +161,55 @@ function UserMessageActions({
         </MessageAction>
         <MessageAction
           className="message-action"
-          label="Reuse message as a draft"
+          disabled={pending}
+          label="Edit and resend"
           onClick={reuseDraft}
-          tooltip="Reuse message as a draft"
+          tooltip="Edit and resend"
         >
           <Pencil size={16} />
         </MessageAction>
+        {sourceRunId && (
+          <MessageAction
+            className="message-action"
+            disabled={pending}
+            label="Retry request"
+            onClick={retry}
+            tooltip="Retry request"
+          >
+            <RotateCcw size={16} />
+          </MessageAction>
+        )}
         <span className="msg-user-time">
           <Clock3 aria-hidden="true" size={14} />
           <time dateTime={createdAt}>{timestamp}</time>
         </span>
       </MessageActions>
+      {editing && (
+        <form className="message-edit" onSubmit={save}>
+          <label className="sr-only" htmlFor={`edit-${sourceRunId}`}>
+            Edit request
+          </label>
+          <textarea
+            id={`edit-${sourceRunId}`}
+            onChange={updateReplacement}
+            ref={editor}
+            rows={3}
+            value={replacement}
+          />
+          <p>
+            Resending replaces this turn and later history, and restores the
+            files from before this turn.
+          </p>
+          <div className="message-edit-actions">
+            <button onClick={cancel} type="button">
+              Cancel
+            </button>
+            <button disabled={pending || !replacement.trim()} type="submit">
+              Save and resend
+            </button>
+          </div>
+        </form>
+      )}
       {error && (
         <span className="sr-only" role="alert">
           {error}
@@ -363,6 +404,8 @@ export function Transcript({
   onRejectPlan,
   onRestore,
   onRetry,
+  onBranch,
+  onFeedback,
   pending,
   timeline,
 }: TranscriptProps) {
@@ -388,6 +431,17 @@ export function Transcript({
           const answer = turn.entries
             .flatMap((entry) => (entry.kind === "text" ? [entry.text] : []))
             .join("\n\n");
+          const completed = Object.values(
+            timeline.runs[turn.id]?.events ?? {}
+          ).some((event) => event.type === "run.completed");
+          const savedAnswers = messages.filter(
+            (message) =>
+              message.runId === turn.id && message.role === "assistant"
+          );
+          const lastAnswer = savedAnswers.at(-1);
+          const terminal = Object.values(
+            timeline.runs[turn.id]?.events ?? {}
+          ).find((event) => event.type === "run.completed");
           return (
             <section
               aria-label="Conversation turn"
@@ -419,22 +473,24 @@ export function Transcript({
                   <UserMessageActions
                     createdAt={turn.user.createdAt}
                     onEdit={onEdit}
+                    onRetry={onRetry}
+                    pending={pending}
+                    sourceRunId={turn.user.runId}
                     text={turn.user.text}
                   />
                 </Message>
               )}
               {renderEntries(turn.entries, onApprovePlan, onRejectPlan)}
               {(answer || interrupted) && (
-                <MessageActions>
-                  {answer && <CopyAction text={answer} />}
-                  {!pending && interrupted && turn.user && (
-                    <RetryAction
-                      onRetry={onRetry}
-                      sourceRunId={turn.user.runId}
-                      text={turn.user.text}
-                    />
-                  )}
-                </MessageActions>
+                <TurnAnswerActions
+                  createdAt={lastAnswer?.createdAt ?? terminal?.occurredAt}
+                  disabled={pending || !completed}
+                  feedback={lastAnswer?.feedback ?? null}
+                  onBranch={onBranch}
+                  onFeedback={onFeedback}
+                  runId={turn.id}
+                  text={answer}
+                />
               )}
               {checkpoint && (
                 <CheckpointCard
@@ -453,5 +509,37 @@ export function Transcript({
       <MessageMinimap items={navigationItems} />
       <ConversationScrollButton />
     </Conversation>
+  );
+}
+
+function TurnAnswerActions({
+  runId,
+  onBranch,
+  onFeedback,
+  ...props
+}: {
+  runId: string;
+  onBranch: TranscriptProps["onBranch"];
+  onFeedback: TranscriptProps["onFeedback"];
+  createdAt: string | undefined;
+  disabled: boolean;
+  feedback: AnswerFeedback;
+  text: string;
+}) {
+  const branch = useCallback(async () => {
+    await onBranch?.(runId);
+  }, [onBranch, runId]);
+  const feedback = useCallback(
+    async (value: AnswerFeedback) => {
+      await onFeedback?.(runId, value);
+    },
+    [onFeedback, runId]
+  );
+  return (
+    <AnswerActions
+      {...props}
+      onBranch={onBranch ? branch : undefined}
+      onFeedback={onFeedback ? feedback : undefined}
+    />
   );
 }

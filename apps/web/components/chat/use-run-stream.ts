@@ -38,16 +38,38 @@ export function useRunStream(input: RunStreamInput) {
   handlers.current = input;
   const selected = useRef(identity);
   selected.current = identity;
+  const currentRuns = useRef(new Set<string>());
+  currentRuns.current = new Set(
+    historyEvents.map((event) => String(event.runId))
+  );
+  if (active?.pendingRunId) {
+    currentRuns.current.add(active.pendingRunId);
+  }
 
   useEffect(() => {
+    const retainedRuns = new Set<string>(
+      historyEvents.map((event) => event.runId)
+    );
+    if (active?.pendingRunId) {
+      retainedRuns.add(active.pendingRunId);
+    }
     setState((current) => ({
       identity,
       timeline: historyEvents.reduce(
         foldDurable,
-        current.identity === identity ? current.timeline : EMPTY_TIMELINE
+        current.identity === identity
+          ? {
+              ...current.timeline,
+              runs: Object.fromEntries(
+                Object.entries(current.timeline.runs).filter(([runId]) =>
+                  retainedRuns.has(runId)
+                )
+              ),
+            }
+          : EMPTY_TIMELINE
       ),
     }));
-  }, [identity, historyEvents]);
+  }, [identity, historyEvents, active?.pendingRunId]);
 
   const buildSessionId = active?.buildSessionId;
   const pendingRunId = active?.pendingRunId;
@@ -80,7 +102,8 @@ export function useRunStream(input: RunStreamInput) {
       if (
         !parsed.success ||
         parsed.data.organizationId !== organizationId ||
-        parsed.data.projectId !== projectId
+        parsed.data.projectId !== projectId ||
+        !currentRuns.current.has(parsed.data.runId)
       ) {
         return;
       }
@@ -105,7 +128,8 @@ export function useRunStream(input: RunStreamInput) {
       if (
         !parsed.success ||
         parsed.data.organizationId !== organizationId ||
-        parsed.data.projectId !== projectId
+        parsed.data.projectId !== projectId ||
+        !currentRuns.current.has(parsed.data.runId)
       ) {
         return;
       }

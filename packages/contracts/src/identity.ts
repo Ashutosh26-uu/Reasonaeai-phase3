@@ -156,6 +156,8 @@ export const AuditActionSchema = z.enum([
   "capability.revoked",
   "checkpoint.restored",
   "plan.decided",
+  "conversation.branch",
+  "conversation.retry",
 ]);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
 

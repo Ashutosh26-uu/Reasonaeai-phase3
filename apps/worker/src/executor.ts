@@ -6,6 +6,7 @@ import type { RunScope } from "@reasonateai/cto-runtime/run-scope";
 import type {
   ProjectStateStore,
   RunFinishStatus,
+  RunLeaseGrant,
   RunnableRun,
 } from "@reasonateai/project-state/postgres";
 import type {
@@ -35,9 +36,9 @@ import {
   runLogFields,
 } from "./run-context.js";
 import { runDirective } from "./run-directive.js";
-import type { RunSession, RuntimeFactory } from "./runtime.js";
+import type { RunRuntime, RunSession, RuntimeFactory } from "./runtime.js";
 import { startRunSteering } from "./steering.js";
-import type { StopSignal } from "./stop-signal.js";
+import { createStopSignal, type StopSignal } from "./stop-signal.js";
 import { settleWithin } from "./wait.js";
 import { releaseBuildSandbox, workspaceVolumeName } from "./workspace.js";
 
@@ -167,10 +168,61 @@ export class RunExecutor {
       type: "run.claimed",
     });
 
+    return await this.#executeClaimed(candidate, scope, lease, stopSignal);
+  }
+
+  async #executeClaimed(
+    candidate: RunnableRun,
+    scope: RunScope,
+    lease: RunLeaseGrant,
+    stopSignal: StopSignal
+  ): Promise<RunOutcome> {
+    const { config, logger, store } = this.#deps;
+    const localStop = createStopSignal();
+    const unsubscribe = stopSignal.subscribe((reason) =>
+      localStop.request(reason)
+    );
+    const keeper = new LeaseKeeper({
+      expiresAt: lease.expiresAt,
+      fields: runLogFields(scope),
+      holder: config.holder,
+      leaseId: lease.leaseId,
+      logger,
+      onLost: (reason) => localStop.request(reason),
+      renew: (renewal) => store.renewRunLease(renewal),
+      renewIntervalMs: config.renewIntervalMs,
+      runId: scope.runId,
+      ttlMs: config.leaseTtlMs,
+    });
+    keeper.start();
+    try {
+      return await this.#executeWorkspace(
+        candidate,
+        scope,
+        lease,
+        localStop,
+        keeper
+      );
+    } finally {
+      await keeper.stop();
+      unsubscribe();
+    }
+  }
+
+  async #executeWorkspace(
+    candidate: RunnableRun,
+    scope: RunScope,
+    lease: RunLeaseGrant,
+    stopSignal: StopSignal,
+    keeper: LeaseKeeper
+  ): Promise<RunOutcome> {
+    const { store, logger } = this.#deps;
+    const fields = runLogFields(scope);
     const requestContext = createRunRequestContext(scope);
     let sandbox: WorkspaceSandbox | undefined;
     let baseCommit: string | null | undefined;
     let driven: DriveResult;
+    let workspaceReady = false;
 
     const recordedOutcome = await this.#recordedOutcome(scope);
     if (recordedOutcome !== undefined) {
@@ -184,12 +236,11 @@ export class RunExecutor {
     try {
       const runtime = this.#deps.runtime();
       await runtime.controller.init();
-      const session = await runtime.controller.createSession({
-        requestContext,
-        resourceId: scope.projectId,
-        scope: scope.buildSessionId,
-        threadId: scope.buildSessionId,
-      });
+      const { session, checkpointEmpty } = await this.#conversationSession(
+        runtime,
+        scope,
+        requestContext
+      );
 
       const recovery =
         candidate.pendingToolCallId && candidate.pendingMastraRunId
@@ -225,6 +276,7 @@ export class RunExecutor {
               checkpoints: this.#deps.checkpoints,
               sandbox: checkpointSandboxFor(sandbox),
               scope,
+              store,
             });
       logger.info("run.workspace.ready", {
         ...fields,
@@ -235,9 +287,26 @@ export class RunExecutor {
         restored,
         sandbox,
       });
+      if (!recovery) {
+        const boundary = await snapshotWorkspaceCheckpoint({
+          checkpoints: this.#deps.checkpoints,
+          sandbox: checkpointSandboxFor(sandbox),
+          scope,
+        });
+        await store.history.boundary(scope, scope.runId, boundary.checkpointId);
+        if (checkpointEmpty) {
+          baseCommit = await this.#resolveBaseCommit({
+            recovery: false,
+            restored: boundary,
+            sandbox,
+          });
+        }
+      }
+      workspaceReady = true;
 
       driven = await this.#drive({
         fields,
+        keeper,
         lease,
         message: candidate.userMessage,
         requestContext,
@@ -262,6 +331,16 @@ export class RunExecutor {
       });
     }
 
+    if (!workspaceReady && sandbox) {
+      await this.#teardown({
+        fields,
+        retainedReason: "Workspace preparation failed; preserved for recovery.",
+        sandbox,
+        scope,
+        snapshot: false,
+      });
+      sandbox = undefined;
+    }
     return await this.#settle({
       baseCommit,
       driven,
@@ -270,6 +349,42 @@ export class RunExecutor {
       sandbox,
       scope,
     });
+  }
+
+  async #conversationSession(
+    runtime: RunRuntime,
+    scope: RunScope,
+    requestContext: RequestContext
+  ): Promise<{ session: RunSession; checkpointEmpty: boolean }> {
+    const { store } = this.#deps;
+    const head = await store.history.head(scope, scope.buildSessionId);
+    const threadId = head?.threadId ?? scope.buildSessionId;
+    const resourceId =
+      threadId === scope.buildSessionId
+        ? scope.projectId
+        : `${scope.organizationId}:${scope.projectId}:${scope.buildSessionId}:${threadId}`;
+    if (threadId !== scope.buildSessionId) {
+      if (!runtime.prepareHistory) {
+        throw new Error(
+          "The runtime cannot rebuild retained conversation context."
+        );
+      }
+      await runtime.prepareHistory({
+        buildSessionId: scope.buildSessionId,
+        resourceId,
+        runId: scope.runId,
+        scope,
+        store,
+        threadId,
+      });
+    }
+    const session = await runtime.controller.createSession({
+      requestContext,
+      resourceId,
+      scope: scope.buildSessionId,
+      threadId,
+    });
+    return { checkpointEmpty: head?.checkpointEmpty ?? false, session };
   }
 
   async #resolveBaseCommit(input: {
@@ -362,6 +477,12 @@ export class RunExecutor {
           sandbox: checkpointSandboxFor(sandbox),
           scope,
         });
+        await store.history.publish(
+          scope,
+          scope.buildSessionId,
+          checkpoint.checkpointId,
+          { leaseId: input.lease.leaseId, runId: scope.runId }
+        );
         await ledger.appendTransition({
           identity: scope,
           payload: {
@@ -476,6 +597,7 @@ export class RunExecutor {
     scope: RunScope;
     session: RunSession;
     stopSignal: StopSignal;
+    keeper: LeaseKeeper;
   }): Promise<DriveResult> {
     const { config, ledger, logger, store } = this.#deps;
     const { fields, scope } = input;
@@ -504,7 +626,7 @@ export class RunExecutor {
     };
 
     const unsubscribeStop = input.stopSignal.subscribe((reason) =>
-      requestStop("shutdown", reason)
+      requestStop(input.keeper.lost ? "lease-lost" : "shutdown", reason)
     );
     let cancellationPoll: NodeJS.Timeout | undefined;
     let cancellationCheckInFlight = false;
@@ -526,18 +648,6 @@ export class RunExecutor {
         cancellationCheckInFlight = false;
       }
     };
-    const keeper = new LeaseKeeper({
-      expiresAt: input.lease.expiresAt,
-      fields,
-      holder: config.holder,
-      leaseId: input.lease.leaseId,
-      logger,
-      onLost: (reason) => requestStop("lease-lost", reason),
-      renew: async (renewal) => await store.renewRunLease(renewal),
-      renewIntervalMs: config.renewIntervalMs,
-      runId: scope.runId,
-      ttlMs: config.leaseTtlMs,
-    });
     const appends = new RunEventAppender({
       fields,
       identity: scope,
@@ -619,7 +729,6 @@ export class RunExecutor {
       session: input.session,
       store,
     });
-    keeper.start();
     try {
       await Promise.race([sending, stopRequested]);
       if (pendingQuestion) {
@@ -714,7 +823,6 @@ export class RunExecutor {
       } catch (error) {
         failure = describeFailure(error);
       }
-      await keeper.stop();
       unsubscribeStop();
       unsubscribeEvents();
       for (const frame of live.finish()) {
@@ -805,6 +913,14 @@ export class RunExecutor {
     }
 
     // Append run.parked event to durable ledger
+    if (checkpoint) {
+      await store.history.publish(
+        scope,
+        scope.buildSessionId,
+        checkpoint.checkpointId,
+        { leaseId: input.leaseId, runId: scope.runId }
+      );
+    }
     await ledger.appendTransition({
       identity: scope,
       payload: {
@@ -903,11 +1019,10 @@ export class RunExecutor {
     }
 
     const status: RunFinishStatus = finishStatusOf(input.driven);
-    const failureReason =
-      input.driven.kind === "failed" ? input.driven.reason : undefined;
-    const stoppedReason =
-      input.driven.kind === "stopped" ? input.driven.reason : undefined;
-    const reason = failureReason ?? stoppedReason;
+    let reason: string | null = null;
+    if (input.driven.kind === "failed" || input.driven.kind === "stopped") {
+      ({ reason } = input.driven);
+    }
 
     // The reason is committed before the workspace is touched, so a teardown
     // that hangs cannot lose why the run ended.
@@ -922,13 +1037,13 @@ export class RunExecutor {
     const checkpoint = await this.#teardown({
       baseCommit: input.baseCommit,
       fields,
+      leaseId: input.leaseId,
       retainedReason:
         "the workspace checkpoint failed, so the volume holds the only copy of this run's work",
       sandbox: input.sandbox,
       scope,
       snapshot: true,
     });
-
     if (status === "succeeded" || checkpoint !== undefined) {
       await ledger.appendTransition({
         identity: scope,
@@ -939,7 +1054,7 @@ export class RunExecutor {
             ? {}
             : { checkpoint: checkpoint.checkpoint }),
           outcome: status,
-          reason: reason ?? null,
+          reason,
         },
         type: TERMINAL_EVENT[status],
       });
@@ -985,6 +1100,7 @@ export class RunExecutor {
     sandbox: WorkspaceSandbox | undefined;
     scope: RunScope;
     snapshot: boolean;
+    leaseId?: string;
   }): Promise<CheckpointWriteResult | undefined> {
     const { logger } = this.#deps;
     const { fields, scope, sandbox } = input;
@@ -1003,6 +1119,12 @@ export class RunExecutor {
           sandbox: checkpointSandboxFor(sandbox),
           scope,
         });
+        await this.#deps.store.history.publish(
+          scope,
+          scope.buildSessionId,
+          written.checkpointId,
+          { leaseId: input.leaseId ?? "", runId: scope.runId }
+        );
         if (written.checkpoint?.status === "unavailable") {
           logger.warn("run.checkpoint.diff.unavailable", {
             ...fields,
@@ -1011,6 +1133,7 @@ export class RunExecutor {
           });
         }
       } catch (error) {
+        written = undefined;
         logger.error("run.checkpoint.failed", {
           ...fields,
           failure: describeFailure(error).message,
