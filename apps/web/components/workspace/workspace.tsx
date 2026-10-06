@@ -11,6 +11,7 @@ import {
 import type { PromptAttachment } from "@reasonateai/contracts/execution";
 import {
   BuildSessionAllocationSchema,
+  ConversationFeedbackResponseSchema,
   ConversationListSchema,
   type ConversationMessage,
   type ConversationSummary,
@@ -48,6 +49,7 @@ import {
   type PromptSuggestion,
 } from "@/components/chat/suggestions";
 import {
+  latestCompletedTurn as completedSuggestionTurn,
   pendingPlan,
   pendingQuestion,
   projectTranscript,
@@ -543,7 +545,14 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     message: string;
     key: string;
   } | null>(null);
-  const retryAttempt = useRef<{ runId: string; key: string } | null>(null);
+  const retryAttempt = useRef<{
+    runId: string;
+    key: string;
+    message: string | undefined;
+  } | null>(null);
+  const branchAttempt = useRef<{ runId: string; key: string } | null>(null);
+  const actionConversation = useRef(conversationId);
+  actionConversation.current = conversationId;
   const [submitting, setSubmitting] = useState(false);
   const [stoppingRunId, setStoppingRunId] = useState<string | null>(null);
   const [queuePausedConversation, setQueuePausedConversation] = useState<
@@ -750,9 +759,11 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     if (!(conversationId && pendingRunId)) {
       return;
     }
-    settle(conversationId, pendingRunId).catch((cause: unknown) =>
-      setError(describeError(cause, "Could not read the run's outcome."))
-    );
+    settle(conversationId, pendingRunId)
+      .then(() => setWorkspaceRefreshKey((value) => value + 1))
+      .catch((cause: unknown) =>
+        setError(describeError(cause, "Could not read the run's outcome."))
+      );
   }, [conversationId, pendingRunId, settle]);
 
   const { following, live, timeline } = useRunStream({
@@ -1159,29 +1170,53 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   );
 
   const retry = useCallback(
-    async (text: string, sourceRunId?: string) => {
+    async (text: string, sourceRunId?: string, replace = false) => {
       if (!sourceRunId) {
         await sendTurn(text);
-        return;
+        return true;
       }
       const key =
-        retryAttempt.current?.runId === sourceRunId
+        retryAttempt.current?.runId === sourceRunId &&
+        retryAttempt.current.message === (replace ? text : undefined)
           ? retryAttempt.current.key
           : crypto.randomUUID();
-      retryAttempt.current = { key, runId: sourceRunId };
+      retryAttempt.current = {
+        key,
+        message: replace ? text : undefined,
+        runId: sourceRunId,
+      };
       setSubmitting(true);
       setError("");
       try {
         const accepted = await request(
           `/v1/build-sessions/${conversationId}/runs/${sourceRunId}/retry?${scopeQuery(organizationId, projectId)}`,
           ConversationTurnAcceptedSchema.parse,
-          { headers: { "idempotency-key": key }, method: "POST" }
+          {
+            body: JSON.stringify(replace ? { message: text } : {}),
+            headers: { "idempotency-key": key },
+            method: "POST",
+          }
         );
         retryAttempt.current = null;
+        if (actionConversation.current !== conversationId) {
+          return true;
+        }
+        setHistory({ events: [], identity: historyIdentity });
+        setMessages([]);
         acceptRun(accepted);
-        await refreshAcceptedTurn();
+        setWorkspaceRefreshKey((value) => value + 1);
+        await refreshAcceptedTurn().catch((cause: unknown) =>
+          setError(
+            describeError(
+              cause,
+              "The request was accepted, but history could not reload. Refresh this conversation."
+            )
+          )
+        );
+        return true;
       } catch (cause) {
         setError(describeError(cause, "Could not retry this generation."));
+        return false;
       } finally {
         setSubmitting(false);
       }
@@ -1189,6 +1224,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     [
       acceptRun,
       conversationId,
+      historyIdentity,
       refreshAcceptedTurn,
       organizationId,
       projectId,
@@ -1387,6 +1423,66 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     },
     []
   );
+  const branchConversation = useCallback(
+    async (sourceRunId: string) => {
+      const key =
+        branchAttempt.current?.runId === sourceRunId
+          ? branchAttempt.current.key
+          : crypto.randomUUID();
+      branchAttempt.current = { key, runId: sourceRunId };
+      setSubmitting(true);
+      try {
+        const accepted = await request(
+          `/v1/build-sessions/${conversationId}/branches?${scopeQuery(organizationId, projectId)}`,
+          ConversationTurnAcceptedSchema.parse,
+          {
+            body: JSON.stringify({ runId: sourceRunId }),
+            headers: { "idempotency-key": key },
+            method: "POST",
+          }
+        );
+        await loadConversations();
+        if (actionConversation.current === conversationId) {
+          selectConversation(projectId, accepted.buildSessionId);
+          setNotice(
+            "Branched through this answer. The original conversation is preserved."
+          );
+        }
+        branchAttempt.current = null;
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [
+      conversationId,
+      loadConversations,
+      organizationId,
+      projectId,
+      selectConversation,
+    ]
+  );
+  const saveAnswerFeedback = useCallback(
+    async (sourceRunId: string, feedback: "positive" | "negative" | null) => {
+      await request(
+        `/v1/build-sessions/${conversationId}/feedback?${scopeQuery(organizationId, projectId)}`,
+        ConversationFeedbackResponseSchema.parse,
+        {
+          body: JSON.stringify({ feedback, runId: sourceRunId }),
+          method: "PUT",
+        }
+      );
+      if (actionConversation.current === conversationId) {
+        setMessages((current) =>
+          current.map((message) =>
+            message.runId === sourceRunId && message.role === "assistant"
+              ? { ...message, feedback }
+              : message
+          )
+        );
+      }
+    },
+    [conversationId, organizationId, projectId]
+  );
 
   const newConversation = useCallback(() => {
     setVoiceOpen(false);
@@ -1514,23 +1610,10 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       ? { id: completedVoiceTurn.id, text: voiceResponseText }
       : null;
 
-  const latestCompletedTurn = useMemo(() => {
-    const transcriptTurns = projectTranscript(timeline, renderedMessages);
-    const mostRecentTurn = transcriptTurns.at(-1);
-    if (!mostRecentTurn) {
-      return;
-    }
-    const events = Object.values(
-      timeline.runs[mostRecentTurn.id]?.events ?? {}
-    );
-    const succeeded = events.some(
-      (event) =>
-        event.type === "run.completed" && event.payload.outcome === "succeeded"
-    );
-    if (succeeded) {
-      return mostRecentTurn;
-    }
-  }, [renderedMessages, timeline]);
+  const latestCompletedTurn = useMemo(
+    () => completedSuggestionTurn(timeline, renderedMessages),
+    [renderedMessages, timeline]
+  );
 
   const latestAssistantText = useMemo(() => {
     if (!latestCompletedTurn) {
@@ -1780,12 +1863,14 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
                   visibleHistory(historyIdentity, history, messages).messages
                 }
                 onApprovePlan={approvePlan}
+                onBranch={branchConversation}
                 onEdit={editMessage}
+                onFeedback={saveAnswerFeedback}
                 onRejectPlan={rejectPlan}
                 onRestore={handleWorkspaceRestore}
                 onRetry={retry}
                 onStarter={selectStarter}
-                pending={working}
+                pending={working || submitting}
                 questionForm={interactiveForm}
                 starters={promptStarters}
                 timeline={timeline}
@@ -1853,6 +1938,8 @@ function ConversationPane({
   messages,
   onApprovePlan,
   onEdit,
+  onBranch,
+  onFeedback,
   onRejectPlan,
   onRestore,
   onRetry,
@@ -1873,9 +1960,18 @@ function ConversationPane({
   messages: ConversationMessage[];
   onApprovePlan?: (toolCallId: string) => void;
   onEdit: (text: string) => void;
+  onBranch: (runId: string) => Promise<void>;
+  onFeedback: (
+    runId: string,
+    feedback: "positive" | "negative" | null
+  ) => Promise<void>;
   onRejectPlan?: (toolCallId: string, feedback: string) => void;
   onRestore?: () => void;
-  onRetry: (text: string, sourceRunId?: string) => void;
+  onRetry: (
+    text: string,
+    sourceRunId?: string,
+    replace?: boolean
+  ) => undefined | Promise<boolean>;
   onStarter: (event: React.MouseEvent<HTMLButtonElement>) => void;
   pending: boolean;
   starters: readonly string[];
@@ -1909,7 +2005,9 @@ function ConversationPane({
         live={live}
         messages={messages}
         onApprovePlan={onApprovePlan}
+        onBranch={onBranch}
         onEdit={onEdit}
+        onFeedback={onFeedback}
         onRejectPlan={onRejectPlan}
         onRestore={onRestore}
         onRetry={onRetry}

@@ -11,9 +11,11 @@ import {
   EMPTY_TIMELINE,
   foldDurable,
   foldLive,
+  latestCompletedTurn,
   pendingPlan,
   pendingQuestion,
   projectTranscript,
+  reconcileHistory,
 } from "./timeline";
 
 const organizationId = randomUUID();
@@ -37,6 +39,61 @@ const event = (
     sequence,
     type,
   });
+
+describe("active history reconciliation", () => {
+  it.each([{}, { outcome: "succeeded" }])(
+    "restores a completed suggestion turn from saved history with %j",
+    (payload) => {
+      const timeline = [
+        event(1, { kind: "message_end", role: "assistant", text: "Done" }),
+        event(2, payload, runId, "run.completed"),
+      ].reduce(foldDurable, EMPTY_TIMELINE);
+      expect(latestCompletedTurn(timeline, [])?.entries[0]).toMatchObject({
+        text: "Done",
+      });
+    }
+  );
+  it("does not suggest after a controller end or a later failed turn", () => {
+    const ended = event(1, { kind: "agent_end" }, runId, "run.completed");
+    expect(
+      latestCompletedTurn(foldDurable(EMPTY_TIMELINE, ended), [])
+    ).toBeUndefined();
+    const completed = event(
+      2,
+      { outcome: "succeeded" },
+      runId,
+      "run.completed"
+    );
+    const failed = event(1, { outcome: "failed" }, randomUUID(), "run.failed");
+    const timeline = [completed, failed].reduce(foldDurable, EMPTY_TIMELINE);
+    expect(latestCompletedTurn(timeline, [])).toBeUndefined();
+  });
+  it("keeps unchanged snapshots stable even when callers recreate the event array", () => {
+    const saved = event(1, { text: "Saved answer" });
+    const timeline = reconcileHistory(EMPTY_TIMELINE, [saved]);
+    expect(reconcileHistory(timeline, [saved])).toBe(timeline);
+    expect(reconcileHistory(EMPTY_TIMELINE, [])).toBe(EMPTY_TIMELINE);
+  });
+  it("removes the superseded suffix while preserving the active replacement", () => {
+    const kept = event(1, { text: "Retained prefix" });
+    const supersededId = randomUUID();
+    const replacementId = randomUUID();
+    const superseded = event(1, { text: "Superseded answer" }, supersededId);
+    const replacement = event(1, { text: "New answer" }, replacementId);
+    const timeline = [kept, superseded, replacement].reduce(
+      foldDurable,
+      EMPTY_TIMELINE
+    );
+    const rewound = reconcileHistory(timeline, [kept], replacementId);
+    expect(Object.keys(rewound.runs).sort()).toEqual(
+      [runId, replacementId].sort()
+    );
+    expect(rewound.runs[replacementId]?.events[1]?.payload.text).toBe(
+      "New answer"
+    );
+    expect(reconcileHistory(rewound, [kept], replacementId)).toBe(rewound);
+  });
+});
 const snapshot = MessageSnapshotSchema.parse({
   finished: true,
   messageId: "m",

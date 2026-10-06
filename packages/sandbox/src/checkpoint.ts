@@ -427,6 +427,8 @@ function parseChangeCounts(countOutput: string) {
 
 export interface RestoreSandboxInput {
   readonly checkpointId: string;
+  readonly commit?: string;
+  readonly empty?: boolean;
   readonly sandbox: CheckpointSandbox;
   readonly store: CheckpointStore;
   readonly workdir?: string;
@@ -442,6 +444,9 @@ export async function restoreSandbox(
   input: RestoreSandboxInput
 ): Promise<void> {
   const workdir = input.workdir ?? DEFAULT_WORKDIR;
+  if (input.commit !== undefined && !COMMIT_PATTERN.test(input.commit)) {
+    throw new Error("A restore commit must be a full Git object identifier.");
+  }
   const { sandbox } = input;
   const stagedPath = toWorkspaceRelativePath(STAGED_BUNDLE_PATH);
 
@@ -469,8 +474,18 @@ export async function restoreSandbox(
       "reset",
       "-q",
       "--hard",
-      "FETCH_HEAD",
+      input.commit ?? "FETCH_HEAD",
     ]);
+    if (input.empty) {
+      await runChecked(sandbox, workdir, "git", [
+        "rm",
+        "-r",
+        "-q",
+        "--ignore-unmatch",
+        "--",
+        ".",
+      ]);
+    }
   } finally {
     await runChecked(sandbox, workdir, "rm", ["-rf", STAGING_DIRECTORY]);
   }
@@ -610,7 +625,7 @@ function isNewer(candidate: CheckpointManifest, current: CheckpointManifest) {
 
 function parseManifest(raw: string, source: string): CheckpointManifest {
   const parsed: unknown = JSON.parse(raw);
-  if (typeof parsed !== "object" || parsed === null) {
+  if (!parsed || typeof parsed !== "object") {
     throw new Error(`Malformed checkpoint manifest: ${source}`);
   }
 

@@ -429,7 +429,7 @@ describe.skipIf(!(connectionString && shellAvailable))(
       });
     });
 
-    it("serializes competing restoration and worker lease acquisition", async () => {
+    it("serializes competing restoration, turn admission and worker lease acquisition", async () => {
       let notifyEntered: (() => void) | undefined;
       let release: (() => void) | undefined;
       const entered = new Promise<void>((resolve) => {
@@ -452,17 +452,19 @@ describe.skipIf(!(connectionString && shellAvailable))(
         expect((await handlers.restore(context({ checkpointId }))).status).toBe(
           409
         );
-        const queued = await store.appendConversationTurn({
+        const queued = store.appendConversationTurn({
           buildSessionId,
           idempotencyKey: randomUUID(),
           message: "Continue after restoration",
           scope,
         });
-        ({ runId } = queued);
-        const beginning = store.beginRun({
-          holder: "restore-lock-test",
-          runId,
-          ttlMs: 30_000,
+        const beginning = queued.then((accepted) => {
+          ({ runId } = accepted);
+          return store.beginRun({
+            holder: "restore-lock-test",
+            runId: accepted.runId,
+            ttlMs: 30_000,
+          });
         });
         expect(
           await Promise.race([
@@ -475,7 +477,7 @@ describe.skipIf(!(connectionString && shellAvailable))(
         release?.();
         expect((await restoring).status).toBe(200);
         const lease = await beginning;
-        if (!lease) {
+        if (!(lease && runId)) {
           throw new Error("Worker did not claim after restoration");
         }
         expect(

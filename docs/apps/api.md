@@ -63,7 +63,9 @@ GET    /v1/build-sessions/:buildSessionId                     read it in scope
 GET    /v1/projects/:projectId/conversations                  list a project's conversations
 GET    /v1/build-sessions/:buildSessionId/messages            read the conversation history
 POST   /v1/build-sessions/:buildSessionId/turns                append one turn
-POST   /v1/build-sessions/:buildSessionId/runs/:runId/retry     retry a failed or cancelled generation
+POST   /v1/build-sessions/:buildSessionId/runs/:runId/retry     rewind and retry or edit a saved user turn
+POST   /v1/build-sessions/:buildSessionId/branches             branch through a completed answer
+PUT    /v1/build-sessions/:buildSessionId/feedback             save or clear private answer feedback
 POST   /v1/build-sessions/:buildSessionId/runs/:runId/steering  request guidance for the active run
 GET    /v1/build-sessions/:buildSessionId/workspace/checkpoint-diff  read a saved turn's file diff
 GET    /v1/build-sessions/:buildSessionId/events               follow the run's events (SSE)
@@ -75,7 +77,9 @@ POST   /v1/artifacts/:artifactId/access · GET .../download       signed access 
 
 ## The event stream
 
-Generation retry requires an `Idempotency-Key` header and authorized organization/project query scope, with no request body. Only failed or cancelled runs in the selected build session qualify. The new run reuses the server-stored prompt and attachments; history does not expose their raw bytes. Replaying an accepted retry does not reserve quota again, and concurrent retries create one new run. Reconnecting an event stream never submits a generation.
+Retry requires an `Idempotency-Key`, authorized organization/project query scope, execution and checkpoint-restore permission, and JSON `{}` or `{ "message": "replacement text" }`. It restores the source before the selected active user turn, retains the preceding history, and queues a replacement using original attachments. Later runs leave active history but remain immutable audit/recovery records. Older turns without a verified starting boundary are refused. Replay does not reserve quota again; a key cannot be reused for another source turn or replacement text. Reconnecting an event stream never submits a generation.
+
+Branch accepts JSON `{ "runId": "completed-turn-id" }` with scoped authorization and an idempotency key. It retains history through that answer and selects its final checkpoint in a new conversation with an independent thread and sandbox identity. Both history actions require project work to be idle. Feedback accepts `{ "runId": "completed-turn-id", "feedback": "positive" }`, `"negative"`, or `null`; it is private to the authenticated user and conversation. Workspace reads and previews follow the conversation's selected source. See [history controls and migration recovery](../operations/conversation-history.md).
 
 Steering accepts a strict `{ message }` body and an `Idempotency-Key` header, with organization/project query scope resolved against the authenticated membership and build session. Admission requires an active, uncancelled run and allows at most ten messages per run. A 202 response reports requested/delivering/delivered/failed status, not guaranteed model consumption. Only the current worker lease owner delivers the command; requested and delivery-result events are replayable through the same scoped ledger. Ambiguous delivery after takeover is recorded as failed rather than repeated.
 

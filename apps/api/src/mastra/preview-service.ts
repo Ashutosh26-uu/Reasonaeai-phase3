@@ -18,6 +18,7 @@ import {
   type StoredPreview,
 } from "@reasonateai/project-state/previews";
 import {
+  type CheckpointReference,
   type CheckpointStore,
   createGitCheckpointStore,
   restoreSandbox,
@@ -164,6 +165,16 @@ export interface PreviewServiceDeps {
   provider?: (() => ISandboxProvider) | undefined;
   /** Where the process-exit teardown is registered; injectable for callers. */
   registerExitHook?: ((teardown: () => void) => void) | undefined;
+  resolveCheckpoint?: (
+    request: {
+      buildSessionId: BuildSessionId;
+      organizationId: OrganizationId;
+      projectId: ProjectId;
+    },
+    checkpoints: CheckpointStore
+  ) => Promise<
+    (CheckpointReference & { commit?: string; empty?: boolean }) | undefined
+  >;
 }
 
 /** The port a preview listens on inside its container. */
@@ -220,6 +231,10 @@ interface PreviewRecord {
   readonly previewId: PreviewId;
   readonly projectId: ProjectId;
   sandbox: ISandbox | undefined;
+  source?:
+    | (CheckpointReference & { commit?: string; empty?: boolean })
+    | undefined;
+  sourceKey?: string | undefined;
   status: PreviewStatus;
 }
 
@@ -586,20 +601,30 @@ export function createPreviewService(
     return await awaitServing(sandbox, hostPort, deadlineMs);
   };
 
+  const restorableSource = async (record: PreviewRecord) => {
+    const latest:
+      | (CheckpointReference & { commit?: string; empty?: boolean })
+      | undefined = deps.resolveCheckpoint
+      ? record.source
+      : await checkpoints().latest({
+          organizationId: record.organizationId,
+          projectId: record.projectId,
+        });
+    if (latest === undefined) {
+      throw new Error("This project has no saved checkpoint to preview yet.");
+    }
+    if (latest.empty) {
+      throw new Error(
+        "This conversation's workspace is empty before the selected turn."
+      );
+    }
+    return latest;
+  };
+
   /** Restores, starts, and reports readiness. Nothing here rejects. */
   const begin = async (record: PreviewRecord): Promise<void> => {
     try {
-      const latest = await checkpoints().latest({
-        organizationId: record.organizationId,
-        projectId: record.projectId,
-      });
-      if (latest === undefined) {
-        await fail(
-          record,
-          "This project has no saved checkpoint to preview yet."
-        );
-        return;
-      }
+      const latest = await restorableSource(record);
 
       const sandbox = await sandboxes().create({
         cpuLimit: PREVIEW_SANDBOX_CPU,
@@ -632,6 +657,7 @@ export function createPreviewService(
         .catch(() => undefined);
 
       await restoreSandbox({
+        ...(latest.commit ? { commit: latest.commit } : {}),
         checkpointId: latest.checkpointId,
         sandbox,
         store: checkpoints(),
@@ -934,6 +960,10 @@ export function createPreviewService(
 
   const start = async (request: PreviewRequest): Promise<PreviewView> => {
     await sweepOrphans();
+    const source = await deps.resolveCheckpoint?.(request, checkpoints());
+    const sourceKey = deps.resolveCheckpoint
+      ? JSON.stringify([source?.checkpointId, source?.commit, source?.empty])
+      : undefined;
     let existing = bySession.get(request.buildSessionId);
     if (existing === undefined) {
       try {
@@ -966,7 +996,7 @@ export function createPreviewService(
     if (existing !== undefined) {
       // A live preview is adopted: the panel retries a dropped request, and a
       // retry must not leave the first container running behind it.
-      if (existing.status !== "failed") {
+      if (existing.status !== "failed" && existing.sourceKey === sourceKey) {
         return viewOf(touched(existing));
       }
       await teardown(existing);
@@ -983,6 +1013,8 @@ export function createPreviewService(
       previewId,
       projectId: request.projectId,
       sandbox: undefined,
+      source,
+      sourceKey,
       status: "starting",
     };
     byId.set(previewId, record);

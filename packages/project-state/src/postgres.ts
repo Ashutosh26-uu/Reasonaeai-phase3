@@ -62,6 +62,7 @@ import {
   AUDIT_MIGRATION_SQL,
   AUTH_TOKEN_MIGRATION_SQL,
 } from "./auth-schema.js";
+import { createConversationHistory } from "./conversation-history.js";
 import {
   createMagicLinkRepository,
   type MagicLinkRepository,
@@ -114,61 +115,8 @@ export class WorkspaceRestoreBusyError extends Error {
   }
 }
 
-export class ConversationRetryUnavailableError extends Error {
-  constructor() {
-    super(
-      "Only a failed or cancelled run in this conversation can be retried."
-    );
-    this.name = "ConversationRetryUnavailableError";
-  }
-}
-
-function conversationRetryKey(input: { idempotencyKey: string; runId: RunId }) {
-  return JSON.stringify(["retry", input.runId, input.idempotencyKey]);
-}
-
 const PLAN_APPROVE_PATTERN = /^(approved|approve|yes|true)$/i;
 const PLAN_REJECT_PATTERN = /^(rejected|reject|no|false)$/i;
-
-async function resolveConversationPrompt(
-  client: PoolClient,
-  input: {
-    attachments?: PromptAttachment[];
-    buildSessionId: BuildSessionId;
-    message: string;
-    retryRunId?: RunId;
-    scope: TenantScope;
-  }
-) {
-  if (!input.retryRunId) {
-    return { attachments: input.attachments ?? [], message: input.message };
-  }
-  const source = await client.query<{
-    user_message: string | null;
-    user_attachments: unknown;
-  }>(
-    `select user_message, user_attachments from runs
-      where run_id = $1 and build_session_id = $2
-        and organization_id = $3 and project_id = $4
-        and status in ('failed', 'cancelled') for update`,
-    [
-      input.retryRunId,
-      input.buildSessionId,
-      input.scope.organizationId,
-      input.scope.projectId,
-    ]
-  );
-  const [original] = source.rows;
-  if (!original || original.user_message === null) {
-    throw new ConversationRetryUnavailableError();
-  }
-  return {
-    attachments: PromptAttachmentSchema.array().parse(
-      original.user_attachments ?? []
-    ),
-    message: original.user_message,
-  };
-}
 
 export interface OutboxRecord {
   outboxId: string;
@@ -463,17 +411,12 @@ export interface ProjectStateStore {
    * outside that tenant scope is not found rather than filtered afterwards, so
    * a caller cannot learn that another tenant's run exists.
    */
-  getConversationRetry: (input: {
-    buildSessionId: BuildSessionId;
-    idempotencyKey: string;
-    runId: RunId;
-    scope: TenantScope;
-  }) => Promise<RunId | undefined>;
   getRun: (input: {
     organizationId: OrganizationId;
     projectId: ProjectId;
     runId: RunId;
   }) => Promise<RunRecord | undefined>;
+  history: ReturnType<typeof createConversationHistory>;
   /** Reads the durable cancellation request while a worker holds the run. */
   isRunCancellationRequested: (runId: RunId) => Promise<boolean>;
   listArtifacts: (scope: TenantScope) => Promise<ArtifactRecord[]>;
@@ -486,6 +429,7 @@ export interface ProjectStateStore {
   listConversationMessages: (input: {
     buildSessionId: BuildSessionId;
     scope: TenantScope;
+    userId?: UserId;
   }) => Promise<ConversationMessage[]>;
   listConversations: (scope: TenantScope) => Promise<ConversationSummary[]>;
   /**
@@ -585,12 +529,6 @@ export interface ProjectStateStore {
     restore: (session: BuildSession) => Promise<WorkspaceRestoreResponse>;
     scope: TenantScope;
   }) => Promise<WorkspaceRestoreResponse | undefined>;
-  retryConversationRun: (input: {
-    buildSessionId: BuildSessionId;
-    idempotencyKey: string;
-    runId: RunId;
-    scope: TenantScope;
-  }) => Promise<{ runId: RunId; created: boolean }>;
   sessions: SessionRepository;
   setRunStatus: (input: {
     runId: RunId;
@@ -787,6 +725,21 @@ export function createProjectStateStore(config: {
   }
 
   const usage = createUsageRepository(pool, { withTransaction });
+  const history = createConversationHistory({
+    appendQueued: async (client, runId, command) => {
+      await insertRunEvent(client, {
+        payload: {
+          buildSessionId: command.buildSessionId,
+          retryOfRunId: command.runId,
+        },
+        runId,
+        scope: command.scope,
+        type: "run.queued",
+      });
+    },
+    pool,
+    withTransaction,
+  });
   const steering = createRunSteeringRepository({
     appendEvent: insertRunEvent,
     withTransaction,
@@ -829,6 +782,12 @@ export function createProjectStateStore(config: {
         const restored = WorkspaceRestoreResponseSchema.parse(
           await input.restore(session)
         );
+        if (restored.workspaceCheckpointId) {
+          await client.query(
+            "update conversation_heads set checkpoint_id=$2,checkpoint_commit=null,checkpoint_empty=false,isolated=true where build_session_id=$1",
+            [input.buildSessionId, restored.workspaceCheckpointId]
+          );
+        }
         await recordWith(client, {
           ...input.audit,
           metadata: {
@@ -953,6 +912,20 @@ export function createProjectStateStore(config: {
         ]
       );
 
+      await client.query(
+        "insert into conversation_heads(build_session_id,thread_id) values($1,$1)",
+        [buildSessionId]
+      );
+      await client.query(
+        "insert into conversation_history(build_session_id,run_id,organization_id,project_id,position) values($1,$2,$3,$4,1)",
+        [
+          buildSessionId,
+          runId,
+          input.scope.organizationId,
+          input.scope.projectId,
+        ]
+      );
+
       return await requireAllocation(client, input.scope, buildSessionId, true);
     });
   }
@@ -962,10 +935,13 @@ export function createProjectStateStore(config: {
     buildSessionId: BuildSessionId;
     idempotencyKey: string;
     message: string;
-    retryRunId?: RunId;
     scope: TenantScope;
   }): Promise<{ runId: RunId; created: boolean }> {
     return await withTransaction(async (client) => {
+      await client.query(
+        "select project_id from projects where organization_id=$1 and project_id=$2 for update",
+        [input.scope.organizationId, input.scope.projectId]
+      );
       const session = await client.query<{ build_session_id: string }>(
         `select build_session_id from build_sessions
           where build_session_id = $1 and organization_id = $2 and project_id = $3
@@ -982,13 +958,8 @@ export function createProjectStateStore(config: {
 
       const replay = await client.query<{
         run_id: string;
-        retry_source: string | null;
       }>(
-        `select keys.run_id, event.payload->>'retryOfRunId' as retry_source
-           from conversation_turn_keys keys
-           left join run_events event on event.run_id = keys.run_id
-             and event.organization_id = keys.organization_id
-             and event.project_id = keys.project_id and event.sequence = 1
+        `select keys.run_id from conversation_turn_keys keys
           where keys.organization_id = $1 and keys.project_id = $2
             and keys.build_session_id = $3 and keys.idempotency_key = $4`,
         [
@@ -999,12 +970,6 @@ export function createProjectStateStore(config: {
         ]
       );
       if (replay.rows[0]) {
-        if (
-          input.retryRunId &&
-          replay.rows[0].retry_source !== input.retryRunId
-        ) {
-          throw new ConversationRetryUnavailableError();
-        }
         return {
           created: false,
           runId: RunIdSchema.parse(replay.rows[0].run_id),
@@ -1025,10 +990,8 @@ export function createProjectStateStore(config: {
         throw new ConversationBusyError();
       }
 
-      const { message, attachments } = await resolveConversationPrompt(
-        client,
-        input
-      );
+      const { message } = input;
+      const attachments = input.attachments ?? [];
 
       const runId = RunIdSchema.parse(randomUUID());
       await client.query(
@@ -1064,59 +1027,22 @@ export function createProjectStateStore(config: {
       await insertRunEvent(client, {
         payload: {
           buildSessionId: input.buildSessionId,
-          ...(input.retryRunId ? { retryOfRunId: input.retryRunId } : {}),
         },
         runId,
         scope: input.scope,
         type: "run.queued",
       });
+      await client.query(
+        "insert into conversation_history(build_session_id,run_id,organization_id,project_id,position) select $1,$2,$3,$4,coalesce(max(position),0)+1 from conversation_history where build_session_id=$1",
+        [
+          input.buildSessionId,
+          runId,
+          input.scope.organizationId,
+          input.scope.projectId,
+        ]
+      );
       return { created: true, runId };
     });
-  }
-
-  async function retryConversationRun(input: {
-    buildSessionId: BuildSessionId;
-    idempotencyKey: string;
-    runId: RunId;
-    scope: TenantScope;
-  }) {
-    return await appendConversationTurn({
-      buildSessionId: input.buildSessionId,
-      idempotencyKey: conversationRetryKey(input),
-      message: "",
-      retryRunId: input.runId,
-      scope: input.scope,
-    });
-  }
-
-  async function getConversationRetry(input: {
-    buildSessionId: BuildSessionId;
-    idempotencyKey: string;
-    runId: RunId;
-    scope: TenantScope;
-  }): Promise<RunId | undefined> {
-    const replay = await pool.query<{ run_id: string }>(
-      `select keys.run_id from conversation_turn_keys keys
-         join runs r on r.run_id = keys.run_id
-           and r.build_session_id = keys.build_session_id
-           and r.organization_id = keys.organization_id
-           and r.project_id = keys.project_id
-         join run_events event on event.run_id = keys.run_id
-           and event.organization_id = keys.organization_id
-           and event.project_id = keys.project_id and event.sequence = 1
-        where keys.organization_id = $1 and keys.project_id = $2
-          and keys.build_session_id = $3 and keys.idempotency_key = $4
-          and event.type = 'run.queued' and event.payload->>'retryOfRunId' = $5`,
-      [
-        input.scope.organizationId,
-        input.scope.projectId,
-        input.buildSessionId,
-        conversationRetryKey(input),
-        input.runId,
-      ]
-    );
-    const [row] = replay.rows;
-    return row ? RunIdSchema.parse(row.run_id) : undefined;
   }
 
   async function listConversations(
@@ -1126,8 +1052,8 @@ export function createProjectStateStore(config: {
       `select bs.build_session_id, bs.created_at, bs.updated_at, bs.status,
               bs.run_id, r.status as run_status,
               (select left(trim(first_run.user_message), 120)
-                 from runs first_run
-                where first_run.build_session_id = bs.build_session_id
+                 from runs first_run join conversation_history history on history.run_id=first_run.run_id
+                where history.build_session_id = bs.build_session_id
                   and first_run.user_message is not null
                 order by first_run.created_at, first_run.run_id limit 1) as title
          from build_sessions bs
@@ -1157,6 +1083,7 @@ export function createProjectStateStore(config: {
   async function listConversationMessages(input: {
     buildSessionId: BuildSessionId;
     scope: TenantScope;
+    userId?: UserId;
   }): Promise<ConversationMessage[]> {
     // `source_id` is the agent platform's own message id, which is what lets a
     // client place the message it already holds where the work around it
@@ -1168,8 +1095,8 @@ export function createProjectStateStore(config: {
                 r.user_message as text, r.created_at, null::text as source_id,
                 null::text as reasoning, 0 as position, r.run_id,
                 r.user_attachments
-           from runs r
-          where r.build_session_id = $1 and r.organization_id = $2
+           from runs r join conversation_history history on history.run_id=r.run_id
+          where history.build_session_id = $1 and r.organization_id = $2
             and r.project_id = $3 and r.user_message is not null
          union all
          select e.event_id::text, 'assistant'::text,
@@ -1186,7 +1113,8 @@ export function createProjectStateStore(config: {
            from (
              select distinct on (e.run_id, e.payload->>'messageId') e.*
              from run_events e join runs r on r.run_id = e.run_id
-             where r.build_session_id = $1 and r.organization_id = $2
+             join conversation_history history on history.run_id=r.run_id
+             where history.build_session_id = $1 and r.organization_id = $2
                and r.project_id = $3 and e.organization_id = $2 and e.project_id = $3
                and e.payload->>'kind' in ('message_end', 'message_snapshot')
                and e.payload->>'role' = 'assistant'
@@ -1194,6 +1122,15 @@ export function createProjectStateStore(config: {
            ) e
        ) messages order by created_at, position, id`,
       [input.buildSessionId, input.scope.organizationId, input.scope.projectId]
+    );
+    const feedback = input.userId
+      ? await pool.query(
+          "select run_id,feedback from conversation_feedback where build_session_id=$1 and user_id=$2",
+          [input.buildSessionId, input.userId]
+        )
+      : undefined;
+    const feedbackByRun = new Map<string, "positive" | "negative" | null>(
+      feedback?.rows.map((row) => [row.run_id, row.feedback]) ?? []
     );
     return result.rows.map((row) =>
       ConversationMessageSchema.parse({
@@ -1207,6 +1144,10 @@ export function createProjectStateStore(config: {
             })
           ),
         createdAt: asIso(row.created_at as Date),
+        feedback:
+          row.role === "assistant"
+            ? (feedbackByRun.get(row.run_id) ?? null)
+            : null,
         id: row.id,
         reasoning: (row.reasoning as string | null) ?? null,
         role: row.role,
@@ -1388,6 +1329,9 @@ export function createProjectStateStore(config: {
       await insertRunEvent(client, {
         payload: {
           kind: "answer_submitted",
+          ...(run.pending_tool_name === "ask_user"
+            ? { answer: resolvedAnswer }
+            : {}),
           requestedByUserId: input.requestedByUserId,
           toolCallId: input.toolCallId,
         },
@@ -2046,7 +1990,8 @@ export function createProjectStateStore(config: {
     const result = await pool.query(
       `select e.* from run_events e join runs r on r.run_id = e.run_id
        and r.organization_id = e.organization_id and r.project_id = e.project_id
-       where r.build_session_id = $1 and e.organization_id = $2 and e.project_id = $3
+       join conversation_history history on history.run_id=r.run_id
+       where history.build_session_id = $1 and e.organization_id = $2 and e.project_id = $3
        order by r.created_at, r.run_id, e.sequence limit $4 offset $5`,
       [
         input.buildSessionId,
@@ -2381,8 +2326,8 @@ export function createProjectStateStore(config: {
     createProject,
     finishRun,
     getBuildSession,
-    getConversationRetry,
     getRun,
+    history,
     isRunCancellationRequested,
     listArtifacts,
     listConversationEvents,
@@ -2450,7 +2395,6 @@ export function createProjectStateStore(config: {
     renewRunLease,
     requestRunCancellation,
     restoreWorkspaceCheckpoint,
-    retryConversationRun,
     sessions,
     setRunStatus,
     steering,

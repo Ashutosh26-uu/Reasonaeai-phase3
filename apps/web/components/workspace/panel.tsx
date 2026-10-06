@@ -691,6 +691,7 @@ export function Panel({
         {tab === "preview" ? (
           <PreviewView
             buildSessionId={buildSessionId}
+            key={`${buildSessionId}:${refreshKey ?? 0}`}
             organizationId={organizationId}
             projectId={projectId}
           />

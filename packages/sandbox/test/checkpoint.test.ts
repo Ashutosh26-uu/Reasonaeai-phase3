@@ -266,6 +266,65 @@ describe.skipIf(!shellAvailable)(
   "snapshotSandbox and restoreSandbox",
   { timeout: 30_000 },
   () => {
+    it("restores an earlier commit or an empty starting tree from the same bundle", async () => {
+      const sourceDirectory = await createTemporaryDirectory(
+        "reasonate-history-source-"
+      );
+      const destination = await createTemporaryDirectory(
+        "reasonate-history-restore-"
+      );
+      const root = await createTemporaryDirectory("reasonate-history-store-");
+      const sandbox = new FixtureSandbox(sourceDirectory);
+      const store = createGitCheckpointStore({ root });
+      const input = {
+        buildSessionId,
+        organizationId,
+        projectId,
+        runId,
+        sandbox,
+        store,
+      };
+      await sandbox.writeFile("idea.txt", "before\n");
+      const first = await snapshotSandbox({ ...input, baseCommit: null });
+      if (first.checkpoint?.status !== "available") {
+        throw new Error("Expected a measured starting checkpoint");
+      }
+      await sandbox.writeFile("idea.txt", "after\n");
+      await sandbox.writeFile("later.txt", "superseded\n");
+      const later = await snapshotSandbox({
+        ...input,
+        baseCommit: first.checkpoint.commit,
+      });
+      const target = new FixtureSandbox(destination);
+      await restoreSandbox({
+        checkpointId: later.checkpointId,
+        commit: first.checkpoint.commit,
+        sandbox: target,
+        store,
+      });
+      await expectRestoredFiles(destination, { "idea.txt": "before\n" });
+      await expect(stat(join(destination, "later.txt"))).rejects.toThrow();
+      await restoreSandbox({
+        checkpointId: later.checkpointId,
+        empty: true,
+        sandbox: target,
+        store,
+      });
+      await expect(stat(join(destination, "idea.txt"))).rejects.toThrow();
+      await expect(stat(join(destination, "later.txt"))).rejects.toThrow();
+      await target.writeFile("replacement.txt", "fresh first turn\n");
+      const replacement = await snapshotSandbox({
+        ...input,
+        baseCommit: null,
+        sandbox: target,
+      });
+      expect(replacement.checkpoint).toMatchObject({
+        added: 1,
+        fileCount: 1,
+        removed: 0,
+        status: "available",
+      });
+    });
     it("retains the restored base for immutable diffs when a turn rewrites Git history", async () => {
       const directory = await createTemporaryDirectory("reasonate-rewritten-");
       const destination = await createTemporaryDirectory(

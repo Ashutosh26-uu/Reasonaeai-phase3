@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { ConversationMessageSchema } from "@reasonateai/contracts/execution";
 import { RunEventEnvelopeSchema } from "@reasonateai/contracts/execution-protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -31,6 +32,65 @@ const requested = historyEntry(1, "run.steering.requested", {
 });
 const delivered = historyEntry(2, "run.steering.delivered", {
   steeringId: "steer",
+});
+describe("saved message controls", () => {
+  it("puts edit/retry on the user and copy/feedback/branch on the saved assistant answer", () => {
+    const messages = [
+      ConversationMessageSchema.parse({
+        createdAt: "2026-10-06T08:00:00Z",
+        id: randomUUID(),
+        reasoning: null,
+        role: "user",
+        runId,
+        sourceId: null,
+        text: "Build this",
+      }),
+      ConversationMessageSchema.parse({
+        createdAt: "2026-10-06T08:01:00Z",
+        feedback: "positive",
+        id: randomUUID(),
+        reasoning: null,
+        role: "assistant",
+        runId,
+        sourceId: null,
+        text: "Done",
+      }),
+    ];
+    const timeline = [
+      historyEntry(1, "run.queued", {}),
+      historyEntry(2, "agent.progress", {
+        kind: "message_end",
+        messageId: randomUUID(),
+        role: "assistant",
+        text: "Done",
+      }),
+      historyEntry(3, "run.completed", {}),
+    ].reduce(foldDurable, EMPTY_TIMELINE);
+    const html = renderToStaticMarkup(
+      <Transcript
+        live={false}
+        messages={messages}
+        onBranch={vi.fn()}
+        onEdit={vi.fn()}
+        onFeedback={vi.fn()}
+        onRetry={vi.fn()}
+        pending={false}
+        timeline={timeline}
+      />
+    );
+    const footer = html.slice(html.indexOf('aria-label="Answer actions"'));
+    expect(html).toContain("Edit and resend");
+    expect(html).toContain("Done");
+    expect(html).not.toContain("This older response was saved");
+    expect(html).toContain("Retry request");
+    expect(footer).toContain("Copy answer");
+    expect(footer).toContain("Good response");
+    expect(footer).toContain("Poor response");
+    expect(footer).toContain("Branch in new conversation");
+    expect(footer).not.toContain("Edit and resend");
+    expect(footer).not.toContain("Retry request");
+    expect(footer).toContain('dateTime="2026-10-06T08:01:00Z"');
+  });
 });
 function renderHistory(events: ReturnType<typeof historyEntry>[]) {
   return renderToStaticMarkup(

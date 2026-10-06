@@ -5,11 +5,13 @@ import type {
   WorkspaceSandbox,
 } from "@mastra/core/workspace";
 import type { RunScope } from "@reasonateai/cto-runtime/run-scope";
+import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
 import {
   type CheckpointReference,
   type CheckpointSandbox,
   type CheckpointStore,
   type CheckpointWriteResult,
+  parseCheckpointId,
   restoreSandbox,
   snapshotSandbox,
 } from "@reasonateai/sandbox/checkpoint";
@@ -88,24 +90,56 @@ export function checkpointSandboxFor(
  * failure: the first run of a project has nothing to restore from.
  */
 export async function restoreLatestCheckpoint(input: {
+  store?: ProjectStateStore;
   checkpoints: CheckpointStore;
   sandbox: CheckpointSandbox;
   scope: RunScope;
 }): Promise<CheckpointReference | undefined> {
-  const latest = await input.checkpoints.latest({
-    organizationId: input.scope.organizationId,
-    projectId: input.scope.projectId,
-  });
+  const head = await input.store?.history.head(
+    input.scope,
+    input.scope.buildSessionId
+  );
+  const latest =
+    head?.isolated && head.checkpointId
+      ? {
+          checkpointId: head.checkpointId,
+          digest: parseCheckpointId(head.checkpointId).digest,
+        }
+      : await input.checkpoints.latest({
+          organizationId: input.scope.organizationId,
+          projectId: input.scope.projectId,
+        });
   if (latest === undefined) {
     return;
   }
+  const savedScope = parseCheckpointId(latest.checkpointId);
+  if (
+    savedScope.organizationId !== input.scope.organizationId ||
+    savedScope.projectId !== input.scope.projectId
+  ) {
+    throw new Error(
+      "The conversation checkpoint belongs to a different project."
+    );
+  }
 
   await restoreSandbox({
+    ...(head?.checkpointCommit ? { commit: head.checkpointCommit } : {}),
+    ...(head?.checkpointEmpty ? { empty: true } : {}),
     checkpointId: latest.checkpointId,
     sandbox: input.sandbox,
     store: input.checkpoints,
     workdir: SANDBOX_WORKING_DIRECTORY,
   });
+  const clean = await input.sandbox.runCommand({
+    args: ["clean", "-fd"],
+    command: "git",
+    cwd: SANDBOX_WORKING_DIRECTORY,
+  });
+  if (clean.exitCode !== 0 || clean.timedOut) {
+    throw new Error(
+      "Checkpoint restoration could not remove superseded source files."
+    );
+  }
 
   return latest;
 }

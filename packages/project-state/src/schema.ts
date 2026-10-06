@@ -6,7 +6,7 @@
  * ledger that browser reconnect depends on. Redis Streams is transport and
  * never the only record of work.
  */
-export const PROJECT_STATE_SCHEMA_VERSION = 6;
+export const PROJECT_STATE_SCHEMA_VERSION = 7;
 
 export const PROJECT_STATE_MIGRATION_SQL = `
 create table if not exists organizations (
@@ -66,6 +66,56 @@ alter table runs add column if not exists pending_answer text;
 alter table runs add column if not exists pending_answered_by uuid;
 alter table runs add column if not exists parked_at timestamptz;
 alter table runs add column if not exists pending_tool_name text;
+
+create table if not exists conversation_history (
+  build_session_id uuid not null references build_sessions(build_session_id) on delete cascade,
+  run_id uuid not null references runs(run_id) on delete cascade,
+  organization_id uuid not null,
+  project_id uuid not null,
+  position bigint not null,
+  primary key (build_session_id, run_id),
+  unique (build_session_id, position),
+  foreign key (organization_id, project_id) references projects(organization_id, project_id) on delete cascade
+);
+create table if not exists conversation_heads (
+  build_session_id uuid primary key references build_sessions(build_session_id) on delete cascade,
+  thread_id uuid not null,
+  isolated boolean not null default false,
+  checkpoint_id text,
+  checkpoint_commit text,
+  checkpoint_empty boolean not null default false,
+  source_build_session_id uuid,
+  source_run_id uuid
+);
+-- Only backfill conversations not yet migrated; never resurrect superseded runs.
+insert into conversation_history(build_session_id, run_id, organization_id, project_id, position)
+select r.build_session_id, r.run_id, r.organization_id, r.project_id,
+       row_number() over (partition by r.build_session_id order by r.created_at, r.run_id)
+from runs r where not exists (
+  select 1 from conversation_heads h where h.build_session_id = r.build_session_id)
+on conflict do nothing;
+insert into conversation_heads(build_session_id, thread_id)
+select build_session_id, build_session_id from build_sessions on conflict do nothing;
+
+create table if not exists run_workspace_boundaries (
+  run_id uuid primary key references runs(run_id) on delete cascade,
+  checkpoint_id text not null
+);
+create table if not exists conversation_history_commands (
+  build_session_id uuid not null references build_sessions(build_session_id) on delete cascade,
+  idempotency_key text not null,
+  fingerprint text not null,
+  result_build_session_id uuid not null,
+  result_run_id uuid not null,
+  primary key (build_session_id, idempotency_key)
+);
+create table if not exists conversation_feedback (
+  build_session_id uuid not null references build_sessions(build_session_id) on delete cascade,
+  run_id uuid not null references runs(run_id) on delete cascade,
+  user_id uuid not null,
+  feedback text check (feedback in ('positive', 'negative')),
+  primary key(build_session_id, run_id, user_id)
+);
 create index if not exists runs_session_recent_idx
   on runs (build_session_id, created_at desc);
 

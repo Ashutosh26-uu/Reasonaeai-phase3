@@ -41,6 +41,7 @@ import {
   parseCheckpointId,
 } from "@reasonateai/sandbox/checkpoint";
 import { z } from "zod";
+import { conversationCheckpoint } from "../conversation-checkpoint";
 import { apiErrorResponse, unauthenticatedResponse } from "../principal";
 import { checkpointSandboxFor, createBuildSandbox } from "../workspace";
 import {
@@ -431,9 +432,10 @@ async function evictOldestClone(protectedDigest: string): Promise<void> {
  */
 async function materializeCheckout(input: {
   checkpoints: CheckpointStore;
-  checkpoint: CheckpointReference;
+  checkpoint: CheckpointReference & { commit?: string };
 }): Promise<string> {
-  const cached = clones.get(input.checkpoint.digest);
+  const cacheKey = `${input.checkpoint.digest}:${input.checkpoint.commit ?? "HEAD"}`;
+  const cached = clones.get(cacheKey);
   if (cached) {
     return await cached.job;
   }
@@ -443,17 +445,23 @@ async function materializeCheckout(input: {
     checkpointId: input.checkpoint.checkpointId,
     checkpoints: input.checkpoints,
     digest: input.checkpoint.digest,
-  }).then((directory) => {
+  }).then(async (directory) => {
+    if (input.checkpoint.commit) {
+      await runGit(
+        ["-C", directory, "reset", "--hard", input.checkpoint.commit],
+        GIT_OUTPUT_LIMIT
+      );
+    }
     finished = true;
     return directory;
   });
   const tracked = job.catch((error: unknown) => {
-    clones.delete(input.checkpoint.digest);
+    clones.delete(cacheKey);
     throw error;
   });
 
-  clones.set(input.checkpoint.digest, { done: () => finished, job: tracked });
-  await evictOldestClone(input.checkpoint.digest);
+  clones.set(cacheKey, { done: () => finished, job: tracked });
+  await evictOldestClone(cacheKey);
 
   return await tracked;
 }
@@ -953,7 +961,14 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
       const run = await deps
         .store()
         .getRun({ ...scope, runId: query.data.runId });
-      if (!run || run.buildSessionId !== buildSessionId.data) {
+      if (
+        !(
+          run &&
+          (await deps
+            .store()
+            .history.contains(scope, buildSessionId.data, query.data.runId))
+        )
+      ) {
         return apiErrorResponse({
           code: "not_found",
           message: "No such run in this build session.",
@@ -1028,9 +1043,14 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
         return refusal;
       }
 
-      const checkpoint = await checkpoints.latest({
-        organizationId: query.data.organizationId,
-        projectId: query.data.projectId,
+      const checkpoint = await conversationCheckpoint({
+        buildSessionId: buildSessionId.data,
+        checkpoints,
+        scope: {
+          organizationId: query.data.organizationId,
+          projectId: query.data.projectId,
+        },
+        store: deps.store(),
       });
       if (!checkpoint) {
         return apiErrorResponse({
@@ -1041,6 +1061,13 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
       }
 
       const { path } = query.data;
+      if (checkpoint.empty) {
+        return apiErrorResponse({
+          code: "not_found",
+          message: "This file did not exist before the selected turn.",
+          requestId: rid,
+        });
+      }
       const directory = await materializeCheckout({ checkpoint, checkpoints });
       const read = await readWorkspaceFile({ directory, path, requestId: rid });
       if ("failed" in read) {
@@ -1195,11 +1222,28 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
         return refusal;
       }
 
-      const checkpoint = await checkpoints.latest(scope.data);
+      const checkpoint = await conversationCheckpoint({
+        buildSessionId: buildSessionId.data,
+        checkpoints,
+        scope: scope.data,
+        store: deps.store(),
+      });
       if (!checkpoint) {
         return c.json(
           WorkspaceTreeSchema.parse({
             checkpointId: "",
+            commit: "",
+            files: [],
+            truncated: false,
+          }),
+          200
+        );
+      }
+
+      if (checkpoint.empty) {
+        return c.json(
+          WorkspaceTreeSchema.parse({
+            checkpointId: checkpoint.checkpointId,
             commit: "",
             files: [],
             truncated: false,

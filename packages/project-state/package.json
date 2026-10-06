@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./conversation-history": {
+      "types": "./src/conversation-history.ts",
+      "import": "./dist/conversation-history.js"
+    },
     "./steering": {
       "types": "./src/steering.ts",
       "import": "./dist/steering.js"
