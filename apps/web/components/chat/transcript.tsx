@@ -298,11 +298,6 @@ function Entry({
             <span aria-label="Writing" className="stream-caret" role="status" />
           )}
         </div>
-        {entry.legacy && (
-          <p className="text-muted-foreground text-xs">
-            This older response was saved without text/tool boundaries.
-          </p>
-        )}
       </MessageContent>
     </Message>
   );

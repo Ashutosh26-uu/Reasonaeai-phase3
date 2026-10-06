@@ -49,6 +49,7 @@ import {
   type PromptSuggestion,
 } from "@/components/chat/suggestions";
 import {
+  latestCompletedTurn as completedSuggestionTurn,
   pendingPlan,
   pendingQuestion,
   projectTranscript,
@@ -1609,23 +1610,10 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       ? { id: completedVoiceTurn.id, text: voiceResponseText }
       : null;
 
-  const latestCompletedTurn = useMemo(() => {
-    const transcriptTurns = projectTranscript(timeline, renderedMessages);
-    const mostRecentTurn = transcriptTurns.at(-1);
-    if (!mostRecentTurn) {
-      return;
-    }
-    const events = Object.values(
-      timeline.runs[mostRecentTurn.id]?.events ?? {}
-    );
-    const succeeded = events.some(
-      (event) =>
-        event.type === "run.completed" && event.payload.outcome === "succeeded"
-    );
-    if (succeeded) {
-      return mostRecentTurn;
-    }
-  }, [renderedMessages, timeline]);
+  const latestCompletedTurn = useMemo(
+    () => completedSuggestionTurn(timeline, renderedMessages),
+    [renderedMessages, timeline]
+  );
 
   const latestAssistantText = useMemo(() => {
     if (!latestCompletedTurn) {

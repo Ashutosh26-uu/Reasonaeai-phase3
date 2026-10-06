@@ -80,6 +80,8 @@ describe("saved message controls", () => {
     );
     const footer = html.slice(html.indexOf('aria-label="Answer actions"'));
     expect(html).toContain("Edit and resend");
+    expect(html).toContain("Done");
+    expect(html).not.toContain("This older response was saved");
     expect(html).toContain("Retry request");
     expect(footer).toContain("Copy answer");
     expect(footer).toContain("Good response");

@@ -11,6 +11,7 @@ import {
   EMPTY_TIMELINE,
   foldDurable,
   foldLive,
+  latestCompletedTurn,
   pendingPlan,
   pendingQuestion,
   projectTranscript,
@@ -40,6 +41,33 @@ const event = (
   });
 
 describe("active history reconciliation", () => {
+  it.each([{}, { outcome: "succeeded" }])(
+    "restores a completed suggestion turn from saved history with %j",
+    (payload) => {
+      const timeline = [
+        event(1, { kind: "message_end", role: "assistant", text: "Done" }),
+        event(2, payload, runId, "run.completed"),
+      ].reduce(foldDurable, EMPTY_TIMELINE);
+      expect(latestCompletedTurn(timeline, [])?.entries[0]).toMatchObject({
+        text: "Done",
+      });
+    }
+  );
+  it("does not suggest after a controller end or a later failed turn", () => {
+    const ended = event(1, { kind: "agent_end" }, runId, "run.completed");
+    expect(
+      latestCompletedTurn(foldDurable(EMPTY_TIMELINE, ended), [])
+    ).toBeUndefined();
+    const completed = event(
+      2,
+      { outcome: "succeeded" },
+      runId,
+      "run.completed"
+    );
+    const failed = event(1, { outcome: "failed" }, randomUUID(), "run.failed");
+    const timeline = [completed, failed].reduce(foldDurable, EMPTY_TIMELINE);
+    expect(latestCompletedTurn(timeline, [])).toBeUndefined();
+  });
   it("keeps unchanged snapshots stable even when callers recreate the event array", () => {
     const saved = event(1, { text: "Saved answer" });
     const timeline = reconcileHistory(EMPTY_TIMELINE, [saved]);

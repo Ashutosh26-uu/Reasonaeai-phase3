@@ -244,6 +244,30 @@ export interface TranscriptTurn {
   id: string;
   user?: ConversationMessage;
 }
+
+/** Legacy worker completions omit outcome; controller agent ends are progress. */
+export function latestCompletedTurn(
+  timeline: Timeline,
+  messages: ConversationMessage[]
+): TranscriptTurn | undefined {
+  const turn = projectTranscript(timeline, messages).at(-1);
+  if (!turn) {
+    return;
+  }
+  const events = Object.values(timeline.runs[turn.id]?.events ?? {}).sort(
+    (a, b) => a.sequence - b.sequence
+  );
+  const outcome = events.findLast(
+    (event) => terminal(event) && event.payload.kind !== "agent_end"
+  );
+  if (
+    outcome?.type === "run.completed" &&
+    (outcome.payload.outcome === undefined ||
+      outcome.payload.outcome === "succeeded")
+  ) {
+    return turn;
+  }
+}
 const string = (value: unknown): string =>
   typeof value === "string" ? value : "";
 const terminal = (event: RunEventEnvelope) =>
