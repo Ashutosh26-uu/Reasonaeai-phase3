@@ -117,4 +117,52 @@ describe("sandbox contracts", () => {
 
     expect(state.status).toBe("running");
   });
+
+  it("parses valid package cache volume and mounts", () => {
+    const config = SandboxConfigSchema.parse({
+      id: sandboxId,
+      image: "node:22-alpine",
+      mounts: [
+        {
+          readonly: true,
+          source: "shared-cache",
+          target: "/root/.npm",
+          type: "volume",
+        },
+      ],
+      networkMode: "bridge",
+      packageCacheVolume: "reasonate-npm-cache",
+      projectId,
+      runId: null,
+    });
+
+    expect(config.networkMode).toBe("bridge");
+    expect(config.packageCacheVolume).toBe("reasonate-npm-cache");
+    expect(config.mounts).toHaveLength(1);
+    expect(config.mounts[0]).toEqual({
+      readonly: true,
+      source: "shared-cache",
+      target: "/root/.npm",
+      type: "volume",
+    });
+  });
+
+  it("strictly rejects mounts attempting to access host docker.sock", () => {
+    const result = SandboxConfigSchema.safeParse({
+      id: sandboxId,
+      image: "node:22-alpine",
+      mounts: [
+        {
+          readonly: false,
+          source: "/var/run/docker.sock",
+          target: "/var/run/docker.sock",
+          type: "bind",
+        },
+      ],
+      projectId,
+      runId: null,
+    });
+
+    expect(result.success).toBe(false);
+  });
 });

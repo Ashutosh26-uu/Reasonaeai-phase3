@@ -93,6 +93,7 @@ export const RunEventTypeSchema = z.enum([
   "run.repair_attempted",
   "run.repair_verified",
   "run.repair_failed",
+  "run.parked",
 ]);
 export type RunEventType = z.infer<typeof RunEventTypeSchema>;
 

@@ -46,25 +46,72 @@ export const buildSandboxEnvironment: {
   },
 };
 
+export function resolveBuildSandboxNetworkMode(
+  env: NodeJS.ProcessEnv = process.env
+): "bridge" | "none" {
+  const candidate = (
+    env.REASONATE_SANDBOX_NETWORK_MODE ??
+    env.SANDBOX_NETWORK_MODE ??
+    "bridge"
+  )
+    .trim()
+    .toLowerCase();
+  return candidate === "none" ? "none" : "bridge";
+}
+
+export function resolveBuildSandboxCacheVolume(
+  env: NodeJS.ProcessEnv = process.env
+): string | undefined {
+  const candidate = (
+    env.REASONATE_PACKAGE_CACHE_VOLUME ?? env.SANDBOX_CACHE_VOLUME
+  )?.trim();
+  if (!candidate || candidate.length === 0) {
+    return undefined;
+  }
+  if (candidate.toLowerCase().includes("docker.sock")) {
+    throw new Error("Mounting the host Docker socket is forbidden.");
+  }
+  return candidate;
+}
+
 function createBuildSandbox(scope: RunScope) {
   const sandboxId = sandboxIdFor(scope);
+  const network = resolveBuildSandboxNetworkMode();
+  const cacheVolume = resolveBuildSandboxCacheVolume();
+  const mounts: Array<{
+    source: string;
+    target: string;
+    type: "volume";
+  }> = [
+    {
+      source: `${sandboxId}-workspace`,
+      target: SANDBOX_WORKING_DIRECTORY,
+      type: "volume",
+    },
+  ];
+  const env: Record<string, string> = {
+    HOME: SANDBOX_WORKING_DIRECTORY,
+  };
+  if (cacheVolume) {
+    mounts.push({
+      source: cacheVolume,
+      target: "/root/.npm",
+      type: "volume",
+    });
+    env.npm_config_cache = "/root/.npm";
+  }
+
   return new DockerSandbox({
     capDrop: ["ALL"],
     cpuPeriod: SANDBOX_CPU_PERIOD,
     cpuQuota: SANDBOX_CPU_QUOTA,
-    env: { HOME: SANDBOX_WORKING_DIRECTORY },
+    env,
     id: sandboxId,
     image: SANDBOX_IMAGE,
     memory: SANDBOX_MEMORY_BYTES,
     memorySwap: SANDBOX_MEMORY_BYTES,
-    mounts: [
-      {
-        source: `${sandboxId}-workspace`,
-        target: SANDBOX_WORKING_DIRECTORY,
-        type: "volume",
-      },
-    ],
-    network: "none",
+    mounts,
+    network,
     pidsLimit: 256,
     securityOpt: ["no-new-privileges:true"],
     timeout: 120_000,
