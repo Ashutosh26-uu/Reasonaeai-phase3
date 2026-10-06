@@ -28,9 +28,10 @@ import {
   RunIdSchema,
   type UserPrincipal,
 } from "@reasonateai/contracts/identity";
-import type {
-  ProjectStateStore,
-  TenantScope,
+import {
+  type ProjectStateStore,
+  type TenantScope,
+  WorkspaceRestoreBusyError,
 } from "@reasonateai/project-state/postgres";
 import {
   type CheckpointReference,
@@ -38,11 +39,14 @@ import {
   type CheckpointStore,
   createGitCheckpointStore,
   parseCheckpointId,
-  restoreSandbox,
 } from "@reasonateai/sandbox/checkpoint";
 import { z } from "zod";
 import { apiErrorResponse, unauthenticatedResponse } from "../principal";
 import { checkpointSandboxFor, createBuildSandbox } from "../workspace";
+import {
+  restoreWorkspace,
+  WorkspaceRestoreFailure,
+} from "../workspace-restore";
 import { auditEvent } from "./auth";
 import type { HandlerContext } from "./build-sessions";
 
@@ -630,13 +634,14 @@ async function resolveWorkspaceSandbox(
   scope: TenantScope,
   buildSessionId: BuildSessionId,
   runId: RunId
-): Promise<CheckpointSandbox> {
+): Promise<{ sandbox: CheckpointSandbox; dispose?: () => Promise<void> }> {
   if (deps.resolveSandbox) {
-    return await deps.resolveSandbox({
+    const sandbox = await deps.resolveSandbox({
       buildSessionId,
       organizationId: scope.organizationId,
       projectId: scope.projectId,
     });
+    return { sandbox };
   }
   const createdSandbox = createBuildSandbox({
     buildSessionId,
@@ -645,7 +650,32 @@ async function resolveWorkspaceSandbox(
     runId,
   });
   await createdSandbox.start?.();
-  return checkpointSandboxFor(createdSandbox);
+  return {
+    dispose: async () => {
+      await createdSandbox.destroy?.();
+    },
+    sandbox: checkpointSandboxFor(createdSandbox),
+  };
+}
+
+function workspaceRestoreError(
+  cause: unknown,
+  requestId: string
+): Response | undefined {
+  if (cause instanceof WorkspaceRestoreBusyError) {
+    return apiErrorResponse({
+      code: "conflict",
+      message: cause.message,
+      requestId,
+    });
+  }
+  if (cause instanceof WorkspaceRestoreFailure) {
+    return apiErrorResponse({
+      code: "internal",
+      message: cause.message,
+      requestId,
+    });
+  }
 }
 
 /**
@@ -1074,54 +1104,54 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
         });
       }
 
-      const buildSession = await deps
-        .store()
-        .getBuildSession(scope, buildSessionId);
-      if (!buildSession) {
-        return apiErrorResponse({
-          code: "not_found",
-          message: "No such build session.",
-          requestId: rid,
-        });
-      }
-
-      const sandbox = await resolveWorkspaceSandbox(
-        deps,
-        scope,
-        buildSessionId,
-        buildSession.runId
-      );
-
-      await restoreSandbox({
-        checkpointId,
-        sandbox,
-        store: checkpoints,
-      });
-
-      const store = deps.store();
-      await store.audit.record(
-        auditEvent({
-          action: "checkpoint.restored",
-          actor: principal,
-          metadata: {
-            buildSessionId,
-            checkpointId,
+      try {
+        const restored = await deps.store().restoreWorkspaceCheckpoint({
+          audit: auditEvent({
+            action: "checkpoint.restored",
+            actor: principal,
+            metadata: { buildSessionId, checkpointId },
+            organizationId: scope.organizationId,
+            projectId: scope.projectId,
+            requestId: rid,
+          }),
+          buildSessionId,
+          restore: async (session) => {
+            const workspaceHandle = await resolveWorkspaceSandbox(
+              deps,
+              scope,
+              buildSessionId,
+              session.runId
+            );
+            try {
+              return await restoreWorkspace({
+                checkpointId,
+                digest,
+                sandbox: workspaceHandle.sandbox,
+                scope,
+                session,
+                store: checkpoints,
+              });
+            } finally {
+              await workspaceHandle.dispose?.();
+            }
           },
-          organizationId: scope.organizationId,
-          projectId: scope.projectId,
-          requestId: rid,
-        })
-      );
-
-      const restoredAt = new Date().toISOString();
-      return c.json(
-        WorkspaceRestoreResponseSchema.parse({
-          checkpointId,
-          digest,
-          restoredAt,
-        }),
-        200
-      );
+          scope,
+        });
+        if (!restored) {
+          return apiErrorResponse({
+            code: "not_found",
+            message: "No such build session.",
+            requestId: rid,
+          });
+        }
+        return c.json(WorkspaceRestoreResponseSchema.parse(restored), 200);
+      } catch (cause) {
+        const failure = workspaceRestoreError(cause, rid);
+        if (failure) {
+          return failure;
+        }
+        throw cause;
+      }
     },
     /**
      * The project's generated source as a path listing, read from the latest

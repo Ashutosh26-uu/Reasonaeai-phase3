@@ -4,7 +4,7 @@ Branch: `codex/workspace-interactions-checkpoints`. Implementation is in progres
 
 ## Behavior
 
-- The existing PromptInput and animated BorderBeam remain. The smaller composer has an inset project/file tray below, attached questions and queued text above, and stronger surface contrast. A low-specificity inherited control color no longer hides primary button labels.
+- The existing PromptInput and animated BorderBeam remain. The composer has larger type and an inset project/file tray in the fresh-chat state, attached questions and queued text above, and stronger surface contrast. Loaded conversations omit the tray. A low-specificity inherited control color no longer hides primary button labels.
 - One primary control opens voice mode in a fresh empty chat, sends a draft or a text conversation, and stops an executing run. Controller cancellation confirmation removes the executing appearance while the worker saves its checkpoint; bounded status polling then reconciles the durable final state.
 - Up to ten queued messages appear above the composer, with attachment thumbnails, edit/delete, side-chat, and queuing controls. The memory budget is 24 MiB; each submission still obeys the existing five-file/12 MiB intake limits. Follow-ups dispatch in order after success; Stop, failure, and cancellation pause dispatch. Active steering accepts text only. Queues remain local to the current mounted chat and are not persisted across reload.
 - A row records its delivery type, original target run, and request key before sending. An uncertain steering or side-chat response stays on that endpoint when retried and never becomes an automatic follow-up. A successful command response consumes its row even when the subsequent history refresh fails.
@@ -80,3 +80,57 @@ The first full test run exposed the real Git suite's default five-second timeout
 Use a signed-in development account and configured open-weight model. Verify fresh-chat waveform, draft/existing-chat Send, a single Stop control, cancellation during streaming and while awaiting a question, and the stopped sidebar indicator. Verify the top question card resumes the same run and its Continue label remains readable, including Settings primary labels. Verify queue edit/remove, active steering delivery, follow-up order, reload/replay, rejected steering, and worker takeover.
 
 Verify attached tray contrast and Beam animation at desktop/mobile widths and reduced motion. Exercise dedicated voice open/close, denied microphone, transcription failure, reviewed submission, cancellation, and available speech playback. Verify preview navigation/path validation and per-turn checkpoint totals/diffs for edits, additions, deletions, failures, and cancellations after subsequent turns. Save screenshots and report provider limitations separately. Completion remains pending until these real surfaces are exercised.
+
+## Composer and Sketch refinement — October 4, 2026
+
+The composer keeps its existing controls and submission behavior, with larger input/control type, adjusted outer proportions, a larger inset project/file tray only for a fresh chat, and a blue primary action. Its plus control toggles a rounded Add menu for the supported file, project, and Sketch actions. Loaded conversations expose file/project actions through this menu. Header Refresh and Workspace are accessible icon buttons.
+
+Sketch is a general-purpose local editor, named `sketch-*` rather than wireframe-specific modules. It opens on a dark canvas with floating pill controls, an optional grid, color swatches/custom color, and panels shown only when requested. Pen, shapes, directional arrows, text, editable UI blocks, additive starter layouts, layers, selection, dragging/resizing, keyboard nudging, deletion/duplication, and bounded undo/redo work on the same object model. Limits are 100 objects, 1,500 points per stroke, 6,000 total points, and 30 undo entries. Export rasterizes local SVG shapes/text to a 1,200 × 800 PNG, excluding grid/selection controls, with an actionable error on export failure. Existing attachment limits remain five files, 4 MiB per file, and 12 MiB total. A rejected export/attachment keeps the editor and draft available; close/reopen preserves the draft until chat switch or reload.
+
+Successful delivered steering becomes an ordinary user bubble after its own run terminates, including durable replay. Pending/unconfirmed/failed delivery remains explicit; the durable command and event ledger are unchanged. Tool group headings now describe action types, use singular/plural wording according to their counts, retain the total as an accessible label/tooltip, and distinguish successful, working, declined, and failed operations.
+
+| Check | Result |
+| --- | --- |
+| `pnpm install --frozen-lockfile` | Passed without new dependencies or lockfile changes |
+| `pnpm check` | Passed, 356 files |
+| `pnpm typecheck` | Passed, ten workspace tasks |
+| `pnpm test` | Passed, 17 tasks; web 106 tests at that snapshot. Database-dependent API/worker/store suites skipped without isolated test services; live Docker edit test passed |
+| Final `pnpm --filter @reasonateai/web test` | Passed, 107 tests across 15 files, including a further transcript-rendering group-title regression |
+| `pnpm --filter @reasonateai/web build` | Passed: compiled, type-checked, and generated production pages |
+| `pnpm --filter @reasonateai/worker build` | Passed |
+| `pnpm build` | Did not pass: Mastra refuses to clear its output while the user's API development server is active. No force build or server interruption was attempted |
+| `pnpm audit --prod --audit-level high` | Passed threshold; one existing moderate advisory, no high/critical finding |
+| Running surface | Signed-in browser on port 3219: plus opens/closes; tray exists in new chat and is absent from loaded conversation; icons are accessible; Send computes to blue `rgb(52,120,246)` with white foreground |
+| Canvas browser checks | Desktop and 390 × 844 mobile: pen and rectangle drawing, undo/redo, optional panels, label/position edits, swatch selection, grid toggle, close/reopen draft retention, actual PNG attachment; test attachment removed and no message sent |
+| Production smoke | Built web served `/` with HTTP 200 on temporary port 3221; existing API `/health` returned 200. Signed-in built chat and canvas opened and PNG export worked. Workspace resource requests on this extra port were correctly denied by the API origin allowlist; no allowlist change was made |
+
+Appearance evidence: [floating Sketch controls](../../.context/evidence/sketch-floating-controls.jpg). All browser test drafts/attachments were local and disposable; the temporary production server was stopped afterwards. Preserve the pre-existing generated `apps/web/next-env.d.ts` development paths outside any eventual commit. This change introduces no persistence migration, provider integration, external asset loading, new permissions, or dependency. Rollback is the prior web artifact; durable steering history remains compatible. No publishable package version changes apply because this is a private web application change.
+
+Full branch release acceptance stays in progress until the guarded repository build and isolated database/Redis integration gates run in CI. Existing provider/live-model acceptance described above is unchanged; pure replay/rendering regressions exercise the steering/tool-heading changes without altering stored user history.
+
+### Feature branch preservation — October 5, 2026
+
+The UI changes are isolated in one feature commit on `codex/sketch-canvas-composer-ui`, based on current `main` at `2135030` after workspace PR #20 merged. Rebase required no conflict resolution. On this integrated snapshot, `pnpm check` passed 370 files, `pnpm typecheck` passed all ten workspace tasks, and `pnpm --filter @reasonateai/web test` passed 116 tests across 17 files. Earlier build/browser evidence above remains evidence for the UI implementation; the rebased branch still requires the full CI build and isolated integration gates. The user's generated Next.js development file remains a local-only change.
+
+### Main integration and message navigation — October 6, 2026
+
+Merge main at `c58ff4b` (PRs #30–#33) into PR #29 without rewriting shared history. Resolve the sole phase-document conflict by retaining incoming features and the verified Sketch/composer work. The reviewer authorized merging this integration on October 6. No unrelated open feature PR is included.
+
+Fix approval replay so `approved: true` remains approved even with feedback, generic answer acknowledgements do not invent approval, cancelled reviews remain cancelled, and snapshot/proposal replay yields one plan entry. A `submit_plan` pause is not a separate Plan mode.
+
+Checkpoint restoration refuses active or queued project work and holds the worker-admission project lock during restoration. Save the current tracked and untracked source in a recovery checkpoint before replacing it, publish the restored tree as a new immutable checkpoint, and recover the preceding source if publication fails. Response fields `recoveryCheckpointId` and `workspaceCheckpointId` are additive and optional for compatibility. Stop the restore container while retaining its workspace volume. Git checkpoint repositories explicitly disable automatic line-ending conversion so restored source bytes are stable across hosts. Audit rows contain the requested, recovery, and published checkpoint references. Database and filesystem storage do not share a distributed transaction; a failed database commit after publication requires reconciliation using the saved checkpoint references rather than claiming atomicity.
+
+The message minimap follows the visual reference at https://chanhdai.com/components/toc-minimap with local React/CSS and existing scrolling infrastructure. It lists user and steering messages, shows the active location, scrolls only the transcript, focuses the target, releases bottom-following, and supports keyboard dismissal and reduced motion. It adds no dependency, external asset, or sound request. Retry/Edit history rewind and branching are separately planned and are not included here.
+
+Verification on the combined local snapshot:
+
+- Frozen installation passed. `pnpm check` passed 397 files; `pnpm typecheck` passed ten tasks.
+- `pnpm test` passed all 17 tasks with disposable PostgreSQL, Redis, real Git, and Docker. Final web tests passed 162 tests across 23 files.
+- Restore regressions passed all 15 tests: authentication/tenant denial, active-state refusal, fresh-host restored source, recovery of preceding tracked/untracked edits, storage failures, competing restores, and worker admission after restoration. A separate run initially collided with another suite's migration; the isolated rerun passed without changing locking assertions.
+- `pnpm build` passed all ten tasks, including Mastra and Next production artifacts. The final minimap popup positioning is additionally rebuilt/browser-checked before push.
+- `smoke:checkpoint` passed against real Docker: snapshot, fresh-container restore, successful teardown, and volume retention after induced checkpoint failure.
+- A disposable account against the built API exercised unauthenticated HTTP restore denial, authenticated Docker restoration, and an authorized file read of the restored source. Recovery and published checkpoint identifiers were returned.
+- The built chat replayed an approved plan with feedback and delivered steering as an ordinary message. Minimap navigation focused and scrolled to the first request and a steering message; Escape dismissed the popup. The compact popup remained within the 390-pixel viewport. Appearance evidence: [desktop](../../.context/evidence/message-minimap-desktop.jpg), [mobile](../../.context/evidence/message-minimap-mobile.jpg). Screenshots use the disposable account's existing light appearance; the previously verified dark Sketch appearance is unchanged.
+- Production dependency audit passed the high/critical threshold (two low and two moderate advisories remain). The pushed commit must pass the repository dependency/secret scan and all CI gates before merging.
+
+Incoming main's schema version 6 adds parked suspension fields; this integration adds no further database migration. Keep those columns when rolling back application artifacts. Rollback uses the preceding web/API/worker artifacts together; durable ledger events and immutable recovery checkpoints remain readable. Networking stays as merged (bridge by default, none configurable), without an egress change in this PR. No deploy, live inference, or overall phase-completion claim is made.

@@ -456,7 +456,9 @@ export type WorkspaceRestoreRequest = z.infer<
 export const WorkspaceRestoreResponseSchema = z.strictObject({
   checkpointId: z.string().min(1).max(512),
   digest: z.string().min(1).max(64),
+  recoveryCheckpointId: z.string().min(1).max(512).optional(),
   restoredAt: IsoDateTimeSchema,
+  workspaceCheckpointId: z.string().min(1).max(512).optional(),
 });
 export type WorkspaceRestoreResponse = z.infer<
   typeof WorkspaceRestoreResponseSchema

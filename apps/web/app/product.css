@@ -133,12 +133,6 @@
   color: var(--ink-3);
 }
 
-.steering-message {
-  margin: 0;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
 .app :is(button, input, select, textarea):focus-visible {
   outline: 2px solid #d4d4d4;
   outline-offset: 2px;
@@ -793,6 +787,14 @@
 .pane-button:hover {
   color: var(--ink);
   background: var(--raised);
+}
+
+.pane-icon-button {
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-color: transparent;
 }
 
 .pane-body {

@@ -37,6 +37,8 @@ import {
   type RunStatus,
   RunStatusSchema,
   runEventTopic,
+  type WorkspaceRestoreResponse,
+  WorkspaceRestoreResponseSchema,
 } from "@reasonateai/contracts/execution-protocol";
 import {
   type AuditEvent,
@@ -99,6 +101,16 @@ export class ConversationBusyError extends Error {
   constructor() {
     super("This conversation already has a run in progress.");
     this.name = "ConversationBusyError";
+  }
+}
+
+export class WorkspaceRestoreBusyError extends Error {
+  constructor(
+    message = "Stop or finish this project's queued or active runs before restoring a checkpoint.",
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+    this.name = "WorkspaceRestoreBusyError";
   }
 }
 
@@ -566,6 +578,13 @@ export interface ProjectStateStore {
     buildSessionId: BuildSessionId;
     requestedByUserId: UserId;
   }) => Promise<boolean>;
+  /** Serialize restoration with project allocation and worker lease acquisition. */
+  restoreWorkspaceCheckpoint: (input: {
+    audit: AuditEvent;
+    buildSessionId: BuildSessionId;
+    restore: (session: BuildSession) => Promise<WorkspaceRestoreResponse>;
+    scope: TenantScope;
+  }) => Promise<WorkspaceRestoreResponse | undefined>;
   retryConversationRun: (input: {
     buildSessionId: BuildSessionId;
     idempotencyKey: string;
@@ -772,6 +791,65 @@ export function createProjectStateStore(config: {
     appendEvent: insertRunEvent,
     withTransaction,
   });
+
+  async function restoreWorkspaceCheckpoint(input: {
+    audit: AuditEvent;
+    buildSessionId: BuildSessionId;
+    restore: (session: BuildSession) => Promise<WorkspaceRestoreResponse>;
+    scope: TenantScope;
+  }): Promise<WorkspaceRestoreResponse | undefined> {
+    try {
+      return await withTransaction(async (client) => {
+        const project = await client.query(
+          `select project_id from projects
+           where organization_id = $1 and project_id = $2 for update nowait`,
+          [input.scope.organizationId, input.scope.projectId]
+        );
+        if (project.rowCount !== 1) {
+          return;
+        }
+        const session = await loadBuildSession(
+          client,
+          input.scope,
+          input.buildSessionId
+        );
+        if (!session) {
+          return;
+        }
+        const active = await client.query(
+          `select 1 from runs r left join run_leases l on l.run_id = r.run_id
+           where r.organization_id = $1 and r.project_id = $2
+             and (r.status in ('queued', 'running', 'awaiting_approval')
+               or l.expires_at > now()) limit 1`,
+          [input.scope.organizationId, input.scope.projectId]
+        );
+        if (active.rowCount !== 0) {
+          throw new WorkspaceRestoreBusyError();
+        }
+        const restored = WorkspaceRestoreResponseSchema.parse(
+          await input.restore(session)
+        );
+        await recordWith(client, {
+          ...input.audit,
+          metadata: {
+            ...input.audit.metadata,
+            checkpointId: restored.checkpointId,
+            recoveryCheckpointId: restored.recoveryCheckpointId ?? null,
+            restoredAt: restored.restoredAt,
+            workspaceCheckpointId: restored.workspaceCheckpointId ?? null,
+          },
+          organizationId: input.scope.organizationId,
+          projectId: input.scope.projectId,
+        });
+        return restored;
+      });
+    } catch (cause) {
+      if (cause instanceof Error && "code" in cause && cause.code === "55P03") {
+        throw new WorkspaceRestoreBusyError(undefined, { cause });
+      }
+      throw cause;
+    }
+  }
 
   async function allocateBuildSession(input: {
     attachments?: PromptAttachment[];
@@ -2371,6 +2449,7 @@ export function createProjectStateStore(config: {
     renameOrganization,
     renewRunLease,
     requestRunCancellation,
+    restoreWorkspaceCheckpoint,
     retryConversationRun,
     sessions,
     setRunStatus,

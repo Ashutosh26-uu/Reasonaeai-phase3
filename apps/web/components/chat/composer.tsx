@@ -11,7 +11,6 @@ import {
   Folder,
   FolderPlus,
   Mic,
-  Plus,
   Search,
   Square,
   X,
@@ -33,6 +32,7 @@ import {
   usePromptInputAttachments,
 } from "@/components/ai-elements/prompt-input";
 import styles from "./composer.module.css";
+import { ComposerAddMenu } from "./composer-add-menu";
 import {
   MAX_QUEUED_MESSAGES,
   type PromptSubmissionInput,
@@ -426,6 +426,41 @@ function ProjectPicker({
   );
 }
 
+function ComposerContext({
+  hasConversation,
+  filesAvailable,
+  filesOpen,
+  onOpenFiles,
+  ...projectPickerProps
+}: React.ComponentProps<typeof ProjectPicker> & {
+  hasConversation: boolean;
+  filesAvailable: boolean;
+  filesOpen: boolean;
+  onOpenFiles: () => void;
+}) {
+  if (hasConversation) {
+    return null;
+  }
+  return (
+    <div className={styles.context}>
+      <ProjectPicker {...projectPickerProps} />
+      {filesAvailable && (
+        <button
+          aria-expanded={filesOpen}
+          aria-label="Mention a file from this project"
+          className={`prompt-chip is-button ${styles.files}`}
+          data-open={filesOpen || undefined}
+          onClick={onOpenFiles}
+          type="button"
+        >
+          <span aria-hidden="true">@</span>
+          Files
+        </button>
+      )}
+    </div>
+  );
+}
+
 /** How long a recording may run before it stops itself. */
 const MAX_RECORDING_MS = 120_000;
 const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
@@ -540,30 +575,6 @@ function PromptSendButton({
         <ArrowUp aria-hidden="true" size={17} />
       )}
     </PromptInputSubmit>
-  );
-}
-
-function PromptAttachButton({
-  busy,
-  onErrorClear,
-}: {
-  busy: boolean;
-  onErrorClear: () => void;
-}) {
-  const { openFileDialog } = usePromptInputAttachments();
-  const open = useCallback(() => {
-    onErrorClear();
-    openFileDialog();
-  }, [onErrorClear, openFileDialog]);
-  return (
-    <PromptInputButton
-      aria-label="Attach files"
-      className={`prompt-mic ${styles.attach}`}
-      disabled={busy}
-      onClick={open}
-    >
-      <Plus aria-hidden="true" size={20} />
-    </PromptInputButton>
   );
 }
 
@@ -1237,9 +1248,17 @@ export function Composer({
 
               <PromptInputFooter className={`prompt-bottom ${styles.toolbar}`}>
                 <PromptInputTools>
-                  <PromptAttachButton
+                  <ComposerAddMenu
                     busy={busy}
+                    filesAvailable={listFiles !== undefined}
                     onErrorClear={clearAttachmentError}
+                    onOpenFiles={openFiles}
+                    onProjectSelect={onProjectSelect}
+                    projectId={projectId}
+                    projectPickerDisabled={
+                      projectPickerDisabled || Boolean(queue.sendingId)
+                    }
+                    projects={projects}
                   />
                   {pending && projectId && (
                     <PromptQueueButton
@@ -1312,28 +1331,17 @@ export function Composer({
             </div>
           </BorderBeam>
         </VoiceBeam>
-        <div className={styles.context}>
-          <ProjectPicker
-            disabled={projectPickerDisabled || Boolean(queue.sendingId)}
-            onCreateProject={onCreateProject}
-            onSelect={onProjectSelect}
-            projectId={projectId}
-            projects={projects}
-          />
-          {listFiles !== undefined && (
-            <button
-              aria-expanded={menu === "files"}
-              aria-label="Mention a file from this project"
-              className={`prompt-chip is-button ${styles.files}`}
-              data-open={menu === "files" || undefined}
-              onClick={openFiles}
-              type="button"
-            >
-              <span aria-hidden="true">@</span>
-              Files
-            </button>
-          )}
-        </div>
+        <ComposerContext
+          disabled={projectPickerDisabled || Boolean(queue.sendingId)}
+          filesAvailable={listFiles !== undefined}
+          filesOpen={menu === "files"}
+          hasConversation={hasConversation}
+          onCreateProject={onCreateProject}
+          onOpenFiles={openFiles}
+          onSelect={onProjectSelect}
+          projectId={projectId}
+          projects={projects}
+        />
         <div
           aria-live="polite"
           className={`composer-foot ${styles.hint}`}

@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import type { ToolEntry } from "./timeline";
+import { normalizeToolName as normalizedName } from "./tool-group-summary";
 
 type RecordValue = Record<string, unknown>;
 
@@ -56,11 +57,7 @@ function toolName(name: string): string {
     .replace(WORD_START, (letter) => letter.toUpperCase());
 }
 
-function normalizedName(name: string): string {
-  return name.toLowerCase().replace(WORKSPACE_PREFIX, "").replaceAll("-", "_");
-}
-
-function actionIcon(name: string) {
+export function actionIcon(name: string) {
   const normalized = normalizedName(name);
   for (const [pattern, Icon] of TOOL_ICON_RULES) {
     if (pattern.test(normalized)) {

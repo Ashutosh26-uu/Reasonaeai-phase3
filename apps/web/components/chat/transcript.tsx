@@ -11,7 +11,6 @@ import {
   ChevronDown,
   Clock3,
   Copy,
-  Layers3,
   Link2,
   Pencil,
   RotateCcw,
@@ -36,15 +35,18 @@ import {
   ReasoningContent,
   ReasoningTrigger,
 } from "@/components/ai-elements/reasoning";
-import { ActivityOutline } from "./activity";
+import { ActivityOutline, actionIcon } from "./activity";
 import { CheckpointCard } from "./checkpoint-card";
 import { type CheckpointScope, turnCheckpoint } from "./checkpoint-state";
+import { MessageMinimap } from "./message-minimap";
+import { messageAnchor, messageNavigationItems } from "./message-navigation";
 import { PlanCard } from "./plan-card";
 import {
   projectTranscript,
   type Timeline,
   type TranscriptEntry,
 } from "./timeline";
+import { toolGroupSummary } from "./tool-group-summary";
 
 export interface TranscriptProps {
   checkpointScope?: CheckpointScope | undefined;
@@ -207,13 +209,20 @@ function Entry({
         ? "Delivered to the active CTO"
         : "Waiting for the CTO’s next step";
     return (
-      <Message from="user">
-        <MessageContent>
-          <p className="steering-label">
-            Steering ·{" "}
-            {entry.status === "failed" ? "Delivery unconfirmed" : status}
-          </p>
-          <p className="steering-message">{entry.text}</p>
+      <Message
+        className="msg"
+        from="user"
+        id={messageAnchor(entry.id)}
+        tabIndex={-1}
+      >
+        <MessageContent className="msg-user-bubble">
+          {(entry.active || entry.status !== "delivered") && (
+            <p className="steering-label">
+              Steering ·{" "}
+              {entry.status === "failed" ? "Delivery unconfirmed" : status}
+            </p>
+          )}
+          <p className="msg-user-text">{entry.text}</p>
           {entry.reason && (
             <p className="steering-label" role="status">
               {entry.reason}
@@ -300,6 +309,10 @@ function renderEntries(
         />
       );
     } else {
+      const summary = toolGroupSummary(
+        group.map((toolEntry) => toolEntry.tool)
+      );
+      const GroupIcon = actionIcon(summary.iconTool);
       const expanded = group.some(
         (toolEntry) =>
           toolEntry.tool.state === "input-available" ||
@@ -311,9 +324,13 @@ function renderEntries(
           defaultOpen={expanded}
           key={entry.id}
         >
-          <CollapsibleTrigger className="transcript-tool-group-trigger">
-            <Layers3 aria-hidden="true" size={15} />
-            <span>{group.length} tool calls</span>
+          <CollapsibleTrigger
+            className="transcript-tool-group-trigger"
+            title={`${summary.count} tool calls`}
+          >
+            <GroupIcon aria-hidden="true" size={15} />
+            <span>{summary.label}</span>
+            <span className="sr-only">({summary.count} tool calls)</span>
             <ChevronDown
               aria-hidden="true"
               className="transcript-tool-group-chevron"
@@ -353,6 +370,7 @@ export function Transcript({
     () => projectTranscript(timeline, messages),
     [timeline, messages]
   );
+  const navigationItems = useMemo(() => messageNavigationItems(turns), [turns]);
   return (
     <Conversation className="transcript">
       <ConversationContent className="transcript-inner">
@@ -377,7 +395,12 @@ export function Transcript({
               key={turn.id}
             >
               {turn.user && (
-                <Message className="msg" from="user">
+                <Message
+                  className="msg"
+                  from="user"
+                  id={messageAnchor(turn.user.id)}
+                  tabIndex={-1}
+                >
                   <MessageContent className="msg-user-bubble">
                     {turn.user.attachments && (
                       <Attachments
@@ -427,6 +450,7 @@ export function Transcript({
           );
         })}
       </ConversationContent>
+      <MessageMinimap items={navigationItems} />
       <ConversationScrollButton />
     </Conversation>
   );

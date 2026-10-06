@@ -45,12 +45,17 @@ export function checkpointSandboxFor(
         request.args,
         options
       );
+      if (result.stdoutTruncated === true) {
+        throw new Error(
+          "The sandbox truncated checkpoint output; partial checkpoints cannot be used."
+        );
+      }
       return {
-        durationMs: Date.now() - startedAt,
+        durationMs: result.executionTimeMs ?? Date.now() - startedAt,
         exitCode: result.exitCode,
         stderr: result.stderr,
         stdout: result.stdout,
-        timedOut: false,
+        timedOut: result.timedOut ?? result.killed ?? false,
       };
     },
     writeFile: async (relativePath, content) => {

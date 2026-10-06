@@ -13,6 +13,7 @@ export interface PlanCardProps {
   resolved?:
     | {
         approved: boolean;
+        cancelled?: boolean;
         feedback?: string | undefined;
       }
     | undefined;
@@ -159,6 +160,7 @@ interface PlanFooterProps {
   resolved?:
     | {
         approved: boolean;
+        cancelled?: boolean;
         feedback?: string | undefined;
       }
     | undefined;
@@ -193,7 +195,9 @@ function PlanFooter({
           ) : (
             <>
               <X aria-hidden="true" size={16} />
-              <span>Plan Rejected</span>
+              <span>
+                {resolved.cancelled ? "Plan Cancelled" : "Plan Rejected"}
+              </span>
             </>
           )}
         </div>

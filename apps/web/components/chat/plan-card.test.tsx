@@ -17,6 +17,27 @@ const mockPlan: PlanProposal = {
 };
 
 describe("PlanCard", () => {
+  it("keeps approval and feedback visible together", () => {
+    const html = renderToStaticMarkup(
+      <PlanCard
+        plan={mockPlan}
+        resolved={{ approved: true, feedback: "Keep the design" }}
+      />
+    );
+    expect(html).toContain("Plan Approved");
+    expect(html).toContain("Keep the design");
+    expect(html).not.toContain("Plan Rejected");
+  });
+  it("labels a cancelled proposal correctly", () => {
+    const html = renderToStaticMarkup(
+      <PlanCard
+        plan={mockPlan}
+        resolved={{ approved: false, cancelled: true }}
+      />
+    );
+    expect(html).toContain("Plan Cancelled");
+    expect(html).not.toContain("Plan Rejected");
+  });
   it("renders plan details, risk badge, steps, and affected files", () => {
     const html = renderToStaticMarkup(
       <PlanCard onApprove={vi.fn()} onReject={vi.fn()} plan={mockPlan} />

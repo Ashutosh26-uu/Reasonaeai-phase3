@@ -202,6 +202,7 @@ export type TranscriptEntry =
   | {
       id: string;
       kind: "steering";
+      active: boolean;
       text: string;
       status: "requested" | "delivered" | "failed";
       reason?: string;
@@ -214,6 +215,7 @@ export type TranscriptEntry =
       resolved?:
         | {
             approved: boolean;
+            cancelled?: boolean;
             feedback?: string | undefined;
           }
         | undefined;
@@ -487,6 +489,7 @@ function steeringEntry(
   const status =
     outcome?.type === "run.steering.delivered" ? "delivered" : "requested";
   return {
+    active: !events.some(terminal),
     id: `${event.runId}:steering:${event.payload.steeringId}`,
     kind: "steering",
     status: outcome?.type === "run.steering.failed" ? "failed" : status,
@@ -500,22 +503,28 @@ function steeringEntry(
 function findPlanDecision(
   events: RunEventEnvelope[],
   planToolCallId: string
-): { approved: boolean; feedback?: string | undefined } | undefined {
-  const decisionEvent = events.find(
+):
+  | { approved: boolean; cancelled?: boolean; feedback?: string | undefined }
+  | undefined {
+  const decisionEvent = events.findLast(
     (e) =>
-      (e.type === "run.plan_decided" ||
-        e.type === "approval.resolved" ||
-        e.payload.kind === "answer_submitted") &&
-      (!e.payload.toolCallId || e.payload.toolCallId === planToolCallId)
+      e.type === "run.plan_decided" &&
+      typeof e.payload.approved === "boolean" &&
+      e.payload.toolCallId === planToolCallId
   );
   if (!decisionEvent) {
-    return;
+    const cancelled = events.some(
+      (e) =>
+        e.type === "run.cancelled" ||
+        e.type === "run.failed" ||
+        (e.type === "approval.resolved" &&
+          e.payload.toolCallId === planToolCallId &&
+          e.payload.resolution === "cancelled")
+    );
+    return cancelled ? { approved: false, cancelled: true } : undefined;
   }
   return {
-    approved: Boolean(
-      decisionEvent.payload.approved !== false &&
-        !decisionEvent.payload.feedback
-    ),
+    approved: decisionEvent.payload.approved === true,
     feedback:
       typeof decisionEvent.payload.feedback === "string"
         ? decisionEvent.payload.feedback
@@ -588,7 +597,11 @@ function collectEventEntries(
     }
 
     const planItem = extractPlanProposalEntry(runId, event, events);
-    if (planItem) {
+    if (
+      planItem &&
+      !ownedTools.has(planItem.toolCallId) &&
+      !seenTools.has(planItem.toolCallId)
+    ) {
       seenTools.add(planItem.toolCallId);
       result.push({ entries: [planItem.entry], sequence: event.sequence });
     }
