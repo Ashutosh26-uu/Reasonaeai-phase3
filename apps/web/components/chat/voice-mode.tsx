@@ -26,6 +26,7 @@ export interface VoiceModeProps {
   onClose: () => void;
   onStop: () => void;
   onSubmit: (message: string) => Promise<boolean>;
+  onSynthesize?: ((text: string) => Promise<Blob>) | undefined;
   onTranscribe: (audio: Blob) => Promise<string>;
   projectName: string;
   question?: ReactNode;
@@ -70,6 +71,7 @@ export function VoiceMode({
   onClose,
   onStop,
   onSubmit,
+  onSynthesize,
   onTranscribe,
   projectName,
   question,
@@ -87,6 +89,9 @@ export function VoiceMode({
   const [audioNotice, setAudioNotice] = useState("");
   const mounted = useRef<boolean>(false);
   const generation = useRef(0);
+  const speechGeneration = useRef(0);
+  const activeAudio = useRef<HTMLAudioElement | null>(null);
+  const activeAudioUrl = useRef<string | null>(null);
   const capture = useRef<AbortController | null>(null);
   const finishCapture = useRef<(() => void) | null>(null);
   const speechTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
@@ -97,8 +102,14 @@ export function VoiceMode({
   const lastResponseId = useRef(response?.id ?? null);
   const backButton = useRef<HTMLButtonElement>(null);
   const blocked = disabled || Boolean(question);
-  const latest = useRef({ blocked, busy, onSubmit, onTranscribe });
-  latest.current = { blocked, busy, onSubmit, onTranscribe };
+  const latest = useRef({
+    blocked,
+    busy,
+    onSubmit,
+    onSynthesize,
+    onTranscribe,
+  });
+  latest.current = { blocked, busy, onSubmit, onSynthesize, onTranscribe };
 
   const isCurrent = useCallback(
     (operation: number) => mounted.current && operation === generation.current,
@@ -106,7 +117,17 @@ export function VoiceMode({
   );
 
   const cancelSpeech = useCallback(() => {
+    speechGeneration.current += 1;
     clearTimeout(speechTimer.current);
+    if (activeAudio.current) {
+      activeAudio.current.pause();
+      activeAudio.current.src = "";
+      activeAudio.current = null;
+    }
+    if (activeAudioUrl.current) {
+      URL.revokeObjectURL(activeAudioUrl.current);
+      activeAudioUrl.current = null;
+    }
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
@@ -159,7 +180,7 @@ export function VoiceMode({
     };
   }, [cancelCapture, cancelSpeech]);
 
-  const speak = useCallback(
+  const speakWithDeviceVoice = useCallback(
     (text: string) => {
       if (!localVoice) {
         return;
@@ -204,6 +225,119 @@ export function VoiceMode({
       }, 120_000);
     },
     [cancelSpeech, localVoice]
+  );
+
+  const playSynthesizedAudio = useCallback(
+    async (audioBlob: Blob, text: string) => {
+      const audioUrl = URL.createObjectURL(audioBlob);
+      activeAudioUrl.current = audioUrl;
+
+      const audio = new Audio(audioUrl);
+      activeAudio.current = audio;
+
+      const cleanup = () => {
+        clearTimeout(speechTimer.current);
+        if (activeAudioUrl.current) {
+          URL.revokeObjectURL(activeAudioUrl.current);
+          activeAudioUrl.current = null;
+        }
+        activeAudio.current = null;
+      };
+
+      audio.onended = () => {
+        cleanup();
+        if (mounted.current) {
+          setSpeaking(false);
+        }
+      };
+
+      audio.onerror = () => {
+        cleanup();
+        if (!mounted.current) {
+          return;
+        }
+        setSpeaking(false);
+        if (localVoice) {
+          speakWithDeviceVoice(text);
+        } else {
+          setAudioNotice(
+            "Could not play the spoken response. You can read it below."
+          );
+        }
+      };
+
+      speechTimer.current = setTimeout(() => {
+        cancelSpeech();
+        if (mounted.current) {
+          setAudioNotice(
+            "Reading paused after two minutes. The full response is below."
+          );
+        }
+      }, 120_000);
+
+      await audio.play();
+    },
+    [cancelSpeech, localVoice, speakWithDeviceVoice]
+  );
+
+  const synthesizeAndPlay = useCallback(
+    async (text: string, currentOp: number): Promise<boolean> => {
+      const synthesizeFn = latest.current.onSynthesize;
+      if (!synthesizeFn) {
+        return false;
+      }
+      try {
+        if (mounted.current) {
+          setSpeaking(true);
+        }
+        const audioBlob = await synthesizeFn(text);
+        if (!mounted.current || speechGeneration.current !== currentOp) {
+          return true;
+        }
+        await playSynthesizedAudio(audioBlob, text);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [playSynthesizedAudio]
+  );
+
+  const speak = useCallback(
+    async (text: string) => {
+      if (!readAloud) {
+        return;
+      }
+      cancelSpeech();
+      setAudioNotice("");
+      const currentOp = speechGeneration.current;
+
+      const played = await synthesizeAndPlay(text, currentOp);
+      if (
+        played ||
+        !mounted.current ||
+        speechGeneration.current !== currentOp
+      ) {
+        return;
+      }
+
+      if (localVoice) {
+        speakWithDeviceVoice(text);
+        return;
+      }
+
+      setSpeaking(false);
+      setAudioNotice(
+        "Spoken responses are currently unavailable. You can read the response below."
+      );
+    },
+    [
+      cancelSpeech,
+      localVoice,
+      readAloud,
+      speakWithDeviceVoice,
+      synthesizeAndPlay,
+    ]
   );
 
   useEffect(() => {
@@ -387,11 +521,11 @@ export function VoiceMode({
           }
           aria-pressed={readAloud}
           className={styles.audioToggle}
-          disabled={!localVoice}
+          disabled={!(localVoice || onSynthesize)}
           onClick={toggleAudio}
           type="button"
         >
-          {readAloud && localVoice ? (
+          {readAloud && (localVoice || onSynthesize) ? (
             <Volume2 aria-hidden="true" size={18} />
           ) : (
             <VolumeX aria-hidden="true" size={18} />
@@ -447,7 +581,7 @@ export function VoiceMode({
         <VoiceResponse
           activeCapture={activeCapture}
           cancelSpeech={cancelSpeech}
-          hasLocalVoice={Boolean(localVoice)}
+          hasVoiceCapability={Boolean(localVoice || onSynthesize)}
           replay={replay}
           response={response}
           sentText={sentText}
@@ -463,6 +597,7 @@ export function VoiceMode({
         draft={draft}
         finish={finish}
         hasLocalVoice={Boolean(localVoice)}
+        hasSynthesizer={Boolean(onSynthesize)}
         onStop={stopRun}
         phase={phase}
         start={start}
@@ -474,7 +609,7 @@ export function VoiceMode({
 function VoiceResponse({
   activeCapture,
   cancelSpeech,
-  hasLocalVoice,
+  hasVoiceCapability,
   replay,
   response,
   sentText,
@@ -482,7 +617,7 @@ function VoiceResponse({
 }: {
   activeCapture: boolean;
   cancelSpeech: () => void;
-  hasLocalVoice: boolean;
+  hasVoiceCapability: boolean;
   replay: () => void;
   response: VoiceModeProps["response"];
   sentText: string;
@@ -500,7 +635,7 @@ function VoiceResponse({
         <div className={styles.response}>
           <div className={styles.responseHeader}>
             <span>Your CTO</span>
-            {hasLocalVoice && (
+            {hasVoiceCapability && (
               <button
                 aria-label={
                   speaking ? "Stop spoken response" : "Read response aloud"
@@ -533,6 +668,7 @@ function VoiceControls({
   draft,
   finish,
   hasLocalVoice,
+  hasSynthesizer,
   onStop,
   phase,
   start,
@@ -545,6 +681,7 @@ function VoiceControls({
   draft: string;
   finish: () => void;
   hasLocalVoice: boolean;
+  hasSynthesizer?: boolean;
   onStop: () => void;
   phase: CapturePhase;
   start: () => void;
@@ -591,12 +728,23 @@ function VoiceControls({
         )}
       </div>
       <p className={styles.audioNote}>
-        {hasLocalVoice
-          ? "Responses use a voice on your device."
-          : "A device voice is unavailable. Responses appear here as text."}
+        {getAudioNote(hasSynthesizer, hasLocalVoice)}
       </p>
     </footer>
   );
+}
+
+function getAudioNote(
+  hasSynthesizer: boolean | undefined,
+  hasLocalVoice: boolean | undefined
+): string {
+  if (hasSynthesizer) {
+    return "Responses are spoken aloud.";
+  }
+  if (hasLocalVoice) {
+    return "Responses use a voice on your device.";
+  }
+  return "A device voice is unavailable. Responses appear here as text.";
 }
 
 function getVisualState(phase: CapturePhase, busy: boolean, speaking: boolean) {

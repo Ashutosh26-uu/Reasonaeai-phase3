@@ -8,6 +8,11 @@ import {
   ProjectIdSchema,
   type UserPrincipal,
 } from "@reasonateai/contracts/identity";
+import {
+  VOICE_SPEECH_PATH as CONTRACT_VOICE_SPEECH_PATH,
+  VOICE_TRANSCRIPTION_PATH as CONTRACT_VOICE_TRANSCRIPTION_PATH,
+  SpeechRequestSchema,
+} from "@reasonateai/contracts/voice";
 import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
 import { z } from "zod";
 import {
@@ -15,6 +20,11 @@ import {
   type AsrAdapter,
   AsrProviderError,
 } from "../adapters/asr";
+import {
+  TTS_UNCONFIGURED_MESSAGE,
+  type TtsAdapter,
+  TtsProviderError,
+} from "../adapters/tts";
 import { apiErrorResponse, unauthenticatedResponse } from "../principal";
 import { auditEvent } from "./auth";
 
@@ -45,7 +55,8 @@ import { auditEvent } from "./auth";
  * other product routes: the ingress denial blocks every built-in Mastra route
  * group under `/api`.
  */
-export const VOICE_TRANSCRIPTION_PATH = "/v1/voice/transcriptions";
+export const VOICE_TRANSCRIPTION_PATH = CONTRACT_VOICE_TRANSCRIPTION_PATH;
+export const VOICE_SPEECH_PATH = CONTRACT_VOICE_SPEECH_PATH;
 
 /** Largest audio payload this route accepts, in bytes. */
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
@@ -143,6 +154,11 @@ export interface VoiceRouteDeps {
    * database is configured, and so tests can inject their own.
    */
   store: () => ProjectStateStore;
+  /**
+   * Resolved per request so the speech synthesis adapter is built only when
+   * this deployment has an endpoint configured, and `undefined` when it does not.
+   */
+  tts?: () => TtsAdapter | undefined;
 }
 
 /**
@@ -408,7 +424,9 @@ async function authorizeProjectAction(input: {
  * a scope to authorize, never proof of access.
  */
 async function authorizeVoiceRequest(input: {
+  action?: Permission;
   context: VoiceHandlerContext;
+  denialMessage?: string;
   deps: VoiceRouteDeps;
   requestId: string;
 }): Promise<Response | undefined> {
@@ -433,8 +451,9 @@ async function authorizeVoiceRequest(input: {
     });
   }
 
+  const action = input.action ?? "agent:run";
   const decision = await authorizeProjectAction({
-    action: "agent:run",
+    action,
     deps: input.deps,
     organizationId: organizationId.data,
     principal,
@@ -444,14 +463,14 @@ async function authorizeVoiceRequest(input: {
     return undefined;
   }
 
-  // A refused transcription is a security-relevant decision and is recorded as
+  // A refused voice request is a security-relevant decision and is recorded as
   // one. The reason stays in the trail, where an operator needs it, and never
   // reaches the caller.
   await input.deps.store().audit.record(
     auditEvent({
       action: "authorization.denied",
       actor: principal,
-      metadata: { action: "agent:run", reason: decision.reason },
+      metadata: { action, reason: decision.reason },
       organizationId: organizationId.data,
       projectId: projectId.data,
       requestId: input.requestId,
@@ -460,13 +479,165 @@ async function authorizeVoiceRequest(input: {
 
   return apiErrorResponse({
     code: DENIAL_BY_REASON[decision.reason] ?? "forbidden",
-    message: "You are not authorized to run this project's CTO.",
+    message:
+      input.denialMessage ??
+      "You are not authorized to run this project's CTO.",
     requestId: input.requestId,
   });
 }
 
+async function parseSpeechBody(
+  c: VoiceHandlerContext,
+  rid: string
+): Promise<
+  | { ok: true; data: z.infer<typeof SpeechRequestSchema> }
+  | { ok: false; response: Response }
+> {
+  const contentType = c.req.header("content-type")?.trim() ?? "";
+  if (baseMediaType(contentType) !== "application/json") {
+    return {
+      ok: false,
+      response: apiErrorResponse({
+        code: "invalid_request",
+        message:
+          "The request must be application/json carrying text to synthesize.",
+        requestId: rid,
+      }),
+    };
+  }
+
+  const { body } = c.req.raw;
+  if (body === null) {
+    return {
+      ok: false,
+      response: apiErrorResponse({
+        code: "invalid_request",
+        message: "The request must carry a JSON body.",
+        requestId: rid,
+      }),
+    };
+  }
+
+  const upload = await readBoundedUpload(body, 1024 * 1024);
+  if (!upload.ok) {
+    return {
+      ok: false,
+      response: apiErrorResponse({
+        code: "invalid_request",
+        message: "The request body could not be read.",
+        requestId: rid,
+      }),
+    };
+  }
+
+  let jsonPayload: unknown;
+  try {
+    jsonPayload = JSON.parse(new TextDecoder().decode(upload.bytes));
+  } catch {
+    return {
+      ok: false,
+      response: apiErrorResponse({
+        code: "invalid_request",
+        message: "The request body must be valid JSON.",
+        requestId: rid,
+      }),
+    };
+  }
+
+  const parsed = SpeechRequestSchema.safeParse(jsonPayload);
+  if (!parsed.success) {
+    const [firstIssue] = parsed.error.issues;
+    const detail = firstIssue
+      ? ` (${firstIssue.path.join(".")}: ${firstIssue.message})`
+      : "";
+    return {
+      ok: false,
+      response: apiErrorResponse({
+        code: "invalid_request",
+        message: `Invalid speech request payload${detail}.`,
+        requestId: rid,
+      }),
+    };
+  }
+
+  return { data: parsed.data, ok: true };
+}
+
+async function handleSpeechRequest(
+  c: VoiceHandlerContext,
+  deps: VoiceRouteDeps
+): Promise<Response> {
+  const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+
+  const refusal = await authorizeVoiceRequest({
+    action: "agent:run",
+    context: c,
+    denialMessage:
+      "You are not authorized to synthesize speech for this project.",
+    deps,
+    requestId: rid,
+  });
+  if (refusal !== undefined) {
+    return refusal;
+  }
+
+  const tts = deps.tts?.();
+  if (tts === undefined) {
+    return voiceErrorResponse({
+      code: VOICE_UNCONFIGURED_CODE,
+      message: TTS_UNCONFIGURED_MESSAGE,
+      requestId: rid,
+      status: 503,
+    });
+  }
+
+  const bodyResult = await parseSpeechBody(c, rid);
+  if (!bodyResult.ok) {
+    return bodyResult.response;
+  }
+
+  let result: { audio: Uint8Array; mediaType: string };
+  try {
+    result = await tts.synthesize({
+      format: bodyResult.data.format,
+      speed: bodyResult.data.speed,
+      text: bodyResult.data.text,
+      voice: bodyResult.data.voice,
+    });
+  } catch (error) {
+    if (!(error instanceof TtsProviderError)) {
+      throw error;
+    }
+    return apiErrorResponse({
+      code: "internal",
+      message: error.message,
+      requestId: rid,
+    });
+  }
+
+  const audioBuffer = new Uint8Array(
+    result.audio.buffer as ArrayBuffer,
+    result.audio.byteOffset,
+    result.audio.byteLength
+  );
+
+  return new Response(audioBuffer, {
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Length": String(result.audio.byteLength),
+      "Content-Type": result.mediaType || "audio/mpeg",
+    },
+    status: 200,
+  });
+}
+
 export function createVoiceHandlers(deps: VoiceRouteDeps) {
+  const speechHandler = (c: VoiceHandlerContext) =>
+    handleSpeechRequest(c, deps);
+
   return {
+    speech: speechHandler,
+    synthesize: speechHandler,
     transcribe: async (c: VoiceHandlerContext): Promise<Response> => {
       const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
 

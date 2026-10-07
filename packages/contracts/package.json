@@ -47,6 +47,10 @@
     "./browser": {
       "types": "./src/browser.ts",
       "import": "./dist/browser.js"
+    },
+    "./voice": {
+      "types": "./src/voice.ts",
+      "import": "./dist/voice.js"
     }
   },
   "scripts": {
