@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { ConversationMessageSchema } from "@reasonateai/contracts/execution";
-import { RunEventEnvelopeSchema } from "@reasonateai/contracts/execution-protocol";
+import {
+  MessageSnapshotSchema,
+  RunEventEnvelopeSchema,
+} from "@reasonateai/contracts/execution-protocol";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { EMPTY_TIMELINE, foldDurable } from "./timeline";
+import { EMPTY_TIMELINE, foldDurable, projectTranscript } from "./timeline";
 import { Transcript } from "./transcript";
+import { turnPresentation } from "./turn-presentation";
 
 const runId = randomUUID();
 const organizationId = randomUUID();
@@ -177,5 +181,264 @@ describe("collapsed tool group presentation", () => {
     const html = renderHistory(events);
     expect(html).toContain("Edited a file, ran a command");
     expect(html).toContain("2 tool calls");
+  });
+});
+
+const commentary = "I found the recovery ordering issue.";
+const finalAnswer = "Refresh now preserves your latest edits.";
+function recoveryHistory(withAnswer = true) {
+  const at = "2026-10-07T10:00:00.000Z";
+  const snapshot = MessageSnapshotSchema.parse({
+    finished: false,
+    messageId: "recovery",
+    parts: [
+      {
+        endedAt: at,
+        index: 0,
+        startedAt: at,
+        text: commentary,
+        type: "text",
+      },
+      {
+        endedAt: at,
+        index: 1,
+        startedAt: at,
+        text: "Trace checkpoint restoration before editing.",
+        type: "reasoning",
+      },
+      { index: 2, toolCallId: "read", type: "tool" },
+      {
+        endedAt: null,
+        index: 3,
+        startedAt: at,
+        text: "Check whether the new recovery order preserves edits.",
+        type: "reasoning",
+      },
+      ...(withAnswer
+        ? [
+            {
+              endedAt: null,
+              index: 4,
+              startedAt: at,
+              text: finalAnswer,
+              type: "text",
+            },
+          ]
+        : []),
+    ],
+    revision: 1,
+    startedAt: at,
+    version: 1,
+  });
+  return [
+    { ...historyEntry(1, "run.claimed", {}), occurredAt: at },
+    historyEntry(2, "agent.progress", { kind: "message_snapshot", snapshot }),
+    historyEntry(3, "agent.progress", {
+      args: { target: "src/preview/recovery.ts" },
+      kind: "tool_start",
+      toolCallId: "read",
+      toolName: "read",
+    }),
+    historyEntry(4, "agent.progress", {
+      kind: "tool_end",
+      result: "Restoration currently precedes preservation.",
+      toolCallId: "read",
+    }),
+  ];
+}
+function endTurn(type = "run.completed") {
+  return {
+    ...historyEntry(5, type, {}),
+    occurredAt: "2026-10-07T10:06:42.000Z",
+  };
+}
+function presentationFor(events: ReturnType<typeof historyEntry>[]) {
+  const [turn] = projectTranscript(
+    events.reduce(foldDurable, EMPTY_TIMELINE),
+    []
+  );
+  if (!turn) {
+    throw new Error("Expected the recovery turn");
+  }
+  return turnPresentation(turn.entries, events);
+}
+
+describe("turn activity presentation", () => {
+  it("groups interleaved thinking and tools while leaving streaming commentary visible", () => {
+    const html = renderHistory(recoveryHistory(false));
+    expect(html).toContain(commentary);
+    expect(html).toContain("Thinking");
+    expect(html).toContain("1 tool call, 2 thinking blocks");
+    expect(html).not.toContain("Worked for");
+    const presentation = presentationFor(recoveryHistory(false));
+    expect(presentation.visible.map((entry) => entry.kind)).toEqual([
+      "text",
+      "reasoning",
+      "tool",
+      "reasoning",
+    ]);
+    expect(presentation.history).toEqual([]);
+  });
+
+  it.each([
+    { kind: "agent_end", type: "run.completed" },
+    { kind: "error", type: "run.failed" },
+  ])(
+    "waits for the worker outcome after controller $kind",
+    ({ kind, type }) => {
+      const events = [
+        ...recoveryHistory(false),
+        historyEntry(5, type, { kind }),
+      ];
+      const presentation = presentationFor(events);
+      expect(presentation.end).toBeUndefined();
+      expect(presentation.visible.at(-1)).toMatchObject({
+        kind: "reasoning",
+        streaming: true,
+      });
+      expect(renderHistory(events)).not.toContain("Worked for");
+    }
+  );
+
+  it("keeps plan approval visible while waiting and never promotes its preceding commentary", () => {
+    const proposal = historyEntry(2, "run.plan_proposed", {
+      plan: {
+        files: [
+          {
+            action: "modify",
+            description: "Preserve before restoring",
+            path: "src/preview/recovery.ts",
+          },
+        ],
+        rationale: "Prevent lost edits on refresh",
+        risk: "low",
+        steps: [
+          "Preserve pending edits",
+          "Restore the checkpoint",
+          "Verify refresh",
+        ],
+        summary: "Change recovery ordering",
+        title: "Preserve preview edits",
+      },
+      toolCallId: "plan",
+    });
+    const events = [
+      historyEntry(1, "agent.progress", {
+        kind: "message_end",
+        role: "assistant",
+        text: "I’ll submit the recovery plan.",
+      }),
+      proposal,
+    ];
+    expect(renderHistory(events)).toContain("Preserve preview edits");
+    const ended = [...events, endTurn("run.cancelled")];
+    expect(presentationFor(ended).answer).toBeUndefined();
+    expect(renderHistory(ended)).not.toContain(
+      "I’ll submit the recovery plan."
+    );
+    expect(presentationFor(ended).history.at(-1)?.kind).toBe("plan");
+  });
+
+  it("collapses progress on completion and history replay, retaining only the final answer", () => {
+    const events = [...recoveryHistory(), endTurn()];
+    const html = renderHistory(events);
+    expect(html).toContain("Worked for 6m 42s");
+    expect(html).toContain(finalAnswer);
+    expect(html).not.toContain(commentary);
+    expect(html).not.toContain("Trace checkpoint");
+    expect(html).toContain("Copy answer");
+    const presentation = presentationFor(events);
+    expect(presentation.answer?.text).toBe(finalAnswer);
+    expect(presentation.history.map((entry) => entry.kind)).toEqual([
+      "text",
+      "reasoning",
+      "tool",
+      "reasoning",
+    ]);
+    expect(presentation.visible).toEqual([presentation.answer]);
+  });
+
+  it.each(["run.completed", "run.failed", "run.cancelled"])(
+    "does not promote earlier commentary when %s ends without a final answer",
+    (type) => {
+      const events = [...recoveryHistory(false), endTurn(type)];
+      const html = renderHistory(events);
+      expect(html).toContain("Worked for 6m 42s");
+      expect(html).not.toContain(commentary);
+      expect(presentationFor(events).answer).toBeUndefined();
+      if (type !== "run.completed") {
+        expect(html).toContain(type === "run.failed" ? "Failed" : "Cancelled");
+      }
+    }
+  );
+
+  it("keeps every trailing text part of the final response without retaining earlier assistant messages", () => {
+    const events = recoveryHistory();
+    const saved = events.find((event) => event.payload.snapshot);
+    if (!saved) {
+      throw new Error("Expected snapshot fixture");
+    }
+    const snapshot = MessageSnapshotSchema.parse(saved.payload.snapshot);
+    snapshot.parts.push({
+      endedAt: null,
+      index: 5,
+      startedAt: snapshot.startedAt,
+      text: " Browser and recovery tests pass.",
+      type: "text",
+    });
+    saved.payload.snapshot = snapshot;
+    const presentation = presentationFor([...events, endTurn()]);
+    expect(presentation.answer?.text).toBe(
+      `${finalAnswer} Browser and recovery tests pass.`
+    );
+    expect(presentation.history.map((entry) => entry.kind)).toEqual([
+      "text",
+      "reasoning",
+      "tool",
+      "reasoning",
+    ]);
+    const separateReplies = [
+      historyEntry(1, "agent.progress", {
+        kind: "message_end",
+        messageId: "progress",
+        role: "assistant",
+        text: "Almost ready.",
+      }),
+      historyEntry(2, "agent.progress", {
+        kind: "message_end",
+        messageId: "final",
+        role: "assistant",
+        text: finalAnswer,
+      }),
+      endTurn(),
+    ];
+    expect(presentationFor(separateReplies).answer?.text).toBe(finalAnswer);
+  });
+
+  it("ends an unanswered tool approval on cancellation rather than keeping history actionable", () => {
+    const events = [
+      historyEntry(1, "agent.progress", {
+        args: { question: "Which region?" },
+        kind: "tool_start",
+        toolCallId: "question",
+        toolName: "ask_user",
+      }),
+      historyEntry(2, "approval.requested", {
+        kind: "tool_suspended",
+        suspendPayload: { question: "Which region?" },
+        toolCallId: "question",
+        toolName: "ask_user",
+      }),
+    ];
+    expect(presentationFor(events).visible[0]).toMatchObject({
+      kind: "tool",
+      tool: { state: "approval-requested" },
+    });
+    expect(
+      presentationFor([...events, endTurn("run.cancelled")]).history[0]
+    ).toMatchObject({
+      kind: "tool",
+      tool: { endedAt: "2026-10-07T10:06:42.000Z", state: "output-denied" },
+    });
   });
 });

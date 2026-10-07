@@ -7,6 +7,7 @@ import {
   CollapsibleTrigger,
 } from "@reasonateai/ui/components/collapsible";
 import {
+  Brain,
   Check,
   ChevronDown,
   Clock3,
@@ -35,12 +36,14 @@ import {
   ReasoningContent,
   ReasoningTrigger,
 } from "@/components/ai-elements/reasoning";
+import { Shimmer } from "@/components/ai-elements/shimmer";
 import { ActivityOutline, actionIcon } from "./activity";
 import { AnswerActions, type AnswerFeedback } from "./answer-actions";
 import { CheckpointCard } from "./checkpoint-card";
 import { type CheckpointScope, turnCheckpoint } from "./checkpoint-state";
 import { MessageMinimap } from "./message-minimap";
 import { messageAnchor, messageNavigationItems } from "./message-navigation";
+import { MessageTime } from "./message-time";
 import { PlanCard } from "./plan-card";
 import {
   projectTranscript,
@@ -48,6 +51,11 @@ import {
   type TranscriptEntry,
 } from "./timeline";
 import { toolGroupSummary } from "./tool-group-summary";
+import {
+  type ActivityEntry,
+  isActivityEntry,
+  turnPresentation,
+} from "./turn-presentation";
 
 export interface TranscriptProps {
   checkpointScope?: CheckpointScope | undefined;
@@ -135,10 +143,6 @@ function UserMessageActions({
     },
     [onRetry, replacement, sourceRunId]
   );
-  const timestamp = new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(createdAt));
 
   return (
     <>
@@ -181,7 +185,7 @@ function UserMessageActions({
         )}
         <span className="msg-user-time">
           <Clock3 aria-hidden="true" size={14} />
-          <time dateTime={createdAt}>{timestamp}</time>
+          <MessageTime createdAt={createdAt} />
         </span>
       </MessageActions>
       {editing && (
@@ -216,6 +220,43 @@ function UserMessageActions({
         </span>
       )}
     </>
+  );
+}
+
+function ThinkingEntry({
+  entry,
+}: {
+  entry: Extract<TranscriptEntry, { kind: "text" | "reasoning" }>;
+}) {
+  return (
+    <Reasoning
+      className="activity-item transcript-thinking"
+      defaultOpen={false}
+      {...(entry.duration === undefined ? {} : { duration: entry.duration })}
+      isStreaming={entry.streaming}
+    >
+      <ReasoningTrigger className="activity-trigger">
+        <span className="activity-icon">
+          <Brain aria-hidden="true" size={16} />
+        </span>
+        <span className="activity-main">
+          {entry.streaming ? "Thinking" : "Thought"}
+        </span>
+        {entry.duration !== undefined && (
+          <span className="activity-duration">
+            {Math.max(0, Math.round(entry.duration))}s
+          </span>
+        )}
+        <ChevronDown
+          aria-hidden="true"
+          className="activity-chevron"
+          size={16}
+        />
+      </ReasoningTrigger>
+      <ReasoningContent className="transcript-thinking-content">
+        {entry.text}
+      </ReasoningContent>
+    </Reasoning>
   );
 }
 
@@ -277,15 +318,7 @@ function Entry({
     return <ActivityOutline tool={entry.tool} />;
   }
   if (entry.kind === "reasoning") {
-    return (
-      <Reasoning
-        {...(entry.duration === undefined ? {} : { duration: entry.duration })}
-        isStreaming={entry.streaming}
-      >
-        <ReasoningTrigger />
-        <ReasoningContent>{entry.text}</ReasoningContent>
-      </Reasoning>
-    );
+    return <ThinkingEntry entry={entry} />;
   }
   return (
     <Message from="assistant">
@@ -309,13 +342,18 @@ function renderEntries(
   onRejectPlan?: ((toolCallId: string, feedback: string) => void) | undefined
 ): ReactNode[] {
   const rendered: ReactNode[] = [];
+  const current = entries.findLast(
+    (item) =>
+      ((item.kind === "text" || item.kind === "reasoning") && item.streaming) ||
+      (item.kind === "tool" && item.tool.state === "input-available")
+  );
   for (let index = 0; index < entries.length; ) {
     const entry = entries[index];
     if (!entry) {
       index += 1;
       continue;
     }
-    if (entry.kind !== "tool") {
+    if (!isActivityEntry(entry)) {
       rendered.push(
         <Entry
           entry={entry}
@@ -329,66 +367,83 @@ function renderEntries(
     }
 
     const group = [entry];
-    while (entries[index + group.length]?.kind === "tool") {
+    while (index + group.length < entries.length) {
       const next = entries[index + group.length];
-      if (next?.kind === "tool") {
+      if (next && isActivityEntry(next)) {
         group.push(next);
+      } else {
+        break;
       }
     }
-    if (group.length === 1) {
-      rendered.push(
-        <Entry
-          entry={entry}
-          key={entry.id}
-          onApprovePlan={onApprovePlan}
-          onRejectPlan={onRejectPlan}
-        />
-      );
-    } else {
-      const summary = toolGroupSummary(
-        group.map((toolEntry) => toolEntry.tool)
-      );
-      const GroupIcon = actionIcon(summary.iconTool);
-      const expanded = group.some(
-        (toolEntry) =>
-          toolEntry.tool.state === "input-available" ||
-          toolEntry.tool.state === "approval-requested"
-      );
-      rendered.push(
-        <Collapsible
-          className="transcript-tool-group"
-          defaultOpen={expanded}
-          key={entry.id}
-        >
-          <CollapsibleTrigger
-            className="transcript-tool-group-trigger"
-            title={`${summary.count} tool calls`}
-          >
-            <GroupIcon aria-hidden="true" size={15} />
-            <span>{summary.label}</span>
-            <span className="sr-only">({summary.count} tool calls)</span>
-            <ChevronDown
-              aria-hidden="true"
-              className="transcript-tool-group-chevron"
-              size={15}
-            />
-          </CollapsibleTrigger>
-          <CollapsibleContent className="transcript-tool-group-content">
-            {group.map((toolEntry) => (
-              <Entry
-                entry={toolEntry}
-                key={toolEntry.id}
-                onApprovePlan={onApprovePlan}
-                onRejectPlan={onRejectPlan}
-              />
-            ))}
-          </CollapsibleContent>
-        </Collapsible>
-      );
-    }
+    rendered.push(
+      <ActivityGroup currentId={current?.id} entries={group} key={entry.id} />
+    );
     index += group.length;
   }
   return rendered;
+}
+
+function ActivityGroup({
+  currentId,
+  entries,
+}: {
+  currentId: string | undefined;
+  entries: ActivityEntry[];
+}) {
+  const tools = entries.flatMap((entry) =>
+    entry.kind === "tool" ? [entry.tool] : []
+  );
+  const thinking = entries.filter((entry) => entry.kind === "reasoning").length;
+  const current = entries.find((entry) => entry.id === currentId);
+  const summary = toolGroupSummary(
+    current?.kind === "tool" ? [current.tool] : tools
+  );
+  let label = tools.length > 0 ? summary.label : "Thought";
+  if (current?.kind === "reasoning") {
+    label = "Thinking";
+  }
+  const Icon =
+    current?.kind === "reasoning" || tools.length === 0
+      ? Brain
+      : actionIcon(summary.iconTool);
+  const requiresApproval = tools.some(
+    (tool) => tool.state === "approval-requested"
+  );
+  const [open, setOpen] = useState(requiresApproval);
+  useEffect(() => {
+    if (requiresApproval) {
+      setOpen(true);
+    }
+  }, [requiresApproval]);
+  const toolCount = `${tools.length} tool ${tools.length === 1 ? "call" : "calls"}`;
+  const thinkingCount = `${thinking} thinking ${thinking === 1 ? "block" : "blocks"}`;
+  const count = `${toolCount}, ${thinkingCount}`;
+  return (
+    <Collapsible
+      className="transcript-tool-group"
+      onOpenChange={setOpen}
+      open={open}
+    >
+      <CollapsibleTrigger
+        className="transcript-tool-group-trigger"
+        title={count}
+      >
+        <Icon aria-hidden="true" size={15} />
+        {current ? <Shimmer as="span">{label}</Shimmer> : <span>{label}</span>}
+        <span className="sr-only">({count})</span>
+        <ChevronDown
+          aria-hidden="true"
+          className="transcript-tool-group-chevron"
+          size={15}
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="transcript-tool-group-content">
+        {entries.map((entry) => (
+          <Entry entry={entry} key={entry.id} />
+        ))}
+      </CollapsibleContent>
+    </Collapsible>
+  );
 }
 
 export function Transcript({
@@ -413,30 +468,22 @@ export function Transcript({
     <Conversation className="transcript">
       <ConversationContent className="transcript-inner">
         {turns.map((turn) => {
-          const interrupted = Object.values(
-            timeline.runs[turn.id]?.events ?? {}
-          ).some(
-            (event) =>
-              (event.type === "run.failed" || event.type === "run.cancelled") &&
-              typeof event.payload.outcome === "string"
-          );
+          const events = Object.values(timeline.runs[turn.id]?.events ?? {});
+          const presentation = turnPresentation(turn.entries, events);
+          const interrupted =
+            presentation.end?.type === "run.failed" ||
+            presentation.end?.type === "run.cancelled";
           const checkpoint = turnCheckpoint(
             Object.values(timeline.runs[turn.id]?.events ?? {})
           );
-          const answer = turn.entries
-            .flatMap((entry) => (entry.kind === "text" ? [entry.text] : []))
-            .join("\n\n");
-          const completed = Object.values(
-            timeline.runs[turn.id]?.events ?? {}
-          ).some((event) => event.type === "run.completed");
+          const answer = presentation.answer?.text ?? "";
+          const completed = presentation.end?.type === "run.completed";
           const savedAnswers = messages.filter(
             (message) =>
               message.runId === turn.id && message.role === "assistant"
           );
           const lastAnswer = savedAnswers.at(-1);
-          const terminal = Object.values(
-            timeline.runs[turn.id]?.events ?? {}
-          ).find((event) => event.type === "run.completed");
+          const terminal = presentation.end;
           return (
             <section
               aria-label="Conversation turn"
@@ -475,8 +522,37 @@ export function Transcript({
                   />
                 </Message>
               )}
-              {renderEntries(turn.entries, onApprovePlan, onRejectPlan)}
-              {(answer || interrupted) && (
+              {presentation.end && (
+                <Collapsible
+                  className="transcript-turn-work"
+                  defaultOpen={false}
+                >
+                  <CollapsibleTrigger className="transcript-tool-group-trigger">
+                    <span>{presentation.label}</span>
+                    {interrupted && (
+                      <span className="transcript-work-outcome">
+                        {terminal?.type === "run.failed"
+                          ? "Failed"
+                          : "Cancelled"}
+                      </span>
+                    )}
+                    <ChevronDown
+                      aria-hidden="true"
+                      className="transcript-tool-group-chevron"
+                      size={15}
+                    />
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="transcript-turn-work-content">
+                    {renderEntries(
+                      presentation.history,
+                      onApprovePlan,
+                      onRejectPlan
+                    )}
+                  </CollapsibleContent>
+                </Collapsible>
+              )}
+              {renderEntries(presentation.visible, onApprovePlan, onRejectPlan)}
+              {answer && (
                 <TurnAnswerActions
                   createdAt={lastAnswer?.createdAt ?? terminal?.occurredAt}
                   disabled={pending || !completed}

@@ -39,11 +39,30 @@ describe("tool group summaries", () => {
         tool("run_command", "1"),
         tool("run_command", "2"),
       ]).label
-    ).toBe("Read a file, ran commands");
+    ).toBe("Ran commands, read a file");
     expect(
       toolGroupSummary([tool("edit"), tool("run_command"), tool("web_search")])
         .label
     ).toBe("Edited a file, ran a command, searched the web");
+  });
+  it("alphabetizes summary phrases independently of chronological tool order", () => {
+    const tools = [
+      tool("web_search"),
+      tool("run_command", "first-command"),
+      tool("edit", "first-edit"),
+      tool("run_command", "second-command"),
+      tool("edit", "second-edit"),
+    ];
+    expect(toolGroupSummary(tools).label).toBe(
+      "Edited files, ran commands, searched the web"
+    );
+    expect(tools.map((entry) => entry.id)).toEqual([
+      "web_search",
+      "first-command",
+      "first-edit",
+      "second-command",
+      "second-edit",
+    ]);
   });
   it("recognizes workspace-prefixed tools and resource reads", () => {
     expect(

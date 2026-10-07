@@ -5,6 +5,7 @@ import {
   MessageAction,
   MessageActions,
 } from "@/components/ai-elements/message";
+import { MessageTime } from "./message-time";
 
 export type AnswerFeedback = "positive" | "negative" | null;
 export function AnswerActions({
@@ -118,16 +119,7 @@ export function AnswerActions({
           <GitBranch size={16} />
         </MessageAction>
         {createdAt && (
-          <time
-            className="answer-time"
-            dateTime={createdAt}
-            title={new Date(createdAt).toLocaleString()}
-          >
-            {new Intl.DateTimeFormat(undefined, {
-              hour: "numeric",
-              minute: "2-digit",
-            }).format(new Date(createdAt))}
-          </time>
+          <MessageTime className="answer-time" createdAt={createdAt} />
         )}
         {saving && (
           <span className="sr-only" role="status">
