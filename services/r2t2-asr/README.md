@@ -13,14 +13,13 @@ The model runs through one of two backends, selected by `ASR_INFER_MODE`:
 
 | `ASR_INFER_MODE` | Weights | Needs | Fits |
 | ---------------- | ------- | ----- | ---- |
-| `llama` | one quantized GGUF pair — a model `*.gguf` beside its `mmproj*.gguf` projector | an NVIDIA GPU, ~4 GB VRAM | 6 GB consumer laptops |
-| `vllm` (code default) | the bf16 HF checkpoint | a large GPU (~24 GB) | datacenter cards |
+| `llama` (default) | one quantized GGUF pair — a model `*.gguf` beside its `mmproj*.gguf` projector | an NVIDIA GPU, ~4 GB VRAM | 6 GB consumer laptops |
+| `vllm` | the bf16 HF checkpoint | a large GPU (~24 GB) | datacenter cards |
 
 The `llama` backend is what the image is built for and what the acceptance run
 exercises: it serves a Q8 GGUF through a llama.cpp built in the image, which is
 the only path that fits a 6 GB GPU. `vllm` is the optional extra documented
-under [vLLM backend](#vllm-backend) and is **not** installed in this image, so
-a container started without `ASR_INFER_MODE=llama` refuses to serve.
+under [vLLM backend](#vllm-backend) and is **not** installed in this image.
 
 ## Endpoints
 
@@ -46,6 +45,8 @@ services/r2t2-asr/
 ├── app.py            # FastAPI service (the whole thing)
 ├── requirements.txt  # pinned Python dependencies of the runtime stage
 ├── Dockerfile        # multi-stage: CUDA llama.cpp builder + slim GPU runtime
+├── compose.yaml      # Docker Compose stack with GPU reservations
+├── .env.example      # sample configuration knobs
 ├── README.md         # this file
 └── .dockerignore
 ```
@@ -59,8 +60,8 @@ All configuration is via environment variables (never hard-code secrets).
 
 | Variable | Required | Default | Meaning |
 | -------- | -------- | ------- | ------- |
-| `ASR_INFER_MODE` | no | `vllm` | `llama` serves a GGUF through the in-image llama.cpp; `vllm` serves the HF checkpoint. The image only implements `llama`. |
-| `ASR_GGUF_DIR` | in `llama` mode | — | Directory holding exactly one model `*.gguf` and one `mmproj*.gguf`. Service refuses to start without it in `llama` mode. |
+| `ASR_INFER_MODE` | no | `llama` | `llama` serves a GGUF through the in-image llama.cpp; `vllm` serves the HF checkpoint. The image implements `llama`. |
+| `ASR_GGUF_DIR` | in `llama` mode | `/models/gguf` | Directory holding exactly one model `*.gguf` and one `mmproj*.gguf`. Defaults to `/models/gguf` if present. |
 | `ASR_MODEL_PATH` | in `vllm` mode | — | HF repo id (`netease-youdao/Confucius4-R2T2`) or a local checkpoint directory. Service refuses to start without it in `vllm` mode. |
 | `ASR_N_THREADS` | no | `8` | CPU threads llama.cpp may use for the parts of a request that stay on the host. |
 | `ASR_PORT` | no | `8081` | Port uvicorn binds. |
@@ -118,7 +119,21 @@ python app.py
 The first transcription request downloads/loads the checkpoint (that is the slow
 one); `/healthz` answers immediately because the model is loaded lazily.
 
-## Docker
+## Docker & Docker Compose
+
+### Option A: Docker Compose (recommended)
+
+Docker (Compose v2) with the NVIDIA Container Toolkit is the standard way to run:
+
+```bash
+cd services/r2t2-asr
+cp .env.example .env          # customize R2T2_GGUF_DIR if needed
+docker compose up -d --build
+```
+
+The service spins up on `127.0.0.1:8081` with GPU reservations enabled, mounting your GGUF directory to `/models/gguf:ro`.
+
+### Option B: Docker CLI
 
 The image is built in two stages. The builder installs a host compiler and
 rebuilds the CPU backend of the pinned llama.cpp against the x86-64 baseline
@@ -137,7 +152,7 @@ docker run -d --gpus all --name r2t2-asr \
   -p 127.0.0.1:8081:8081 \
   -e ASR_INFER_MODE=llama \
   -e ASR_GGUF_DIR=/models/gguf \
-  -v "$HOME/.cache/models/Confucius4-R2T2-GGUF:/models/gguf" \
+  -v "$HOME/.cache/models/Confucius4-R2T2-GGUF:/models/gguf:ro" \
   reasonate-r2t2-asr:slim
 ```
 
