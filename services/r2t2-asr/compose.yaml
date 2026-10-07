@@ -1,0 +1,63 @@
+# Reasonate AI — R2T2 ASR service (OpenAI-compatible /v1/audio/transcriptions)
+#
+# Compose stack for the self-hosted Confucius4-R2T2 ASR server running via llama.cpp.
+# Sized for a 6 GB consumer GPU (RTX 4050/3060) serving quantized Q8_0 GGUF weights.
+#
+# Loopback boundary:
+# The port is published on 127.0.0.1 only so the product API reaches this over
+# loopback and nothing off-host can call it unauthenticated.
+#
+# Usage:
+#   cp .env.example .env
+#   docker compose up -d --build
+#   curl -sS http://127.0.0.1:8081/healthz
+
+name: r2t2-asr
+
+services:
+  r2t2-asr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: reasonate-r2t2-asr:slim
+    container_name: r2t2-asr
+    restart: unless-stopped
+
+    # Host-side port from .env (defaults to 8081), published on loopback only.
+    ports:
+      - "127.0.0.1:${ASR_PORT:-8081}:8081"
+
+    environment:
+      ASR_PORT: "8081"
+      ASR_INFER_MODE: "llama"
+      ASR_GGUF_DIR: "/models/gguf"
+      ASR_N_THREADS: "${ASR_N_THREADS:-8}"
+      ASR_REQUEST_TIMEOUT_SEC: "${ASR_REQUEST_TIMEOUT_SEC:-120}"
+      ASR_LOG_LEVEL: "${ASR_LOG_LEVEL:-INFO}"
+      ASR_LANGUAGE_DEFAULT: "${ASR_LANGUAGE_DEFAULT:-}"
+      CUDA_VISIBLE_DEVICES: "${CUDA_VISIBLE_DEVICES:-0}"
+
+    volumes:
+      # Mount directory containing model *.gguf and mmproj*.gguf projector.
+      - "${R2T2_GGUF_DIR:-$HOME/.cache/models/Confucius4-R2T2-GGUF}:/models/gguf:ro"
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/healthz | grep -q '\"ready\":true' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 240s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

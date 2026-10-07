@@ -181,6 +181,10 @@ RUN SITE="$(python -c "import importlib.util as u; print(u.find_spec('r2t2_llama
 # package's bin directory on the loader path covers all of them, rebuilt or not.
 ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/site-packages/r2t2_llama/bin
 
+# Default to the llama.cpp backend and the canonical GGUF mount point.
+ENV ASR_INFER_MODE=llama
+ENV ASR_GGUF_DIR=/models/gguf
+
 # Application code.
 COPY app.py ./
 
