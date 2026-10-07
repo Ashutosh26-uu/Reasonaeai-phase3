@@ -11,14 +11,16 @@ Implemented on `codex/turn-activity-collapse`, October 7, 2026, in the isolated 
 - Thinking and tool rows share icon/text columns. Timestamp localization happens after hydration for both user and assistant controls.
 - Shimmer follows the [AI Elements interface/gradient](https://elements.ai-sdk.dev/components/shimmer), adapted to CSS with reduced-motion support and existing theme variables. No dependency was added.
 
+Integrated company `main` at `ea62afd` before final verification; frozen install, lint, type checking, all 182 web tests and the complete production build passed again on the integrated branch.
+
 ## Verification
 
 | Command/scenario | Result |
 | --- | --- |
 | `pnpm install --frozen-lockfile` | Passed; unchanged lockfile, 866 packages |
-| `pnpm check` | Passed, 407 files |
+| `pnpm check` | Passed, 416 files |
 | `pnpm typecheck` | Passed, 10 workspace tasks |
-| `pnpm --filter @reasonateai/web test` | Passed, 23 files and 179 tests |
+| `pnpm --filter @reasonateai/web test` | Passed, 23 files and 182 tests |
 | `pnpm build` | Passed, 10 workspace tasks; web and API rebuilt |
 | `pnpm audit --prod --audit-level high` | Passed threshold; two low and two moderate advisories remain, no high/critical |
 | `git diff --check` | Passed |
