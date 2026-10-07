@@ -9,6 +9,16 @@ export const SandboxIdSchema = z
   .brand<"SandboxId">();
 export type SandboxId = z.infer<typeof SandboxIdSchema>;
 
+export const DEFAULT_BUILD_SANDBOX_IMAGE = "reasonate-build-sandbox:node22";
+export const SandboxImageReferenceSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .regex(
+    /^[a-zA-Z0-9][a-zA-Z0-9./:_-]*(?:@sha256:[a-f0-9]{64})?$/i,
+    "Use a valid sandbox image name, tag, or sha256 digest."
+  );
+
 export const sandboxStatuses = [
   "pending",
   "running",
@@ -67,7 +77,7 @@ export const SandboxConfigSchema = z.strictObject({
   cpuLimit: z.number().min(0.1).max(8.0).default(1.0),
   env: z.record(z.string(), z.string()).default({}),
   id: SandboxIdSchema,
-  image: z.string().min(1).max(256),
+  image: SandboxImageReferenceSchema,
   memoryLimitMb: z.number().int().min(64).max(4096).default(512),
   mounts: z.array(SandboxMountSchema).max(8).default([]),
   networkMode: SandboxNetworkModeSchema.default("none"),

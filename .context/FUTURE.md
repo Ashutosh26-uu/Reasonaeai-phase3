@@ -27,8 +27,11 @@ Rejecting an item requires recording the decision and reason before removing it.
 - Native iOS application generation and simulator/device verification.
 - Additional programming languages and application frameworks selected from measured demand.
 - Cross-platform desktop application generation.
+- Optional heavyweight Python stacks (SciPy/scikit-learn, OpenCV, Jupyter, and deep-learning libraries) after measured need and an image-size/startup budget; the default image covers tabular analysis, plotting, FastAPI services, and Pillow-based common raster transforms.
 
 ## Agent capabilities
+
+- Live sandbox browser-use streaming in its own conversation workspace tab, separate from the checkpoint-backed App preview. Deferred explicitly while generic session tabs, files/diffs/activity, and running app previews are implemented; requires an authorized browser-session/evidence transport rather than copying local desktop browser controls.
 
 - Conditional mid-turn rule matching is deferred. The current CTO uses concise bundled policy, relevant procedures, and effect-based authorization. Do not add blanket keyword-triggered interruptions; revisit a matcher only with a specific evidenced failure and evaluation of false positives, provenance, and resume behavior.
 - Safe user-authored executable skills after isolation, provenance, review, signing, permission, and revocation controls exist.

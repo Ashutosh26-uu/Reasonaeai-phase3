@@ -31,12 +31,14 @@ import {
   createRunResources,
   type RunResources,
 } from "./resources/handlers/index.js";
+import type { RunScope } from "./run-scope.js";
 import { readRunScope, sandboxIdFor } from "./run-scope.js";
 import {
   type BrowserToolOptions,
   createBrowserVerificationTool,
 } from "./tools/browser-verification.js";
 import { createWorkspaceEditTool } from "./tools/edit.js";
+import { createOpenPreviewTool } from "./tools/open-preview.js";
 import { ReadSnapshotStore } from "./tools/read-snapshots.js";
 import { createSubmitPlanTool } from "./tools/submit-plan.js";
 import { createWorkspaceReadTool } from "./tools/workspace-read.js";
@@ -114,6 +116,8 @@ export interface ReasonateCtoRuntimeConfig {
    * the host while every command runs inside the sandbox.
    */
   platform?: PlatformFacts | undefined;
+  /** Persists a short-lived same-sandbox preview lease before the tool returns. */
+  registerPreview?: (input: RunScope & { appPort: number }) => Promise<void>;
   resourceId?: string;
   /**
    * Host directory under which run-scoped resource stores live: spilled read
@@ -236,6 +240,22 @@ function createRuntimeTools(
     testExecutionTool,
     tools: {
       ...fileTools,
+      open_preview: createOpenPreviewTool({
+        resolveFilesystem,
+        resolveSandbox: async (requestContext) => {
+          const workspace = await resolveWorkspace(requestContext);
+          const sandbox = await workspace.resolveSandbox({ requestContext });
+          if (!sandbox) {
+            throw new Error("The verified run sandbox is unavailable.");
+          }
+          return sandbox;
+        },
+        resolveSnapshots,
+        ...(config.registerPreview === undefined
+          ? {}
+          : { registerPreview: config.registerPreview }),
+        root: config.workspaceRoot ?? "/workspace",
+      }),
       submit_plan: submitPlanTool,
       ...(browserVerificationTool
         ? { browser_verify: browserVerificationTool }

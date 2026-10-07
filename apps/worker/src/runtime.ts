@@ -1,15 +1,18 @@
+import { randomUUID } from "node:crypto";
 import type {
   AgentControllerEvent,
   Session,
 } from "@mastra/core/agent-controller";
 import type { RequestContext } from "@mastra/core/request-context";
 import { PostgresStore } from "@mastra/pg";
-import type {
-  BuildSessionId,
-  PromptAttachment,
+import {
+  type BuildSessionId,
+  PreviewIdSchema,
+  type PromptAttachment,
 } from "@reasonateai/contracts/execution";
 import { type RunId, RunIdSchema } from "@reasonateai/contracts/identity";
 import { createReasonateCtoRuntime } from "@reasonateai/cto-runtime";
+import { sandboxIdFor } from "@reasonateai/cto-runtime/run-scope";
 import type {
   ProjectStateStore,
   TenantScope,
@@ -87,6 +90,7 @@ export type RuntimeFactory = () => RunRuntime;
 export function createCtoRuntimeFactory(input: {
   databaseUrl: string;
   model: string;
+  store: ProjectStateStore;
 }): RuntimeFactory {
   const storage = new PostgresStore({
     connectionString: input.databaseUrl,
@@ -98,6 +102,23 @@ export function createCtoRuntimeFactory(input: {
       enableBrowserVerification: true,
       enableTestRunner: true,
       model: input.model,
+      registerPreview: async ({ appPort, ...scope }) => {
+        if (await input.store.previews.getByRun(scope.runId)) {
+          return;
+        }
+        const sandboxId = sandboxIdFor(scope);
+        await input.store.previews.record({
+          buildSessionId: scope.buildSessionId,
+          containerName: sandboxId,
+          detail: `Selected app port ${appPort}`,
+          organizationId: scope.organizationId,
+          previewId: PreviewIdSchema.parse(randomUUID()),
+          projectId: scope.projectId,
+          runId: scope.runId,
+          sandboxId,
+          status: "starting",
+        });
+      },
       storage,
       workspace: reasonateBuildWorkspace,
       workspaceRoot: SANDBOX_WORKING_DIRECTORY,

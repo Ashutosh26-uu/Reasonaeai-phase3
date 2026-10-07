@@ -1,13 +1,9 @@
 import { execFile, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
-import {
-  readFile as fsReadFile,
-  writeFile as fsWriteFile,
-  mkdir,
-  rm,
-} from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, normalize, resolve, sep } from "node:path";
+import { isAbsolute, join, posix, resolve } from "node:path";
 import { promisify } from "node:util";
 import type {
   ISandbox,
@@ -87,10 +83,10 @@ export class DockerSandbox implements ISandbox {
   private status: SandboxState["status"] = "pending";
   private stoppedAt: string | null = null;
 
-  constructor(config: SandboxConfig) {
+  constructor(config: SandboxConfig, containerName?: string) {
     this.config = config;
     const sanitizedId = config.id.replaceAll(/[^a-zA-Z0-9_.-]/g, "-");
-    this.containerName = `reasonate-sbx-${sanitizedId}`;
+    this.containerName = containerName ?? `reasonate-sbx-${sanitizedId}`;
     this.createdAt = new Date().toISOString();
     this.hostWorkspaceDir = resolve(
       tmpdir(),
@@ -140,9 +136,13 @@ export class DockerSandbox implements ISandbox {
       ...publishedPortFlags(this.config.ports),
       "-w",
       this.config.workdir,
-      "-v",
-      `${this.hostWorkspaceDir}:${this.config.workdir}`,
     ];
+
+    if (
+      !this.config.mounts.some((mount) => mount.target === this.config.workdir)
+    ) {
+      dockerArgs.push("-v", `${this.hostWorkspaceDir}:${this.config.workdir}`);
+    }
 
     if (this.config.packageCacheVolume) {
       if (
@@ -327,14 +327,16 @@ export class DockerSandbox implements ISandbox {
     }
   };
 
-  private readonly safeResolvePath = (relativePath: string): string => {
-    if (isAbsolute(relativePath)) {
+  private readonly containerPath = (relativePath: string): string => {
+    if (isAbsolute(relativePath) || posix.isAbsolute(relativePath)) {
       throw new Error("Relative path expected, got absolute path");
     }
-    const safePath = normalize(join(this.hostWorkspaceDir, relativePath));
+    const safePath = posix.normalize(
+      posix.join(this.config.workdir, relativePath)
+    );
     const isWithinWorkspace =
-      safePath === this.hostWorkspaceDir ||
-      safePath.startsWith(`${this.hostWorkspaceDir}${sep}`);
+      safePath === this.config.workdir ||
+      safePath.startsWith(`${this.config.workdir}/`);
     if (!isWithinWorkspace) {
       throw new Error("Path traversal detected outside sandbox workspace");
     }
@@ -348,17 +350,54 @@ export class DockerSandbox implements ISandbox {
     if (this.status !== "running") {
       throw new Error(`Cannot write file on sandbox in status: ${this.status}`);
     }
-    const target = this.safeResolvePath(relativePath);
-    await mkdir(resolve(target, ".."), { recursive: true });
-    await fsWriteFile(target, content);
+    const target = this.containerPath(relativePath);
+    const temporaryPath = join(tmpdir(), `reasonate-sandbox-${randomUUID()}`);
+    try {
+      await writeFile(temporaryPath, content);
+      const parent = await this.runCommand({
+        args: ["-p", posix.dirname(target)],
+        command: "mkdir",
+      });
+      if (parent.exitCode !== 0) {
+        throw new Error(parent.stderr || "Could not prepare the sandbox path.");
+      }
+      await execFileAsync("docker", [
+        "cp",
+        temporaryPath,
+        `${this.containerName}:${target}`,
+      ]);
+    } catch (cause) {
+      throw new Error("Could not write a sandbox file.", { cause });
+    } finally {
+      await rm(temporaryPath, { force: true }).catch(() => undefined);
+    }
   };
 
   readonly readFile = async (relativePath: string): Promise<string> => {
     if (this.status !== "running") {
       throw new Error(`Cannot read file on sandbox in status: ${this.status}`);
     }
-    const target = this.safeResolvePath(relativePath);
-    return await fsReadFile(target, "utf-8");
+    const target = this.containerPath(relativePath);
+    const isFile = await this.runCommand({
+      args: ["-f", target],
+      command: "test",
+    });
+    if (isFile.exitCode !== 0) {
+      throw new Error(isFile.stderr || "Could not read a sandbox file.");
+    }
+    const temporaryPath = join(tmpdir(), `reasonate-sandbox-${randomUUID()}`);
+    try {
+      await execFileAsync("docker", [
+        "cp",
+        `${this.containerName}:${target}`,
+        temporaryPath,
+      ]);
+      return await readFile(temporaryPath, "utf8");
+    } catch (cause) {
+      throw new Error("Could not read a sandbox file.", { cause });
+    } finally {
+      await rm(temporaryPath, { force: true }).catch(() => undefined);
+    }
   };
 
   private readonly cleanup = async (): Promise<void> => {

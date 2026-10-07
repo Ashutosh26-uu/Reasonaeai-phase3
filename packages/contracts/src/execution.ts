@@ -265,6 +265,7 @@ export const ConversationHistorySchema = z.strictObject({
  * exists, and null while the conversation has not been titled yet.
  */
 export const ConversationSummarySchema = z.strictObject({
+  archivedAt: IsoDateTimeSchema.nullable().optional(),
   buildSessionId: BuildSessionIdSchema,
   createdAt: IsoDateTimeSchema,
   /** The newest run of this conversation, whether or not it has ended. */
@@ -280,6 +281,23 @@ export type ConversationSummary = z.infer<typeof ConversationSummarySchema>;
 export const ConversationListSchema = z.strictObject({
   conversations: z.array(ConversationSummarySchema),
 });
+
+/** Metadata edits never alter retained messages, runs, or checkpoints. */
+export const UpdateConversationRequestSchema = z.union([
+  z.strictObject({ title: z.string().trim().min(1).max(500) }),
+  z.strictObject({ archived: z.boolean() }),
+]);
+export type UpdateConversationRequest = z.infer<
+  typeof UpdateConversationRequestSchema
+>;
+
+export const ConversationMetadataSchema = z.strictObject({
+  archivedAt: IsoDateTimeSchema.nullable(),
+  buildSessionId: BuildSessionIdSchema,
+  title: z.string().min(1).max(500).nullable(),
+  updatedAt: IsoDateTimeSchema,
+});
+export type ConversationMetadata = z.infer<typeof ConversationMetadataSchema>;
 
 /** A turn the user submits into an existing conversation. */
 export const AppendConversationTurnRequestSchema = z
@@ -365,3 +383,115 @@ export function isShareableDeployment(
 ): deployment is Deployment & { status: "ready"; url: string } {
   return deployment.status === "ready" && deployment.url !== null;
 }
+
+const PREVIEW_SCRIPT_NAME = /^[a-zA-Z0-9:_-]+$/;
+/** Reserved inside preview sandboxes; app listeners use separate ports. */
+export const APP_PREVIEW_RELAY_PORT = 18_080;
+export const AppPreviewConfigurationSchema = z.strictObject({
+  host: z.enum(["127.0.0.1", "::1"]).optional(),
+  port: z
+    .number()
+    .int()
+    .min(1024)
+    .max(65_535)
+    .refine(
+      (port) => port !== APP_PREVIEW_RELAY_PORT,
+      "Port 18080 is reserved for the preview gateway; choose another app port."
+    )
+    .optional(),
+  script: z.string().min(1).max(80).regex(PREVIEW_SCRIPT_NAME).optional(),
+});
+export type AppPreviewConfiguration = z.infer<
+  typeof AppPreviewConfigurationSchema
+>;
+
+const PREVIEW_ROUTE_QUERY = /[?#\\\s]/;
+const PREVIEW_ENCODED_SEPARATOR = /%(?:2f|5c)/i;
+function hasUnsafePreviewCharacters(value: string) {
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    if (code <= 32 || code === 127 || character === "\\") {
+      return true;
+    }
+  }
+  return false;
+}
+function isPreviewRoute(path: string): boolean {
+  if (
+    !path.startsWith("/") ||
+    path.startsWith("//") ||
+    PREVIEW_ROUTE_QUERY.test(path)
+  ) {
+    return false;
+  }
+  let decoded = path;
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (
+      hasUnsafePreviewCharacters(decoded) ||
+      PREVIEW_ENCODED_SEPARATOR.test(decoded) ||
+      decoded.split("/").some((part) => part === "." || part === "..")
+    ) {
+      return false;
+    }
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) {
+        return true;
+      }
+      decoded = next;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+export const AppPreviewRouteSchema = z
+  .string()
+  .max(2048)
+  .refine(isPreviewRoute);
+export const OpenAppPreviewRequestSchema = z.strictObject({
+  script: AppPreviewConfigurationSchema.shape.script,
+  url: z
+    .string()
+    .max(2048)
+    .refine((value) => {
+      try {
+        const url = new URL(value);
+        return (
+          url.protocol === "http:" &&
+          ["localhost", "127.0.0.1", "0.0.0.0", "[::1]"].includes(
+            url.hostname
+          ) &&
+          !url.username &&
+          !url.password &&
+          !url.search &&
+          !url.hash &&
+          Number(url.port) >= 1024 &&
+          Number(url.port) <= 65_535 &&
+          Number(url.port) !== APP_PREVIEW_RELAY_PORT &&
+          isPreviewRoute(url.pathname)
+        );
+      } catch {
+        return false;
+      }
+    }, "Choose an HTTP localhost app URL with an explicit port (1024–65535 except reserved 18080), no credentials, query, or fragment."),
+});
+
+/** A successful tool request selects a target; readiness is established separately. */
+export const OpenAppPreviewResultSchema = z.strictObject({
+  buildSessionId: BuildSessionIdSchema,
+  host: z.enum(["127.0.0.1", "::1"]),
+  kind: z.literal("app-preview"),
+  path: AppPreviewRouteSchema,
+  port: z
+    .number()
+    .int()
+    .min(1024)
+    .max(65_535)
+    .refine((port) => port !== APP_PREVIEW_RELAY_PORT),
+  runId: RunIdSchema,
+  schemaVersion: z.literal(1),
+  status: z.literal("requested"),
+});
+export type OpenAppPreviewResult = z.infer<typeof OpenAppPreviewResultSchema>;

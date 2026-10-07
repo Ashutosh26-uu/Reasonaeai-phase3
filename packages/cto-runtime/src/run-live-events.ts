@@ -85,7 +85,11 @@ export class RunLiveEventMapper {
   readonly #scope: RunLiveScope;
   readonly #messages = new Map<string, MessageSnapshot>();
   constructor(input: { scope: RunLiveScope }) {
-    this.#scope = input.scope;
+    this.#scope = {
+      organizationId: input.scope.organizationId,
+      projectId: input.scope.projectId,
+      runId: input.scope.runId,
+    };
   }
 
   map(event: AgentControllerEvent, at = new Date()): RunLiveEvent | undefined {

@@ -104,7 +104,14 @@ const MAX_CLONE_COUNT = 4;
  * The parent of every clone, and the root a deployment overrides so a host
  * with a small system drive can keep checkouts elsewhere.
  */
-const CLONE_ROOT = join(tmpdir(), "reasonate-source");
+// Each API process owns its disposable Git-object cache. Checkpoint browsing on
+// Windows must not check out filenames (for example npm's cache paths) onto the
+// host filesystem, where valid sandbox paths can exceed Windows limits.
+const CLONE_ROOT = join(
+  tmpdir(),
+  "reasonate-source-objects",
+  String(process.pid)
+);
 
 /**
  * Paths a workspace never exposes: the checkout's own metadata, dependencies,
@@ -380,7 +387,7 @@ async function cloneFromBundle(input: {
     // adopted: git refuses to clone into a directory that is not empty.
     await rm(directory, { force: true, recursive: true });
     const cloned = await runGit(
-      ["clone", "--quiet", "--no-hardlinks", bundlePath, directory],
+      ["clone", "--bare", "--quiet", "--no-hardlinks", bundlePath, directory],
       GIT_OUTPUT_LIMIT
     );
     if (cloned.code !== 0) {
@@ -447,10 +454,30 @@ async function materializeCheckout(input: {
     digest: input.checkpoint.digest,
   }).then(async (directory) => {
     if (input.checkpoint.commit) {
-      await runGit(
-        ["-C", directory, "reset", "--hard", input.checkpoint.commit],
+      const head = await runGit(
+        ["-C", directory, "symbolic-ref", "HEAD"],
         GIT_OUTPUT_LIMIT
       );
+      if (head.code !== 0) {
+        throw new Error(
+          "The checkpoint bundle's default branch could not be resolved."
+        );
+      }
+      const selected = await runGit(
+        [
+          "-C",
+          directory,
+          "update-ref",
+          head.stdout.toString("utf8").trim(),
+          input.checkpoint.commit,
+        ],
+        GIT_OUTPUT_LIMIT
+      );
+      if (selected.code !== 0) {
+        throw new Error(
+          "The requested checkpoint commit is unavailable in its verified bundle."
+        );
+      }
     }
     finished = true;
     return directory;
@@ -657,10 +684,10 @@ async function resolveWorkspaceSandbox(
     projectId: scope.projectId,
     runId,
   });
-  await createdSandbox.start?.();
+  await createdSandbox.start();
   return {
     dispose: async () => {
-      await createdSandbox.destroy?.();
+      await createdSandbox.destroy();
     },
     sandbox: checkpointSandboxFor(createdSandbox),
   };

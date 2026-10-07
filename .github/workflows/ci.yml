@@ -79,14 +79,17 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # Build the image before tests because the sandbox-runtime integration
+      # starts the same image that API and worker runs will use.
+      - name: Build the build sandbox image
+        run: docker build -f services/build-sandbox/Dockerfile -t reasonate-build-sandbox:node22 services/build-sandbox
+
       # Tests run with DATABASE_URL and REDIS_URL exported above, so the
       # database- and Redis-backed suites execute instead of skipping.
       - name: Test
+        env:
+          REASONATE_TEST_BUILD_SANDBOX_IMAGE: "1"
         run: pnpm test
-
-      # The sandbox image the integration tests and checkpoints use.
-      - name: Pull the sandbox image
-        run: docker pull node:22
 
       # The checkpoint smoke starts a real container, snapshots it, destroys it
       # with its volume, and restores it into a fresh one.
@@ -139,6 +142,12 @@ jobs:
       # request until it is fixed or explicitly risk-accepted in the tracker.
       - name: Audit dependencies
         run: pnpm audit --prod --audit-level high
+
+      # The build-sandbox starter is an independent npm project, not part of
+      # the pnpm workspace, so audit its shipped lockfile as well.
+      - name: Audit sandbox web starter
+        working-directory: services/build-sandbox/templates/next-shadcn
+        run: npm audit --audit-level high
 
       # Scan for committed secrets across git history
       - name: Scan for committed secrets

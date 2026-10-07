@@ -7,6 +7,7 @@ import {
   type Permission,
   type ProjectId,
   ProjectIdSchema,
+  RunIdSchema,
   type UserPrincipal,
 } from "@reasonateai/contracts/identity";
 import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
@@ -24,7 +25,7 @@ import type { HandlerContext } from "./build-sessions";
 /**
  * Preview routes.
  *
- * A preview is the project's latest checkpoint running in its own sandbox, and
+ * A preview is the selected app port running in the existing run sandbox, and
  * these routes are how a browser reaches it: one route starts it, one reports
  * and stops it, and one proxies every request the framed app makes.
  *
@@ -33,12 +34,10 @@ import type { HandlerContext } from "./build-sessions";
  * read from the preview itself — never from the URL — so a preview id can never
  * be pointed at another tenant's project.
  *
- * The `frame-ancestors` policy below names the local web origin so the workspace
- * panel can frame the preview during development, where the panel and the API
- * are reached through one origin. Production does not frame a proxied path at
- * all: the preview gateway serves each preview on its own hostname and the
- * panel frames that origin, which is what keeps a preview a separate origin in
- * every environment that matters.
+ * The `frame-ancestors` policy names the configured product origin. The current
+ * local route is still served from the API origin; a dedicated preview origin
+ * and browser isolation must be configured before exposing untrusted generated
+ * apps in a deployed environment.
  */
 
 export const BUILD_SESSION_PREVIEW_PATH =
@@ -84,10 +83,9 @@ const STRIPPED_REQUEST_HEADERS = [
 ] as const;
 
 /**
- * The product's own credentials are not forwarded: the app being previewed is a
- * separate origin, and it must not be able to read, echo, or act with the
- * viewer's session. `set-cookie` on the way back is dropped for the same
- * reason: a preview must not write cookies onto the API's origin.
+ * Product credentials are never forwarded to generated code, and `set-cookie`
+ * is dropped so the app cannot set cookies on the API origin. These controls do
+ * not replace the separate-origin requirement for deployed previews.
  */
 const STRIPPED_CREDENTIAL_HEADERS = ["authorization", "cookie"] as const;
 
@@ -137,6 +135,8 @@ const DENIAL_BY_REASON: Record<string, ApiErrorCode> = {
 };
 
 export interface PreviewRouteDeps {
+  /** Configured application origin, never inferred from a browser request. */
+  frameOrigin?: string | undefined;
   previews: PreviewService;
   resolvePrincipal: (input: {
     cookieHeader: string | undefined;
@@ -316,6 +316,7 @@ function forwardedHeadersOf(original: Headers | undefined): Headers {
  * applied and the app's own framing headers removed.
  */
 async function forwardToPreview(input: {
+  framePolicy: string;
   body: ArrayBuffer | undefined;
   headers: Headers;
   method: string;
@@ -346,7 +347,7 @@ async function forwardToPreview(input: {
   for (const name of STRIPPED_RESPONSE_HEADERS) {
     headers.delete(name);
   }
-  headers.set("Content-Security-Policy", PREVIEW_FRAME_ANCESTORS);
+  headers.set("Content-Security-Policy", input.framePolicy);
 
   return new Response(upstream.body, {
     headers,
@@ -355,6 +356,14 @@ async function forwardToPreview(input: {
 }
 
 export function createPreviewHandlers(deps: PreviewRouteDeps) {
+  const frameOrigin =
+    deps.frameOrigin === undefined
+      ? undefined
+      : z.url().parse(deps.frameOrigin);
+  const framePolicy =
+    frameOrigin === undefined
+      ? PREVIEW_FRAME_ANCESTORS
+      : `frame-ancestors ${new URL(frameOrigin).origin}`;
   return {
     /**
      * Starts — or adopts — the one live preview for this build session. The
@@ -375,15 +384,16 @@ export function createPreviewHandlers(deps: PreviewRouteDeps) {
       const buildSessionId = BuildSessionIdSchema.safeParse(
         c.req.param("buildSessionId")
       );
+      const runId = RunIdSchema.safeParse(c.req.query("runId"));
       const scope = PreviewScopeQuerySchema.safeParse({
         organizationId: c.req.query("organizationId"),
         projectId: c.req.query("projectId"),
       });
-      if (!(buildSessionId.success && scope.success)) {
+      if (!(buildSessionId.success && runId.success && scope.success)) {
         return apiErrorResponse({
           code: "invalid_request",
           message:
-            "A build session id and both scope identifiers are required.",
+            "A build session id, run id, and both scope identifiers are required.",
           requestId: rid,
         });
       }
@@ -420,10 +430,29 @@ export function createPreviewHandlers(deps: PreviewRouteDeps) {
         });
       }
 
+      const run = await deps.store().getRun({
+        organizationId: scope.data.organizationId,
+        projectId: scope.data.projectId,
+        runId: runId.data,
+      });
+      if (
+        !run ||
+        run.buildSessionId !== buildSessionId.data ||
+        (run.status !== "running" &&
+          !(await deps.store().previews.getByRun(runId.data)))
+      ) {
+        return apiErrorResponse({
+          code: "conflict",
+          message: "The selected run sandbox is no longer available.",
+          requestId: rid,
+        });
+      }
+
       const preview = await deps.previews.start({
         buildSessionId: buildSessionId.data,
         organizationId: scope.data.organizationId,
         projectId: scope.data.projectId,
+        runId: runId.data,
       });
 
       return c.json(preview, 202);
@@ -463,6 +492,7 @@ export function createPreviewHandlers(deps: PreviewRouteDeps) {
           method === "GET" || method === "HEAD"
             ? undefined
             : await c.req.arrayBuffer?.(),
+        framePolicy,
         headers: forwardedHeadersOf(c.req.raw?.headers),
         method,
         requestId: rid,

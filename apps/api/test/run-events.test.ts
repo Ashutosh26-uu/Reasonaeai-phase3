@@ -24,6 +24,7 @@ import {
   type StreamPublisher,
 } from "@reasonateai/project-state/relay";
 import { subscribeToRunEvents } from "@reasonateai/project-state/run-event-stream";
+import { readRunLiveEvent } from "@reasonateai/project-state/run-live-stream";
 import { Pool } from "pg";
 import { createClient, type RedisClientType } from "redis";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -562,6 +563,92 @@ describeWithDatabase("run event stream", () => {
       await stream.cancel();
     }
   });
+
+  it.each(["source first", "branch first"])(
+    "delivers retained live frames for an inherited run regardless of subscription order: %s",
+    async (order) => {
+      const source = await allocate();
+      const branch = await allocate();
+      // Reproduce the persisted inherited head used by conversation branches.
+      await pool.query(
+        "update build_sessions set run_id=$2 where build_session_id=$1",
+        [branch.buildSessionId, source.runId]
+      );
+      const legacyFrame = JSON.stringify({
+        buildSessionId: source.buildSessionId,
+        delta: "Retained progressive text",
+        kind: "message.delta",
+        messageId: "retained",
+        mode: "append",
+        organizationId,
+        projectId,
+        runId: source.runId,
+        schemaVersion: 1,
+      });
+      const fanout = createRunEventFanout({
+        subscribe: topics.subscribe,
+        subscribeLive: async (input) => ({
+          async *[Symbol.asyncIterator]() {
+            const frame = readRunLiveEvent(legacyFrame, input);
+            if (frame instanceof Error) {
+              throw frame;
+            }
+            yield frame;
+            const stream = await topics.subscribeLive(input);
+            for await (const event of stream) {
+              yield event;
+            }
+          },
+        }),
+      });
+      const inheritedHandlers = createRunEventHandlers({
+        fanout,
+        resolvePrincipal: async ({ cookieHeader }) =>
+          resolveSessionPrincipal({ cookieHeader, sessions: store.sessions }),
+        store: () => store,
+      });
+      const firstSession = order === "source first" ? source : branch;
+      const secondSession = order === "source first" ? branch : source;
+      const streams: EventStream[] = [];
+      try {
+        const first = openStream(
+          await inheritedHandlers.stream(
+            streamRequest({ buildSessionId: firstSession.buildSessionId })
+          )
+        );
+        streams.push(first);
+        expect((await first.nextLive()).data.delta).toBe(
+          "Retained progressive text"
+        );
+        const second = openStream(
+          await inheritedHandlers.stream(
+            streamRequest({ buildSessionId: secondSession.buildSessionId })
+          )
+        );
+        streams.push(second);
+        await drainReplay(second, await ledgerHead(source.runId));
+        await settle();
+        topics.publishLive(
+          source.runId,
+          RunLiveEventSchema.parse({
+            delta: "Next token",
+            kind: "message.delta",
+            messageId: "retained",
+            mode: "append",
+            organizationId,
+            projectId,
+            runId: source.runId,
+            schemaVersion: 1,
+          })
+        );
+        expect((await first.nextLive()).data.delta).toBe("Next token");
+        expect((await second.nextLive()).data.delta).toBe("Next token");
+      } finally {
+        await Promise.all(streams.map((stream) => stream.cancel()));
+        fanout.close();
+      }
+    }
+  );
 
   it("flushes headers and keeps quiet streams alive without advancing the replay cursor", async () => {
     const buildSession = await allocate();

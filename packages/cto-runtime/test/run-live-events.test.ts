@@ -28,6 +28,31 @@ const message = (parts: Message["content"]["parts"]): Message => ({
 });
 
 describe("ordered controller display snapshots", () => {
+  it("publishes valid live frames when the worker scope includes session metadata", () => {
+    const workerScope = { ...scope, buildSessionId: "worker-session" };
+    const mapper = new RunLiveEventMapper({ scope: workerScope });
+    const frame = mapper.map(
+      {
+        message: message([{ text: "First token", type: "text" }]),
+        type: "message_update",
+      },
+      at
+    );
+    expect(RunLiveEventSchema.parse(frame)).toEqual(frame);
+    expect(frame).not.toHaveProperty("buildSessionId");
+    for (const completed of mapper.finish()) {
+      expect(RunLiveEventSchema.parse(completed)).toEqual(completed);
+      expect(completed).not.toHaveProperty("buildSessionId");
+    }
+    const delegated = mapper.map({
+      agentType: "coder",
+      textDelta: "Delegated token",
+      toolCallId: "delegation",
+      type: "subagent_text_delta",
+    });
+    expect(RunLiveEventSchema.parse(delegated)).toEqual(delegated);
+    expect(delegated).not.toHaveProperty("buildSessionId");
+  });
   it("preserves reasoning, narration, tool references, and final prose without concatenating them", () => {
     const mapper = new RunLiveEventMapper({ scope });
     const source = message([

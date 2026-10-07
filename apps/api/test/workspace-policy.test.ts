@@ -1,10 +1,24 @@
+import { DEFAULT_BUILD_SANDBOX_IMAGE } from "@reasonateai/contracts/sandbox";
 import { describe, expect, it } from "vitest";
 import {
   resolveBuildSandboxCacheVolume,
+  resolveBuildSandboxImage,
   resolveBuildSandboxNetworkMode,
 } from "../src/mastra/workspace.js";
 
 describe("API build sandbox workspace policy", () => {
+  it("uses the preloaded build image and validates operator overrides", () => {
+    expect(resolveBuildSandboxImage({})).toBe(DEFAULT_BUILD_SANDBOX_IMAGE);
+    expect(
+      resolveBuildSandboxImage({
+        REASONATE_BUILD_SANDBOX_IMAGE: " registry.example/build:2026.10 ",
+      })
+    ).toBe("registry.example/build:2026.10");
+    expect(() =>
+      resolveBuildSandboxImage({ REASONATE_BUILD_SANDBOX_IMAGE: "--help" })
+    ).toThrow();
+  });
+
   it("resolves network mode with default to bridge", () => {
     expect(resolveBuildSandboxNetworkMode({})).toBe("bridge");
     expect(

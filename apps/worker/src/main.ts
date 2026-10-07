@@ -137,6 +137,7 @@ function main(): void {
     runtime: createCtoRuntimeFactory({
       databaseUrl: config.databaseUrl,
       model: config.model,
+      store,
     }),
     store,
   });

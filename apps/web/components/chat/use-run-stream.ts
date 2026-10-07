@@ -9,6 +9,7 @@ import {
 } from "@reasonateai/contracts/execution-protocol";
 import { useEffect, useRef, useState } from "react";
 import { runStreamEnded } from "./run-state";
+import { createStreamReconnectNotice } from "./stream-reconnect";
 import {
   EMPTY_TIMELINE,
   foldDurable,
@@ -68,6 +69,25 @@ export function useRunStream(input: RunStreamInput) {
       return;
     }
     let closed = false;
+    const reconnectNotice = createStreamReconnectNotice(
+      () => {
+        if (
+          !closed &&
+          selected.current === identity &&
+          handlers.current.active?.pendingRunId === pendingRunId &&
+          pendingRunId
+        ) {
+          handlers.current.onInterrupted(
+            "Connection interrupted. Reconnecting…"
+          );
+        }
+      },
+      () => {
+        if (!closed && selected.current === identity) {
+          handlers.current.onOpened();
+        }
+      }
+    );
     const requestId = crypto.randomUUID();
     let lastSequence = 0;
     const diagnostic = (event: string) =>
@@ -138,9 +158,9 @@ export function useRunStream(input: RunStreamInput) {
     }
     source.onopen = () => {
       if (!closed) {
+        reconnectNotice.connected();
         setFollowing(true);
         console.info(diagnostic("run.stream.connected"));
-        handlers.current.onOpened();
       }
     };
     source.onerror = () => {
@@ -150,11 +170,12 @@ export function useRunStream(input: RunStreamInput) {
       setFollowing(false);
       console.warn(diagnostic("run.stream.interrupted"));
       if (pendingRunId) {
-        handlers.current.onInterrupted("Connection interrupted. Reconnecting…");
+        reconnectNotice.interrupted();
       }
     };
     return () => {
       closed = true;
+      reconnectNotice.recovered();
       source.close();
     };
   }, [buildSessionId, identity, organizationId, pendingRunId, projectId]);
