@@ -27,6 +27,7 @@ Integrated company `main` at `ea62afd` before final verification; frozen install
 | Gitleaks 8.30.1 over the staged feature-file snapshot, `--redact --no-banner` | Passed; no leaks across 262 KB; official release checksum verified before execution |
 | Built web smoke on port 3227 | Product root HTTP 200; temporary verification route HTTP 404 |
 | Independent ephemeral review | Both reported lifecycle/plan-boundary defects repaired; re-review found no actionable feature defect; 39 focused tests passed |
+| [PR #38 clean CI](https://github.com/Ashutosh26-uu/Reasonaeai-phase3/actions/runs/37618857143), code commit `73b163a` | Passed frozen install, lint, typecheck, build, full root test gate (17 tasks), real checkpoint smoke, built API health/private-route denial and dependency/secret scans |
 
 Browser verification used the actual `Transcript` component in the running Next.js application, fed schema-validated sequenced ledger snapshots by a temporary local verification route. It covered thinking → read → interim prose → edit/test → completion, expansion/collapse of history and activity groups, preserved reasoning content, no final reply, failure and cancellation. Reload of a completed fixture rebuilt the same default-closed history and final answer with no new browser errors. The active command's computed animation duration was 2 seconds. Thinking/tool icon and text x coordinates matched exactly (0 px difference). Copy reported success for the final response.
 
@@ -42,7 +43,7 @@ The initial browser check exposed a pre-existing locale hydration mismatch (`pm`
 
 `pnpm test` was attempted but failed in the unchanged `@reasonateai/sandbox` Mastra adapter integration test: container `reasonate-sbx-66666666-6666-4666-8666-666666666666` was already owned by a parallel session. That run reported 25 passing sandbox tests, one collision failure and four skipped checkpoint tests before aborting the workspace gate. Other sessions' infrastructure was left untouched. A passing root test gate is not claimed.
 
-Clean CI with dedicated PostgreSQL/Redis/Docker and an authenticated API/private-worker browser journey remain acceptance prerequisites. Browser evidence here verifies rendering/replay of real component inputs, not a fresh model-driven authenticated run. These limits keep the feature in progress in `.context/PHASE.md`.
+Clean CI subsequently passed the complete root test gate with dedicated PostgreSQL/Redis/Docker, including the fixture that collided locally. An authenticated API/private-worker browser journey remains an acceptance prerequisite. Browser evidence here verifies rendering/replay of real component inputs, not a fresh model-driven authenticated run. This limit keeps the feature in progress in `.context/PHASE.md` and PR #38 in draft.
 
 ## Security, deployment and recovery
 
