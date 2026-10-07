@@ -17,8 +17,8 @@ export const VOICE_SPEECH_PATH = "/v1/voice/speech";
 /** Largest audio payload the transcription route accepts, in bytes (25 MiB). */
 export const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 
-/** Largest text payload the speech synthesis route accepts, in characters. */
-export const MAX_SPEECH_TEXT_LENGTH = 20_000;
+/** Largest text payload the speech synthesis route accepts, in characters (4,096 chars matching OpenAI /audio/speech standard). */
+export const MAX_SPEECH_TEXT_LENGTH = 4096;
 
 /** Refusal codes specific to voice endpoints. */
 export const VOICE_UNCONFIGURED_CODE = "voice_unconfigured";
@@ -44,8 +44,12 @@ export type SpeechAudioFormat = z.infer<typeof SpeechAudioFormatSchema>;
 export const SpeechRequestSchema = z.strictObject({
   format: SpeechAudioFormatSchema.optional(),
   speed: z.number().min(0.25).max(4.0).optional(),
-  text: z.string().min(1).max(MAX_SPEECH_TEXT_LENGTH),
-  voice: z.string().min(1).max(64).optional(),
+  text: z
+    .string()
+    .trim()
+    .min(1, "Text to synthesize cannot be empty.")
+    .max(MAX_SPEECH_TEXT_LENGTH),
+  voice: z.string().trim().min(1).max(64).optional(),
 });
 export type SpeechRequest = z.infer<typeof SpeechRequestSchema>;
 

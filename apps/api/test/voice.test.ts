@@ -22,6 +22,7 @@ import {
 import {
   createTtsAdapterFromEnv,
   DEFAULT_TTS_VOICE,
+  normalizeTtsUrl,
   OPENAI_COMPATIBLE_TTS_NAME,
   resolveTtsAdapter,
   TTS_UNCONFIGURED_MESSAGE,
@@ -575,6 +576,48 @@ describe("Text-to-speech TTS Adapter", () => {
     expect(adapter?.defaultVoice).toBe(DEFAULT_TTS_VOICE);
   });
 
+  it("normalizes base and endpoint URLs correctly", () => {
+    expect(normalizeTtsUrl("http://127.0.0.1:8880")).toBe(
+      "http://127.0.0.1:8880/v1/audio/speech"
+    );
+    expect(normalizeTtsUrl("http://127.0.0.1:8880/")).toBe(
+      "http://127.0.0.1:8880/v1/audio/speech"
+    );
+    expect(normalizeTtsUrl("http://127.0.0.1:8880/v1")).toBe(
+      "http://127.0.0.1:8880/v1/audio/speech"
+    );
+    expect(normalizeTtsUrl("http://127.0.0.1:8880/v1/")).toBe(
+      "http://127.0.0.1:8880/v1/audio/speech"
+    );
+    expect(normalizeTtsUrl("http://127.0.0.1:8880/v1/audio/speech")).toBe(
+      "http://127.0.0.1:8880/v1/audio/speech"
+    );
+    expect(normalizeTtsUrl("http://127.0.0.1:8880/v1/audio/speech/")).toBe(
+      "http://127.0.0.1:8880/v1/audio/speech"
+    );
+  });
+
+  it("normalizes base URL when REASONATE_TTS_URL is set without path", async () => {
+    const adapter = createTtsAdapterFromEnv({
+      REASONATE_TTS_URL: "http://127.0.0.1:8880",
+    });
+    expect(adapter).toBeDefined();
+
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(new Uint8Array([1, 2, 3]), {
+        headers: { "Content-Type": "audio/mpeg" },
+        status: 200,
+      })
+    );
+
+    await adapter?.synthesize({ text: "Hello from normalized base URL" });
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:8880/v1/audio/speech",
+      expect.anything()
+    );
+  });
+
   it("resolves adapter when TTS_URL fallback is set", () => {
     const adapter = createTtsAdapterFromEnv({
       TTS_URL: "http://127.0.0.1:8880/v1/audio/speech",
@@ -838,6 +881,74 @@ describe("Voice Speech Synthesis Route Handlers", () => {
     });
 
     const { body, contentType } = createJsonStream({ text: "" });
+    const ctx: VoiceHandlerContext = {
+      json: (payload, status) =>
+        new Response(JSON.stringify(payload), { status }),
+      req: {
+        header: (name) =>
+          name.toLowerCase() === "content-type" ? contentType : undefined,
+        query: (key) => resolveScopeQuery(key),
+        raw: { body },
+      },
+    };
+
+    const res = await handlers.speech(ctx);
+    expect(res.status).toBe(400);
+    const err = (await res.json()) as { error: { code: string } };
+    expect(err.error.code).toBe("invalid_request");
+  });
+
+  it("rejects whitespace-only speech text with 400 invalid_request", async () => {
+    const handlers = createVoiceHandlers({
+      asr: () => undefined,
+      resolvePrincipal: async () => createPrincipal(),
+      store: () => createMockStore(),
+      tts: () => ({
+        defaultVoice: "af_heart",
+        name: "test-tts",
+        synthesize: async () => ({
+          audio: new Uint8Array([]),
+          mediaType: "audio/mpeg",
+        }),
+      }),
+    });
+
+    const { body, contentType } = createJsonStream({ text: "   " });
+    const ctx: VoiceHandlerContext = {
+      json: (payload, status) =>
+        new Response(JSON.stringify(payload), { status }),
+      req: {
+        header: (name) =>
+          name.toLowerCase() === "content-type" ? contentType : undefined,
+        query: (key) => resolveScopeQuery(key),
+        raw: { body },
+      },
+    };
+
+    const res = await handlers.speech(ctx);
+    expect(res.status).toBe(400);
+    const err = (await res.json()) as { error: { code: string } };
+    expect(err.error.code).toBe("invalid_request");
+  });
+
+  it("rejects speech text exceeding 4096 characters with 400 invalid_request", async () => {
+    const handlers = createVoiceHandlers({
+      asr: () => undefined,
+      resolvePrincipal: async () => createPrincipal(),
+      store: () => createMockStore(),
+      tts: () => ({
+        defaultVoice: "af_heart",
+        name: "test-tts",
+        synthesize: async () => ({
+          audio: new Uint8Array([]),
+          mediaType: "audio/mpeg",
+        }),
+      }),
+    });
+
+    const { body, contentType } = createJsonStream({
+      text: "a".repeat(4097),
+    });
     const ctx: VoiceHandlerContext = {
       json: (payload, status) =>
         new Response(JSON.stringify(payload), { status }),

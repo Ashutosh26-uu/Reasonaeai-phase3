@@ -16,7 +16,7 @@ describe("Voice contracts", () => {
     expect(VOICE_SPEECH_PATH).toBe("/v1/voice/speech");
     expect(VOICE_UNCONFIGURED_CODE).toBe("voice_unconfigured");
     expect(MAX_AUDIO_BYTES).toBe(25 * 1024 * 1024);
-    expect(MAX_SPEECH_TEXT_LENGTH).toBe(20_000);
+    expect(MAX_SPEECH_TEXT_LENGTH).toBe(4096);
   });
 
   it("validates SpeechRequestSchema with valid payloads", () => {
@@ -42,8 +42,9 @@ describe("Voice contracts", () => {
   it("rejects invalid speech payloads", () => {
     expect(() => SpeechRequestSchema.parse({})).toThrow();
     expect(() => SpeechRequestSchema.parse({ text: "" })).toThrow();
+    expect(() => SpeechRequestSchema.parse({ text: "   " })).toThrow();
     expect(() =>
-      SpeechRequestSchema.parse({ text: "a".repeat(20_001) })
+      SpeechRequestSchema.parse({ text: "a".repeat(4097) })
     ).toThrow();
     expect(() =>
       SpeechRequestSchema.parse({

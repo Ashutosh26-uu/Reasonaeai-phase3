@@ -518,13 +518,28 @@ async function parseSpeechBody(
     };
   }
 
+  const declaredLength = Number(c.req.header("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > 1024 * 1024) {
+    return {
+      ok: false,
+      response: apiErrorResponse({
+        code: "invalid_request",
+        message: "The speech request body is too large.",
+        requestId: rid,
+      }),
+    };
+  }
+
   const upload = await readBoundedUpload(body, 1024 * 1024);
   if (!upload.ok) {
     return {
       ok: false,
       response: apiErrorResponse({
         code: "invalid_request",
-        message: "The request body could not be read.",
+        message:
+          upload.refusal === "too_large"
+            ? "The speech request body is too large."
+            : "The request body could not be read.",
         requestId: rid,
       }),
     };

@@ -17,6 +17,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { networkManager } from "@/lib/network-state";
 import styles from "./voice-mode.module.css";
 import { recordVoice } from "./voice-recording";
 
@@ -228,7 +229,17 @@ export function VoiceMode({
   );
 
   const playSynthesizedAudio = useCallback(
-    async (audioBlob: Blob, text: string) => {
+    async (audioBlob: Blob, currentOp: number) => {
+      if (activeAudioUrl.current) {
+        URL.revokeObjectURL(activeAudioUrl.current);
+        activeAudioUrl.current = null;
+      }
+      if (activeAudio.current) {
+        activeAudio.current.pause();
+        activeAudio.current.src = "";
+        activeAudio.current = null;
+      }
+
       const audioUrl = URL.createObjectURL(audioBlob);
       activeAudioUrl.current = audioUrl;
 
@@ -237,33 +248,31 @@ export function VoiceMode({
 
       const cleanup = () => {
         clearTimeout(speechTimer.current);
-        if (activeAudioUrl.current) {
-          URL.revokeObjectURL(activeAudioUrl.current);
+        if (activeAudioUrl.current === audioUrl) {
+          URL.revokeObjectURL(audioUrl);
           activeAudioUrl.current = null;
         }
-        activeAudio.current = null;
+        if (activeAudio.current === audio) {
+          activeAudio.current = null;
+        }
       };
 
       audio.onended = () => {
         cleanup();
-        if (mounted.current) {
+        if (mounted.current && speechGeneration.current === currentOp) {
           setSpeaking(false);
         }
       };
 
       audio.onerror = () => {
         cleanup();
-        if (!mounted.current) {
+        if (!mounted.current || speechGeneration.current !== currentOp) {
           return;
         }
         setSpeaking(false);
-        if (localVoice) {
-          speakWithDeviceVoice(text);
-        } else {
-          setAudioNotice(
-            "Could not play the spoken response. You can read it below."
-          );
-        }
+        setAudioNotice(
+          "Could not play the spoken response. You can read it below."
+        );
       };
 
       speechTimer.current = setTimeout(() => {
@@ -275,29 +284,54 @@ export function VoiceMode({
         }
       }, 120_000);
 
-      await audio.play();
+      try {
+        await audio.play();
+      } catch (err) {
+        cleanup();
+        if (mounted.current && speechGeneration.current === currentOp) {
+          setSpeaking(false);
+          setAudioNotice(
+            "Playback was prevented by the browser. Click to listen."
+          );
+        }
+        throw err;
+      }
     },
-    [cancelSpeech, localVoice, speakWithDeviceVoice]
+    [cancelSpeech]
   );
 
   const synthesizeAndPlay = useCallback(
-    async (text: string, currentOp: number): Promise<boolean> => {
+    async (
+      text: string,
+      currentOp: number
+    ): Promise<{ fallback: boolean; played: boolean }> => {
       const synthesizeFn = latest.current.onSynthesize;
       if (!synthesizeFn) {
-        return false;
+        return { fallback: true, played: false };
       }
       try {
         if (mounted.current) {
           setSpeaking(true);
         }
-        const audioBlob = await synthesizeFn(text);
+        const speechText = prepareSpeechText(text);
+        const audioBlob = await synthesizeFn(speechText);
         if (!mounted.current || speechGeneration.current !== currentOp) {
-          return true;
+          return { fallback: false, played: true };
         }
-        await playSynthesizedAudio(audioBlob, text);
-        return true;
-      } catch {
-        return false;
+        await playSynthesizedAudio(audioBlob, currentOp);
+        return { fallback: false, played: true };
+      } catch (cause) {
+        if (!mounted.current || speechGeneration.current !== currentOp) {
+          return { fallback: false, played: true };
+        }
+        setSpeaking(false);
+        const canFallback = isFallbackEligibleError(cause);
+        if (!canFallback) {
+          setAudioNotice(
+            describeVoiceError(cause, "Could not synthesize spoken response.")
+          );
+        }
+        return { fallback: canFallback, played: false };
       }
     },
     [playSynthesizedAudio]
@@ -312,24 +346,26 @@ export function VoiceMode({
       setAudioNotice("");
       const currentOp = speechGeneration.current;
 
-      const played = await synthesizeAndPlay(text, currentOp);
+      const result = await synthesizeAndPlay(text, currentOp);
       if (
-        played ||
+        result.played ||
         !mounted.current ||
         speechGeneration.current !== currentOp
       ) {
         return;
       }
 
-      if (localVoice) {
+      if (result.fallback && localVoice) {
         speakWithDeviceVoice(text);
         return;
       }
 
       setSpeaking(false);
-      setAudioNotice(
-        "Spoken responses are currently unavailable. You can read the response below."
-      );
+      if (result.fallback && !localVoice) {
+        setAudioNotice(
+          "Spoken responses are currently unavailable. You can read the response below."
+        );
+      }
     },
     [
       cancelSpeech,
@@ -769,4 +805,78 @@ function captureDescription(phase: CapturePhase, draft: string) {
 
 function describeVoiceError(cause: unknown, fallback: string) {
   return cause instanceof Error ? cause.message : fallback;
+}
+
+/**
+ * Truncates and prepares text for speech synthesis bounded to maxLength (4096).
+ * Preserves sentence boundaries where possible so speech sounds natural.
+ */
+export function prepareSpeechText(rawText: string, maxLength = 4096): string {
+  const trimmed = rawText.trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+  const truncated = trimmed.slice(0, maxLength);
+  const lastPeriod = Math.max(
+    truncated.lastIndexOf(". "),
+    truncated.lastIndexOf("! "),
+    truncated.lastIndexOf("? "),
+    truncated.lastIndexOf("\n")
+  );
+  if (lastPeriod > maxLength * 0.5) {
+    return truncated.slice(0, lastPeriod + 1).trim();
+  }
+  return truncated.trim();
+}
+
+/**
+ * Determines whether a speech synthesis failure is eligible for device voice fallback.
+ * Strictly permits fallback ONLY when TTS is unconfigured (503 / voice_unconfigured)
+ * or when the client is offline/disconnected. Explicitly rejects fallback on 401, 403, 400, or 500.
+ */
+export function isFallbackEligibleError(cause: unknown): boolean {
+  if (!cause) {
+    return false;
+  }
+  if (typeof cause === "object" && cause !== null) {
+    const errorObj = cause as {
+      code?: unknown;
+      message?: unknown;
+      status?: unknown;
+    };
+    if (errorObj.code === "voice_unconfigured" || errorObj.status === 503) {
+      return true;
+    }
+    if (
+      typeof errorObj.status === "number" &&
+      errorObj.status !== 0 &&
+      errorObj.status !== 503
+    ) {
+      return false;
+    }
+    if (
+      typeof errorObj.code === "string" &&
+      errorObj.code !== "voice_unconfigured"
+    ) {
+      return false;
+    }
+    if (
+      typeof errorObj.message === "string" &&
+      (errorObj.message.includes("voice_unconfigured") ||
+        errorObj.message.includes("not configured") ||
+        errorObj.message.includes("could not be reached"))
+    ) {
+      return true;
+    }
+  }
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return true;
+  }
+  if (!networkManager.getState().isOnline) {
+    return true;
+  }
+  if (cause instanceof TypeError) {
+    return true;
+  }
+  return false;
 }

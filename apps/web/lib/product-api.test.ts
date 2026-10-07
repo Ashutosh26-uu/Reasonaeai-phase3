@@ -172,6 +172,27 @@ describe("authenticated product requests", () => {
       });
     });
 
+    it("ensures plain 503 response without JSON error still gets voice_unconfigured code", async () => {
+      vi.stubGlobal("document", { cookie: `${CSRF_COOKIE}=speech-csrf` });
+      const transport = vi
+        .fn()
+        .mockResolvedValue(
+          new Response("Service Unavailable", { status: 503 })
+        );
+      vi.stubGlobal("fetch", transport);
+
+      await expect(
+        synthesizeSpeech({
+          organizationId: "org-1",
+          projectId: "proj-1",
+          text: "Test plain 503",
+        })
+      ).rejects.toMatchObject({
+        code: "voice_unconfigured",
+        status: 503,
+      });
+    });
+
     it("throws a user-readable error on network disconnect", async () => {
       vi.stubGlobal("document", { cookie: `${CSRF_COOKIE}=speech-csrf` });
       vi.stubGlobal(

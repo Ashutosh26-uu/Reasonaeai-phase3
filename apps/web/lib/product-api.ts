@@ -216,18 +216,23 @@ export async function synthesizeSpeech(
 
     const parsedError = extractApiError(refusalBody);
     if (parsedError) {
+      let errorCode = parsedError.code;
+      if (!errorCode && response.status === 503) {
+        errorCode = "voice_unconfigured";
+      }
       throw new ApiRequestError(
         response.status,
         parsedError.message,
         requestId,
-        parsedError.code ? { code: parsedError.code } : undefined
+        errorCode ? { code: errorCode } : undefined
       );
     }
 
     throw new ApiRequestError(
       response.status,
       `Speech synthesis failed (${response.status}).`,
-      requestId
+      requestId,
+      response.status === 503 ? { code: "voice_unconfigured" } : undefined
     );
   }
 

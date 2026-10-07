@@ -117,6 +117,25 @@ const MEDIA_TYPE_BY_FORMAT: Readonly<Record<string, string>> = {
   wav: "audio/wav",
 };
 
+const TRAILING_SLASHES_REGEX = /\/+$/;
+
+/**
+ * Normalizes an OpenAI-compatible speech endpoint URL.
+ * Accepts full endpoint URLs (e.g. `http://localhost:8880/v1/audio/speech`),
+ * prefix URLs (`http://localhost:8880/v1`), or base service URLs (`http://localhost:8880`),
+ * with or without trailing slashes.
+ */
+export function normalizeTtsUrl(rawUrl: string): string {
+  const trimmed = rawUrl.trim().replace(TRAILING_SLASHES_REGEX, "");
+  if (trimmed.endsWith("/audio/speech")) {
+    return trimmed;
+  }
+  if (trimmed.endsWith("/v1")) {
+    return `${trimmed}/audio/speech`;
+  }
+  return `${trimmed}/v1/audio/speech`;
+}
+
 /**
  * Adapter for OpenAI-compatible `/v1/audio/speech` endpoints (such as Kokoro-FastAPI).
  */
@@ -129,7 +148,7 @@ export class OpenAiCompatibleTtsAdapter implements TtsAdapter {
   private readonly url: string;
 
   constructor(options: OpenAiCompatibleTtsOptions) {
-    this.url = options.url;
+    this.url = normalizeTtsUrl(options.url);
     this.apiKey = options.apiKey;
     this.defaultVoice = options.defaultVoice ?? DEFAULT_TTS_VOICE;
     this.model = options.model ?? DEFAULT_TTS_MODEL;
