@@ -21,18 +21,39 @@ function csrfToken(): string | undefined {
 export class ApiRequestError extends Error {
   readonly status: number;
   readonly requestId: string | undefined;
+  readonly code: string | undefined;
 
   constructor(
     status: number,
     message: string,
     requestId?: string,
-    options?: ErrorOptions
+    options?: ErrorOptions & { code?: string | undefined }
   ) {
     super(message, options);
     this.name = "ApiRequestError";
     this.status = status;
     this.requestId = requestId;
+    this.code = options?.code;
   }
+}
+
+function extractApiError(
+  body: unknown
+): { code?: string | undefined; message: string } | undefined {
+  if (typeof body === "object" && body !== null && "error" in body) {
+    const { error } = body as {
+      error?: { code?: unknown; message?: unknown };
+    };
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      typeof error.message === "string"
+    ) {
+      const code = typeof error.code === "string" ? error.code : undefined;
+      return { code, message: error.message };
+    }
+  }
+  return undefined;
 }
 
 export async function request<T>(
@@ -95,20 +116,19 @@ export async function request<T>(
   }
   if (!response.ok) {
     diagnose(response.status, "api_refusal");
-    if (typeof body === "object" && body !== null && "error" in body) {
-      const { error } = body;
-      if (
-        typeof error === "object" &&
-        error !== null &&
-        "message" in error &&
-        typeof error.message === "string"
-      ) {
-        throw new ApiRequestError(response.status, error.message);
-      }
+    const parsedError = extractApiError(body);
+    if (parsedError) {
+      throw new ApiRequestError(
+        response.status,
+        parsedError.message,
+        undefined,
+        parsedError.code ? { code: parsedError.code } : undefined
+      );
     }
     throw new ApiRequestError(
       response.status,
-      `Request failed (${response.status}).`
+      `Request failed (${response.status}).`,
+      requestId
     );
   }
   return parse(body);
@@ -120,4 +140,101 @@ export const scopeQuery = (organizationId: string, projectId: string) =>
 
 export function describeError(cause: unknown, fallback: string): string {
   return cause instanceof Error ? cause.message : fallback;
+}
+
+export interface SynthesizeSpeechInput {
+  format?: string;
+  organizationId: string;
+  projectId: string;
+  speed?: number;
+  text: string;
+  voice?: string;
+}
+
+/**
+ * Requests speech synthesis for a text string, returning an audio Blob.
+ */
+export async function synthesizeSpeech(
+  input: SynthesizeSpeechInput
+): Promise<Blob> {
+  const csrf = csrfToken();
+  const requestId = crypto.randomUUID();
+  const path = `/v1/voice/speech?${scopeQuery(input.organizationId, input.projectId)}`;
+
+  const diagnose = (status: number, reason: string) =>
+    console.warn(
+      JSON.stringify({
+        event: "product.speech.failed",
+        path: "/v1/voice/speech",
+        reason,
+        requestId,
+        status,
+      })
+    );
+
+  const payload: Record<string, unknown> = {
+    text: input.text,
+  };
+  if (input.voice !== undefined) {
+    payload.voice = input.voice;
+  }
+  if (input.format !== undefined) {
+    payload.format = input.format;
+  }
+  if (input.speed !== undefined) {
+    payload.speed = input.speed;
+  }
+
+  const response = await fetch(path, {
+    body: JSON.stringify(payload),
+    credentials: "same-origin",
+    headers: {
+      "content-type": "application/json",
+      "x-request-id": requestId,
+      ...(csrf ? { [CSRF_HEADER]: csrf } : {}),
+    },
+    method: "POST",
+  }).catch((cause: unknown) => {
+    diagnose(0, "network_or_timeout");
+    networkManager.notifyNetworkFailure();
+    throw new Error(
+      "The speech synthesis service could not be reached. Retry when the connection returns.",
+      { cause }
+    );
+  });
+
+  networkManager.notifyNetworkSuccess();
+
+  if (!response.ok) {
+    diagnose(response.status, "speech_refusal");
+    let refusalBody: unknown;
+    try {
+      refusalBody = await response.json();
+    } catch {
+      // Body not JSON
+    }
+
+    const parsedError = extractApiError(refusalBody);
+    if (parsedError) {
+      let errorCode = parsedError.code;
+      if (!errorCode && response.status === 503) {
+        errorCode = "voice_unconfigured";
+      }
+      throw new ApiRequestError(
+        response.status,
+        parsedError.message,
+        requestId,
+        errorCode ? { code: errorCode } : undefined
+      );
+    }
+
+    throw new ApiRequestError(
+      response.status,
+      `Speech synthesis failed (${response.status}).`,
+      requestId,
+      response.status === 503 ? { code: "voice_unconfigured" } : undefined
+    );
+  }
+
+  return await response.blob();
 }
