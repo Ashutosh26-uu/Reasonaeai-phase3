@@ -10,9 +10,9 @@ function displayNameFor(name: string): string {
 
 export interface WorkerOverride {
   /** Optional hard step cap. Omitted means no cap. */
-  maxTurns?: number;
-  model?: string;
-  tools?: AgentControllerSubagent["tools"];
+  maxTurns?: number | undefined;
+  model?: string | undefined;
+  tools?: AgentControllerSubagent["tools"] | undefined;
 }
 
 export type WorkerOverrides = Record<string, WorkerOverride | undefined>;

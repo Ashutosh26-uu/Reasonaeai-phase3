@@ -77,6 +77,18 @@
       "types": "./src/tools/read-snapshots.ts",
       "import": "./dist/tools/read-snapshots.js"
     },
+    "./tools/browser-verification": {
+      "types": "./src/tools/browser-verification.ts",
+      "import": "./dist/tools/browser-verification.js"
+    },
+    "./tools/browser-driver": {
+      "types": "./src/tools/browser-driver.ts",
+      "import": "./dist/tools/browser-driver.js"
+    },
+    "./tools/browser-guard": {
+      "types": "./src/tools/browser-guard.ts",
+      "import": "./dist/tools/browser-guard.js"
+    },
     "./context/compose": "./src/context/compose.ts",
     "./context/environment": "./src/context/environment.ts",
     "./context/instructions": "./src/context/instructions.ts",
