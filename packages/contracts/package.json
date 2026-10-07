@@ -43,6 +43,14 @@
     "./repair": {
       "types": "./src/repair.ts",
       "import": "./dist/repair.js"
+    },
+    "./browser": {
+      "types": "./src/browser.ts",
+      "import": "./dist/browser.js"
+    },
+    "./voice": {
+      "types": "./src/voice.ts",
+      "import": "./dist/voice.js"
     }
   },
   "scripts": {

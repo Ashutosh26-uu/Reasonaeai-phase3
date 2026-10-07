@@ -1,7 +1,7 @@
 import { CSRF_COOKIE, CSRF_HEADER } from "@reasonateai/contracts/auth";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { networkManager } from "./network-state";
-import { ApiRequestError, request } from "./product-api";
+import { ApiRequestError, request, synthesizeSpeech } from "./product-api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -133,5 +133,115 @@ describe("authenticated product requests", () => {
     } finally {
       report.mockRestore();
     }
+  });
+
+  describe("synthesizeSpeech", () => {
+    it("posts JSON with CSRF token and returns an audio Blob on success", async () => {
+      vi.stubGlobal("document", { cookie: `${CSRF_COOKIE}=speech-csrf` });
+      const mockAudioBlob = new Blob(["mock-audio-data"], {
+        type: "audio/mpeg",
+      });
+      const transport = vi.fn().mockResolvedValue(
+        new Response(mockAudioBlob, {
+          headers: { "content-type": "audio/mpeg" },
+          status: 200,
+        })
+      );
+      vi.stubGlobal("fetch", transport);
+
+      const blob = await synthesizeSpeech({
+        format: "mp3",
+        organizationId: "org-123",
+        projectId: "proj-456",
+        speed: 1.0,
+        text: "ReasonateAI synthesized speech test.",
+        voice: "af_heart",
+      });
+
+      expect(blob).toBeInstanceOf(Blob);
+      expect(blob.size).toBe(mockAudioBlob.size);
+      expect(transport).toHaveBeenCalledTimes(1);
+      const [calledUrl, calledOptions] = transport.mock.calls[0] as [
+        string,
+        RequestInit & { headers: Record<string, string> },
+      ];
+      expect(calledUrl).toBe(
+        "/v1/voice/speech?organizationId=org-123&projectId=proj-456"
+      );
+      expect(calledOptions.credentials).toBe("same-origin");
+      expect(calledOptions.headers["content-type"]).toBe("application/json");
+      expect(calledOptions.headers[CSRF_HEADER]).toBe("speech-csrf");
+      expect(JSON.parse(calledOptions.body as string)).toEqual({
+        format: "mp3",
+        speed: 1.0,
+        text: "ReasonateAI synthesized speech test.",
+        voice: "af_heart",
+      });
+    });
+
+    it("throws ApiRequestError when speech synthesis is unconfigured (503)", async () => {
+      vi.stubGlobal("document", { cookie: `${CSRF_COOKIE}=speech-csrf` });
+      const transport = vi.fn().mockResolvedValue(
+        Response.json(
+          {
+            error: {
+              code: "voice_unconfigured",
+              message: "Text-to-speech is not configured for this deployment.",
+            },
+          },
+          { status: 503 }
+        )
+      );
+      vi.stubGlobal("fetch", transport);
+
+      await expect(
+        synthesizeSpeech({
+          organizationId: "org-1",
+          projectId: "proj-1",
+          text: "Test synthesis unconfigured",
+        })
+      ).rejects.toMatchObject({
+        code: "voice_unconfigured",
+        message: "Text-to-speech is not configured for this deployment.",
+        status: 503,
+      });
+    });
+
+    it("ensures plain 503 response without JSON error still gets voice_unconfigured code", async () => {
+      vi.stubGlobal("document", { cookie: `${CSRF_COOKIE}=speech-csrf` });
+      const transport = vi
+        .fn()
+        .mockResolvedValue(
+          new Response("Service Unavailable", { status: 503 })
+        );
+      vi.stubGlobal("fetch", transport);
+
+      await expect(
+        synthesizeSpeech({
+          organizationId: "org-1",
+          projectId: "proj-1",
+          text: "Test plain 503",
+        })
+      ).rejects.toMatchObject({
+        code: "voice_unconfigured",
+        status: 503,
+      });
+    });
+
+    it("throws a user-readable error on network disconnect", async () => {
+      vi.stubGlobal("document", { cookie: `${CSRF_COOKIE}=speech-csrf` });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockRejectedValue(new TypeError("Failed to fetch"))
+      );
+
+      await expect(
+        synthesizeSpeech({
+          organizationId: "org-1",
+          projectId: "proj-1",
+          text: "Test synthesis network failure",
+        })
+      ).rejects.toThrow("The speech synthesis service could not be reached");
+    });
   });
 });

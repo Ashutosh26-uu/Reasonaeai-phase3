@@ -17,6 +17,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { networkManager } from "@/lib/network-state";
 import styles from "./voice-mode.module.css";
 import { recordVoice } from "./voice-recording";
 
@@ -26,6 +27,7 @@ export interface VoiceModeProps {
   onClose: () => void;
   onStop: () => void;
   onSubmit: (message: string) => Promise<boolean>;
+  onSynthesize?: ((text: string) => Promise<Blob>) | undefined;
   onTranscribe: (audio: Blob) => Promise<string>;
   projectName: string;
   question?: ReactNode;
@@ -70,6 +72,7 @@ export function VoiceMode({
   onClose,
   onStop,
   onSubmit,
+  onSynthesize,
   onTranscribe,
   projectName,
   question,
@@ -87,6 +90,9 @@ export function VoiceMode({
   const [audioNotice, setAudioNotice] = useState("");
   const mounted = useRef<boolean>(false);
   const generation = useRef(0);
+  const speechGeneration = useRef(0);
+  const activeAudio = useRef<HTMLAudioElement | null>(null);
+  const activeAudioUrl = useRef<string | null>(null);
   const capture = useRef<AbortController | null>(null);
   const finishCapture = useRef<(() => void) | null>(null);
   const speechTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
@@ -97,8 +103,14 @@ export function VoiceMode({
   const lastResponseId = useRef(response?.id ?? null);
   const backButton = useRef<HTMLButtonElement>(null);
   const blocked = disabled || Boolean(question);
-  const latest = useRef({ blocked, busy, onSubmit, onTranscribe });
-  latest.current = { blocked, busy, onSubmit, onTranscribe };
+  const latest = useRef({
+    blocked,
+    busy,
+    onSubmit,
+    onSynthesize,
+    onTranscribe,
+  });
+  latest.current = { blocked, busy, onSubmit, onSynthesize, onTranscribe };
 
   const isCurrent = useCallback(
     (operation: number) => mounted.current && operation === generation.current,
@@ -106,7 +118,17 @@ export function VoiceMode({
   );
 
   const cancelSpeech = useCallback(() => {
+    speechGeneration.current += 1;
     clearTimeout(speechTimer.current);
+    if (activeAudio.current) {
+      activeAudio.current.pause();
+      activeAudio.current.src = "";
+      activeAudio.current = null;
+    }
+    if (activeAudioUrl.current) {
+      URL.revokeObjectURL(activeAudioUrl.current);
+      activeAudioUrl.current = null;
+    }
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
@@ -159,7 +181,7 @@ export function VoiceMode({
     };
   }, [cancelCapture, cancelSpeech]);
 
-  const speak = useCallback(
+  const speakWithDeviceVoice = useCallback(
     (text: string) => {
       if (!localVoice) {
         return;
@@ -204,6 +226,154 @@ export function VoiceMode({
       }, 120_000);
     },
     [cancelSpeech, localVoice]
+  );
+
+  const playSynthesizedAudio = useCallback(
+    async (audioBlob: Blob, currentOp: number) => {
+      if (activeAudioUrl.current) {
+        URL.revokeObjectURL(activeAudioUrl.current);
+        activeAudioUrl.current = null;
+      }
+      if (activeAudio.current) {
+        activeAudio.current.pause();
+        activeAudio.current.src = "";
+        activeAudio.current = null;
+      }
+
+      const audioUrl = URL.createObjectURL(audioBlob);
+      activeAudioUrl.current = audioUrl;
+
+      const audio = new Audio(audioUrl);
+      activeAudio.current = audio;
+
+      const cleanup = () => {
+        clearTimeout(speechTimer.current);
+        if (activeAudioUrl.current === audioUrl) {
+          URL.revokeObjectURL(audioUrl);
+          activeAudioUrl.current = null;
+        }
+        if (activeAudio.current === audio) {
+          activeAudio.current = null;
+        }
+      };
+
+      audio.onended = () => {
+        cleanup();
+        if (mounted.current && speechGeneration.current === currentOp) {
+          setSpeaking(false);
+        }
+      };
+
+      audio.onerror = () => {
+        cleanup();
+        if (!mounted.current || speechGeneration.current !== currentOp) {
+          return;
+        }
+        setSpeaking(false);
+        setAudioNotice(
+          "Could not play the spoken response. You can read it below."
+        );
+      };
+
+      speechTimer.current = setTimeout(() => {
+        cancelSpeech();
+        if (mounted.current) {
+          setAudioNotice(
+            "Reading paused after two minutes. The full response is below."
+          );
+        }
+      }, 120_000);
+
+      try {
+        await audio.play();
+      } catch (err) {
+        cleanup();
+        if (mounted.current && speechGeneration.current === currentOp) {
+          setSpeaking(false);
+          setAudioNotice(
+            "Playback was prevented by the browser. Click to listen."
+          );
+        }
+        throw err;
+      }
+    },
+    [cancelSpeech]
+  );
+
+  const synthesizeAndPlay = useCallback(
+    async (
+      text: string,
+      currentOp: number
+    ): Promise<{ fallback: boolean; played: boolean }> => {
+      const synthesizeFn = latest.current.onSynthesize;
+      if (!synthesizeFn) {
+        return { fallback: true, played: false };
+      }
+      try {
+        if (mounted.current) {
+          setSpeaking(true);
+        }
+        const speechText = prepareSpeechText(text);
+        const audioBlob = await synthesizeFn(speechText);
+        if (!mounted.current || speechGeneration.current !== currentOp) {
+          return { fallback: false, played: true };
+        }
+        await playSynthesizedAudio(audioBlob, currentOp);
+        return { fallback: false, played: true };
+      } catch (cause) {
+        if (!mounted.current || speechGeneration.current !== currentOp) {
+          return { fallback: false, played: true };
+        }
+        setSpeaking(false);
+        const canFallback = isFallbackEligibleError(cause);
+        if (!canFallback) {
+          setAudioNotice(
+            describeVoiceError(cause, "Could not synthesize spoken response.")
+          );
+        }
+        return { fallback: canFallback, played: false };
+      }
+    },
+    [playSynthesizedAudio]
+  );
+
+  const speak = useCallback(
+    async (text: string) => {
+      if (!readAloud) {
+        return;
+      }
+      cancelSpeech();
+      setAudioNotice("");
+      const currentOp = speechGeneration.current;
+
+      const result = await synthesizeAndPlay(text, currentOp);
+      if (
+        result.played ||
+        !mounted.current ||
+        speechGeneration.current !== currentOp
+      ) {
+        return;
+      }
+
+      if (result.fallback && localVoice) {
+        speakWithDeviceVoice(text);
+        return;
+      }
+
+      setSpeaking(false);
+      if (result.fallback && !localVoice) {
+        setAudioNotice(
+          "Spoken responses are currently unavailable. You can read the response below."
+        );
+      }
+    },
+    [
+      cancelSpeech,
+      localVoice,
+      readAloud,
+      speakWithDeviceVoice,
+      synthesizeAndPlay,
+    ]
   );
 
   useEffect(() => {
@@ -387,11 +557,11 @@ export function VoiceMode({
           }
           aria-pressed={readAloud}
           className={styles.audioToggle}
-          disabled={!localVoice}
+          disabled={!(localVoice || onSynthesize)}
           onClick={toggleAudio}
           type="button"
         >
-          {readAloud && localVoice ? (
+          {readAloud && (localVoice || onSynthesize) ? (
             <Volume2 aria-hidden="true" size={18} />
           ) : (
             <VolumeX aria-hidden="true" size={18} />
@@ -447,7 +617,7 @@ export function VoiceMode({
         <VoiceResponse
           activeCapture={activeCapture}
           cancelSpeech={cancelSpeech}
-          hasLocalVoice={Boolean(localVoice)}
+          hasVoiceCapability={Boolean(localVoice || onSynthesize)}
           replay={replay}
           response={response}
           sentText={sentText}
@@ -463,6 +633,7 @@ export function VoiceMode({
         draft={draft}
         finish={finish}
         hasLocalVoice={Boolean(localVoice)}
+        hasSynthesizer={Boolean(onSynthesize)}
         onStop={stopRun}
         phase={phase}
         start={start}
@@ -474,7 +645,7 @@ export function VoiceMode({
 function VoiceResponse({
   activeCapture,
   cancelSpeech,
-  hasLocalVoice,
+  hasVoiceCapability,
   replay,
   response,
   sentText,
@@ -482,7 +653,7 @@ function VoiceResponse({
 }: {
   activeCapture: boolean;
   cancelSpeech: () => void;
-  hasLocalVoice: boolean;
+  hasVoiceCapability: boolean;
   replay: () => void;
   response: VoiceModeProps["response"];
   sentText: string;
@@ -500,7 +671,7 @@ function VoiceResponse({
         <div className={styles.response}>
           <div className={styles.responseHeader}>
             <span>Your CTO</span>
-            {hasLocalVoice && (
+            {hasVoiceCapability && (
               <button
                 aria-label={
                   speaking ? "Stop spoken response" : "Read response aloud"
@@ -533,6 +704,7 @@ function VoiceControls({
   draft,
   finish,
   hasLocalVoice,
+  hasSynthesizer,
   onStop,
   phase,
   start,
@@ -545,6 +717,7 @@ function VoiceControls({
   draft: string;
   finish: () => void;
   hasLocalVoice: boolean;
+  hasSynthesizer?: boolean;
   onStop: () => void;
   phase: CapturePhase;
   start: () => void;
@@ -591,12 +764,23 @@ function VoiceControls({
         )}
       </div>
       <p className={styles.audioNote}>
-        {hasLocalVoice
-          ? "Responses use a voice on your device."
-          : "A device voice is unavailable. Responses appear here as text."}
+        {getAudioNote(hasSynthesizer, hasLocalVoice)}
       </p>
     </footer>
   );
+}
+
+function getAudioNote(
+  hasSynthesizer: boolean | undefined,
+  hasLocalVoice: boolean | undefined
+): string {
+  if (hasSynthesizer) {
+    return "Responses are spoken aloud.";
+  }
+  if (hasLocalVoice) {
+    return "Responses use a voice on your device.";
+  }
+  return "A device voice is unavailable. Responses appear here as text.";
 }
 
 function getVisualState(phase: CapturePhase, busy: boolean, speaking: boolean) {
@@ -621,4 +805,78 @@ function captureDescription(phase: CapturePhase, draft: string) {
 
 function describeVoiceError(cause: unknown, fallback: string) {
   return cause instanceof Error ? cause.message : fallback;
+}
+
+/**
+ * Truncates and prepares text for speech synthesis bounded to maxLength (4096).
+ * Preserves sentence boundaries where possible so speech sounds natural.
+ */
+export function prepareSpeechText(rawText: string, maxLength = 4096): string {
+  const trimmed = rawText.trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+  const truncated = trimmed.slice(0, maxLength);
+  const lastPeriod = Math.max(
+    truncated.lastIndexOf(". "),
+    truncated.lastIndexOf("! "),
+    truncated.lastIndexOf("? "),
+    truncated.lastIndexOf("\n")
+  );
+  if (lastPeriod > maxLength * 0.5) {
+    return truncated.slice(0, lastPeriod + 1).trim();
+  }
+  return truncated.trim();
+}
+
+/**
+ * Determines whether a speech synthesis failure is eligible for device voice fallback.
+ * Strictly permits fallback ONLY when TTS is unconfigured (503 / voice_unconfigured)
+ * or when the client is offline/disconnected. Explicitly rejects fallback on 401, 403, 400, or 500.
+ */
+export function isFallbackEligibleError(cause: unknown): boolean {
+  if (!cause) {
+    return false;
+  }
+  if (typeof cause === "object" && cause !== null) {
+    const errorObj = cause as {
+      code?: unknown;
+      message?: unknown;
+      status?: unknown;
+    };
+    if (errorObj.code === "voice_unconfigured" || errorObj.status === 503) {
+      return true;
+    }
+    if (
+      typeof errorObj.status === "number" &&
+      errorObj.status !== 0 &&
+      errorObj.status !== 503
+    ) {
+      return false;
+    }
+    if (
+      typeof errorObj.code === "string" &&
+      errorObj.code !== "voice_unconfigured"
+    ) {
+      return false;
+    }
+    if (
+      typeof errorObj.message === "string" &&
+      (errorObj.message.includes("voice_unconfigured") ||
+        errorObj.message.includes("not configured") ||
+        errorObj.message.includes("could not be reached"))
+    ) {
+      return true;
+    }
+  }
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return true;
+  }
+  if (!networkManager.getState().isOnline) {
+    return true;
+  }
+  if (cause instanceof TypeError) {
+    return true;
+  }
+  return false;
 }

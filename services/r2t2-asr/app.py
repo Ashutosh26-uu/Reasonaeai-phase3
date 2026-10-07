@@ -92,7 +92,7 @@ def _env_float(name: str, default: float) -> float:
 
 @dataclass(frozen=True)
 class Config:
-    model_path: str
+    model_path: Optional[str]
     port: int
     max_upload_bytes: int
     request_timeout_sec: float
@@ -112,23 +112,26 @@ class Config:
 
     @property
     def model_id(self) -> str:
-        return self.gguf_dir if self.infer_mode == "llama" else self.model_path
+        return (self.gguf_dir or "") if self.infer_mode == "llama" else (self.model_path or "")
 
 
 def _load_config() -> Config:
     model_path = _env("ASR_MODEL_PATH")
-    infer_mode = (_env("ASR_INFER_MODE", "vllm") or "vllm").lower()
+    infer_mode = (_env("ASR_INFER_MODE", "llama") or "llama").lower()
     gguf_dir = _env("ASR_GGUF_DIR")
     if infer_mode == "llama":
         if not gguf_dir:
-            # Fail fast: run this check at import time so uvicorn refuses to
-            # boot with an obviously broken configuration instead of failing
-            # per-request.
-            raise RuntimeError(
-                "ASR_GGUF_DIR is required when ASR_INFER_MODE=llama: a "
-                "directory holding one model *.gguf and one mmproj*.gguf "
-                "projector from the Confucius4-R2T2-GGUF repository."
-            )
+            if os.path.isdir("/models/gguf"):
+                gguf_dir = "/models/gguf"
+            else:
+                # Fail fast: run this check at import time so uvicorn refuses to
+                # boot with an obviously broken configuration instead of failing
+                # per-request.
+                raise RuntimeError(
+                    "ASR_GGUF_DIR is required when ASR_INFER_MODE=llama: a "
+                    "directory holding one model *.gguf and one mmproj*.gguf "
+                    "projector from the Confucius4-R2T2-GGUF repository."
+                )
     elif not model_path:
         # Fail fast: run this check at import time so uvicorn refuses to boot
         # with an obviously broken configuration instead of failing per-request.

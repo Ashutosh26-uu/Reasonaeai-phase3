@@ -21,6 +21,7 @@ import {
 } from "@reasonateai/project-state/postgres";
 import { resolveAsrAdapter } from "./adapters/asr";
 import { createMagicLinkSender } from "./adapters/magic-link-sender";
+import { createTtsAdapterFromEnv } from "./adapters/tts";
 import { createCsrfMiddleware } from "./middleware";
 import { frontierModel } from "./model";
 import { startOutboxRelay } from "./outbox-relay";
@@ -78,7 +79,11 @@ import {
   createRunSteeringHandlers,
   RUN_STEERING_PATH,
 } from "./routes/steering";
-import { createVoiceHandlers, VOICE_TRANSCRIPTION_PATH } from "./routes/voice";
+import {
+  createVoiceHandlers,
+  VOICE_SPEECH_PATH,
+  VOICE_TRANSCRIPTION_PATH,
+} from "./routes/voice";
 import {
   createWorkspaceHandlers,
   WORKSPACE_CHECKPOINT_DIFF_PATH,
@@ -332,6 +337,7 @@ const voiceHandlers = createVoiceHandlers({
   asr: () => resolveAsrAdapter(process.env),
   resolvePrincipal: resolvePrincipalFrom,
   store: stateStore,
+  tts: () => createTtsAdapterFromEnv(process.env),
 });
 
 const artifactHandlers = createArtifactHandlers({
@@ -356,6 +362,7 @@ const storage = new MastraCompositeStore({
 
 export const reasonateCtoRuntime = createReasonateCtoRuntime({
   ...buildSandboxEnvironment,
+  enableBrowserVerification: true,
   enableTestRunner: true,
   model: frontierModel,
   registerPreview: async ({ appPort, ...scope }) => {
@@ -613,6 +620,16 @@ export const mastra = new Mastra({
           description:
             "Transcribes one recorded message through the deployment's configured speech-to-text adapter. A deployment with no adapter answers with a typed refusal that names what is missing.",
           summary: "Transcribe a recorded message",
+          tags: ["Voice"],
+        },
+      }),
+      registerApiRoute(VOICE_SPEECH_PATH, {
+        handler: (c) => voiceHandlers.synthesize(c),
+        method: "POST",
+        openapi: {
+          description:
+            "Synthesizes spoken audio from text through the deployment's configured text-to-speech adapter. A deployment with no adapter answers with a typed refusal that names what is missing.",
+          summary: "Synthesize speech from text",
           tags: ["Voice"],
         },
       }),

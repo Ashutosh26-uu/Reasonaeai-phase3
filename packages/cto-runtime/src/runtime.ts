@@ -10,6 +10,7 @@ import type { Workspace, WorkspaceFilesystem } from "@mastra/core/workspace";
 import { Memory } from "@mastra/memory";
 import {
   materializeDelegatableSubagents,
+  type WorkerOverride,
   type WorkerOverrides,
 } from "./agents/materialize.js";
 import {
@@ -32,6 +33,10 @@ import {
 } from "./resources/handlers/index.js";
 import type { RunScope } from "./run-scope.js";
 import { readRunScope, sandboxIdFor } from "./run-scope.js";
+import {
+  type BrowserToolOptions,
+  createBrowserVerificationTool,
+} from "./tools/browser-verification.js";
 import { createWorkspaceEditTool } from "./tools/edit.js";
 import { createOpenPreviewTool } from "./tools/open-preview.js";
 import { ReadSnapshotStore } from "./tools/read-snapshots.js";
@@ -86,6 +91,7 @@ export interface CtoSubagentModels {
 
 export interface ReasonateCtoRuntimeConfig {
   browser?: MastraBrowser;
+  browserVerification?: BrowserToolOptions | undefined;
   /**
    * Consumption ceilings every agent loop this runtime drives stops on. Omitted
    * means no budget and no stop condition, exactly as an unbudgeted runtime has
@@ -99,6 +105,7 @@ export interface ReasonateCtoRuntimeConfig {
    */
   capacity?: SandboxCapacity | undefined;
   controllerId?: string;
+  enableBrowserVerification?: boolean | undefined;
   enableTestRunner?: boolean | undefined;
   limits?: Partial<CtoRuntimeLimits>;
   memory?: Memory;
@@ -219,8 +226,15 @@ function createRuntimeTools(
         : { root: config.workspaceRoot }),
     }),
   };
+  const isBrowserVerificationEnabled =
+    Boolean(config.enableBrowserVerification) ||
+    config.browserVerification !== undefined;
+  const browserVerificationTool = isBrowserVerificationEnabled
+    ? createBrowserVerificationTool(config.browserVerification ?? {})
+    : undefined;
   const submitPlanTool = createSubmitPlanTool();
   return {
+    browserVerificationTool,
     fileTools,
     submitPlanTool,
     testExecutionTool,
@@ -243,6 +257,9 @@ function createRuntimeTools(
         root: config.workspaceRoot ?? "/workspace",
       }),
       submit_plan: submitPlanTool,
+      ...(browserVerificationTool
+        ? { browser_verify: browserVerificationTool }
+        : {}),
       ...(config.enableTestRunner ? { test_execution: testExecutionTool } : {}),
     },
   };
@@ -251,7 +268,8 @@ function createRuntimeTools(
 function resolveWorkerOverrides(
   config: ReasonateCtoRuntimeConfig,
   limits: CtoRuntimeLimits,
-  testExecutionTool?: ReturnType<typeof createTestExecutionTool>
+  testExecutionTool?: ReturnType<typeof createTestExecutionTool>,
+  browserVerificationTool?: ReturnType<typeof createBrowserVerificationTool>
 ): WorkerOverrides {
   const workers = [
     ["coder", limits.workerMaxSteps],
@@ -259,23 +277,23 @@ function resolveWorkerOverrides(
     ["reviewer", limits.reviewerMaxSteps],
     ["scout", limits.scoutMaxSteps],
   ] as const;
-  return Object.fromEntries(
-    workers.map(([name, maxTurns]) => {
-      const model = config.subagentModels?.[name];
-      const tools =
-        name === "debugger" && config.enableTestRunner && testExecutionTool
-          ? { test_execution: testExecutionTool }
-          : undefined;
-      return [
-        name,
-        {
-          ...(model ? { model } : {}),
-          ...(maxTurns === undefined ? {} : { maxTurns }),
-          ...(tools ? { tools } : {}),
-        },
-      ];
-    })
-  );
+  const overrides: WorkerOverrides = {};
+  for (const [name, maxTurns] of workers) {
+    const model = config.subagentModels?.[name];
+    const tools: NonNullable<WorkerOverride["tools"]> = {};
+    if (name === "debugger" && config.enableTestRunner && testExecutionTool) {
+      tools.test_execution = testExecutionTool;
+    }
+    if (browserVerificationTool) {
+      tools.browser_verify = browserVerificationTool;
+    }
+    overrides[name] = {
+      ...(model ? { model } : {}),
+      ...(maxTurns === undefined ? {} : { maxTurns }),
+      ...(Object.keys(tools).length > 0 ? { tools } : {}),
+    };
+  }
+  return overrides;
 }
 
 export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
@@ -361,14 +379,19 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
     snapshotsByRequest.set(requestContext, snapshots);
     return Promise.resolve(snapshots);
   };
-  const { fileTools, submitPlanTool, testExecutionTool, tools } =
-    createRuntimeTools(
-      config,
-      resolveWorkspace,
-      resolveFilesystem,
-      resolveSnapshots,
-      resolveResources
-    );
+  const {
+    browserVerificationTool,
+    fileTools,
+    submitPlanTool,
+    testExecutionTool,
+    tools,
+  } = createRuntimeTools(
+    config,
+    resolveWorkspace,
+    resolveFilesystem,
+    resolveSnapshots,
+    resolveResources
+  );
 
   const sessionStartedAt = new Date();
   const instructionsByRequest = new WeakMap<
@@ -449,7 +472,8 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
   const workerOverrides = resolveWorkerOverrides(
     config,
     limits,
-    testExecutionTool
+    testExecutionTool,
+    browserVerificationTool
   );
   const materialized = materializeDelegatableSubagents({
     defaultModelId: config.model,
@@ -461,7 +485,13 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
           config.model
       ),
     overrides: workerOverrides,
-    tools: { ...fileTools, submit_plan: submitPlanTool },
+    tools: {
+      ...fileTools,
+      submit_plan: submitPlanTool,
+      ...(browserVerificationTool
+        ? { browser_verify: browserVerificationTool }
+        : {}),
+    },
   });
   const subagents =
     budget === undefined
@@ -506,6 +536,7 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
   });
 
   return {
+    browserVerificationTool,
     budget,
     controller,
     limits,

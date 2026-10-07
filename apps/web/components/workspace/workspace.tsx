@@ -67,7 +67,12 @@ import { Panel } from "@/components/workspace/panel";
 import { Rail } from "@/components/workspace/rail";
 import { Settings } from "@/components/workspace/settings";
 import { useConversationPins } from "@/components/workspace/use-conversation-pins";
-import { describeError, request, scopeQuery } from "@/lib/product-api";
+import {
+  describeError,
+  request,
+  scopeQuery,
+  synthesizeSpeech,
+} from "@/lib/product-api";
 
 const DRAFT_LIMIT = 20_000;
 const MODEL = "deepseek-flash";
@@ -1312,6 +1317,16 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     [organizationId, projectId]
   );
 
+  const synthesize = useCallback(
+    (text: string): Promise<Blob> =>
+      synthesizeSpeech({
+        organizationId,
+        projectId,
+        text,
+      }),
+    [organizationId, projectId]
+  );
+
   const createProjectNamed = useCallback(
     async (name: string): Promise<boolean> => {
       if (!(organizationId && name.trim())) {
@@ -1957,6 +1972,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
                 onClose={closeVoice}
                 onStop={stopRun}
                 onSubmit={sendTurn}
+                onSynthesize={synthesize}
                 onTranscribe={transcribe}
                 projectName={project?.name ?? "Your project"}
                 question={interactiveForm}
