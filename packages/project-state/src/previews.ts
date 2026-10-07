@@ -6,6 +6,7 @@ import type {
 import type {
   OrganizationId,
   ProjectId,
+  RunId,
 } from "@reasonateai/contracts/identity";
 import type { Pool } from "pg";
 
@@ -19,6 +20,7 @@ export interface StoredPreview {
   organizationId: OrganizationId;
   previewId: PreviewId;
   projectId: ProjectId;
+  runId: RunId | null;
   sandboxId: string;
   status: PreviewStatus;
   updatedAt: Date;
@@ -32,6 +34,7 @@ export interface CreatePreviewRecordInput {
   organizationId: OrganizationId;
   previewId: PreviewId;
   projectId: ProjectId;
+  runId?: RunId | null | undefined;
   sandboxId: string;
   status?: PreviewStatus | undefined;
 }
@@ -45,6 +48,7 @@ export interface UpdatePreviewRecordInput {
 
 export interface PreviewRepository {
   get: (previewId: PreviewId) => Promise<StoredPreview | undefined>;
+  getByRun: (runId: RunId) => Promise<StoredPreview | undefined>;
   getBySession: (
     buildSessionId: BuildSessionId
   ) => Promise<StoredPreview | undefined>;
@@ -70,6 +74,7 @@ function toStoredPreview(row: Record<string, unknown>): StoredPreview {
     organizationId: row.organization_id as OrganizationId,
     previewId: row.preview_id as PreviewId,
     projectId: row.project_id as ProjectId,
+    runId: (row.run_id as RunId | null | undefined) ?? null,
     sandboxId: String(row.sandbox_id),
     status: row.status as PreviewStatus,
     updatedAt: row.updated_at as Date,
@@ -87,6 +92,16 @@ export function createPreviewRepository(pool: Pool): PreviewRepository {
         return undefined;
       }
       return toStoredPreview(result.rows[0]);
+    },
+
+    getByRun: async (runId: RunId): Promise<StoredPreview | undefined> => {
+      const result = await pool.query(
+        `select * from previews
+         where run_id = $1 and status in ('starting', 'ready')
+         order by created_at desc limit 1;`,
+        [runId]
+      );
+      return result.rows[0] ? toStoredPreview(result.rows[0]) : undefined;
     },
 
     getBySession: async (
@@ -132,6 +147,7 @@ export function createPreviewRepository(pool: Pool): PreviewRepository {
         `insert into previews (
            preview_id,
            build_session_id,
+           run_id,
            organization_id,
            project_id,
            status,
@@ -142,7 +158,7 @@ export function createPreviewRepository(pool: Pool): PreviewRepository {
            created_at,
            last_used_at,
            updated_at
-         ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now(), now())
+         ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), now(), now())
          on conflict (preview_id) do update set
            status = excluded.status,
            host_port = excluded.host_port,
@@ -152,6 +168,7 @@ export function createPreviewRepository(pool: Pool): PreviewRepository {
         [
           input.previewId,
           input.buildSessionId,
+          input.runId ?? null,
           input.organizationId,
           input.projectId,
           status,
@@ -220,6 +237,17 @@ export function createInMemoryPreviewRepository(): PreviewRepository {
     get: (previewId: PreviewId): Promise<StoredPreview | undefined> =>
       Promise.resolve(store.get(previewId)),
 
+    getByRun: (runId: RunId): Promise<StoredPreview | undefined> => {
+      const [match] = Array.from(store.values())
+        .filter(
+          (preview) =>
+            preview.runId === runId &&
+            (preview.status === "starting" || preview.status === "ready")
+        )
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      return Promise.resolve(match);
+    },
+
     getBySession: (
       buildSessionId: BuildSessionId
     ): Promise<StoredPreview | undefined> => {
@@ -260,6 +288,7 @@ export function createInMemoryPreviewRepository(): PreviewRepository {
         organizationId: input.organizationId,
         previewId: input.previewId,
         projectId: input.projectId,
+        runId: input.runId ?? null,
         sandboxId: input.sandboxId,
         status: input.status ?? existing?.status ?? "starting",
         updatedAt: now,

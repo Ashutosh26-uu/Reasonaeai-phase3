@@ -162,6 +162,190 @@ describeWithDatabase("build session routes", () => {
     ownerCookie = await issueCookie(ownerUserId);
   });
 
+  async function metadataFixture() {
+    const principal = await resolveSessionPrincipal({
+      cookieHeader: ownerCookie,
+      sessions: store.sessions,
+    });
+    if (!principal) {
+      throw new Error("Fixture session missing");
+    }
+    const allocation = await store.allocateBuildSession({
+      idempotencyKey: randomUUID(),
+      message: "Original conversation title",
+      scope: { organizationId, projectId },
+      userSessionId: principal.sessionId,
+    });
+    await pool.query("update runs set status = 'completed' where run_id = $1", [
+      allocation.buildSession.runId,
+    ]);
+    return allocation.buildSession.buildSessionId as string;
+  }
+
+  function metadataContext(id: string, update: unknown, cookie = ownerCookie) {
+    return context({
+      body: update,
+      cookie,
+      params: { buildSessionId: id },
+      query: { organizationId, projectId },
+    });
+  }
+
+  it("persists a renamed title and idempotent reversible archive without deleting history", async () => {
+    const id = await metadataFixture();
+    const renamed = await handlers.updateConversation(
+      metadataContext(id, { title: "  My running app  " })
+    );
+    expect(renamed.status).toBe(200);
+    expect((await renamed.json()).title).toBe("My running app");
+    const messagesBefore = await handlers.history(
+      context({
+        cookie: ownerCookie,
+        params: { buildSessionId: id },
+        query: { organizationId, projectId },
+      })
+    );
+    const before = await messagesBefore.json();
+    const archive = await handlers.updateConversation(
+      metadataContext(id, { archived: true })
+    );
+    expect(archive.status).toBe(200);
+    const saved = await archive.json();
+    const replay = await handlers.updateConversation(
+      metadataContext(id, { archived: true })
+    );
+    expect(await replay.json()).toEqual(saved);
+    const active = await store.listConversations({ organizationId, projectId });
+    expect(active.some((item) => item.buildSessionId === id)).toBe(false);
+    const archived = await handlers.listConversations(
+      context({
+        cookie: ownerCookie,
+        params: { projectId },
+        query: { archived: "true", organizationId },
+      })
+    );
+    expect(
+      (await archived.json()).conversations.some(
+        (item: { buildSessionId: string }) => item.buildSessionId === id
+      )
+    ).toBe(true);
+    const retained = await handlers.history(
+      context({
+        cookie: ownerCookie,
+        params: { buildSessionId: id },
+        query: { organizationId, projectId },
+      })
+    );
+    expect(await retained.json()).toEqual(before);
+    const turn = await handlers.appendTurn(
+      context({
+        body: { message: "Must restore first" },
+        cookie: ownerCookie,
+        idempotencyKey: randomUUID(),
+        params: { buildSessionId: id },
+        query: { organizationId, projectId },
+      })
+    );
+    expect(turn.status).toBe(409);
+    expect(
+      (
+        await handlers.updateConversation(
+          metadataContext(id, { archived: false })
+        )
+      ).status
+    ).toBe(200);
+    expect(
+      (await store.listConversations({ organizationId, projectId })).find(
+        (item) => item.buildSessionId === id
+      )?.title
+    ).toBe("My running app");
+    const events = await pool.query(
+      "select action from audit_events where metadata->>'buildSessionId' = $1 order by occurred_at",
+      [id]
+    );
+    expect(events.rows.map((row) => row.action)).toEqual([
+      "conversation.renamed",
+      "conversation.archived",
+      "conversation.restored",
+    ]);
+  });
+
+  it("denies metadata edits by viewers, outsiders, foreign scopes, and invalid input", async () => {
+    const id = await metadataFixture();
+    const denials = await Promise.all(
+      [viewerUserId, outsiderUserId].map(async (userId) =>
+        handlers.updateConversation(
+          metadataContext(id, { title: "Denied" }, await issueCookie(userId))
+        )
+      )
+    );
+    expect(denials.map((response) => response.status)).toEqual([403, 403]);
+    expect(
+      (
+        await handlers.updateConversation(
+          context({
+            body: { title: "Denied" },
+            params: { buildSessionId: id },
+            query: { organizationId, projectId },
+          })
+        )
+      ).status
+    ).toBe(401);
+    expect(
+      (await handlers.updateConversation(metadataContext(id, { title: " " })))
+        .status
+    ).toBe(400);
+    expect(
+      (
+        await handlers.updateConversation(
+          context({
+            body: { archived: true },
+            cookie: ownerCookie,
+            params: { buildSessionId: id },
+            query: {
+              organizationId: foreignOrganizationId,
+              projectId: foreignProjectId,
+            },
+          })
+        )
+      ).status
+    ).toBe(403);
+    expect(
+      (
+        await handlers.updateConversation(
+          metadataContext(randomUUID(), { title: "Absent" })
+        )
+      ).status
+    ).toBe(404);
+  });
+
+  it.each(["queued", "leased", "running", "awaiting_approval"])(
+    "refuses archive while its run is %s",
+    async (status) => {
+      const id = await metadataFixture();
+      await pool.query(
+        "update runs set status = $2 where build_session_id = $1",
+        [id, status]
+      );
+      expect(
+        (
+          await handlers.updateConversation(
+            metadataContext(id, { archived: true })
+          )
+        ).status
+      ).toBe(409);
+      await pool.query(
+        "update runs set status = 'completed' where build_session_id = $1",
+        [id]
+      );
+      expect(
+        (await store.listConversations({ organizationId, projectId })).some(
+          (item) => item.buildSessionId === id
+        )
+      ).toBe(true);
+    }
+  );
+
   afterAll(async () => {
     await pool.query(
       "delete from organizations where organization_id = any($1::uuid[])",

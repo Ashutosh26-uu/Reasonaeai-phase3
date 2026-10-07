@@ -1,7 +1,13 @@
 import type { RequestContext } from "@mastra/core/request-context";
 import type { WorkspaceSandbox } from "@mastra/core/workspace";
 import { WORKSPACE_TOOLS, Workspace } from "@mastra/core/workspace";
-import { DockerSandbox } from "@mastra/docker";
+import { APP_PREVIEW_RELAY_PORT } from "@reasonateai/contracts/execution";
+import {
+  DEFAULT_BUILD_SANDBOX_IMAGE,
+  type SandboxConfig,
+  SandboxIdSchema,
+  SandboxImageReferenceSchema,
+} from "@reasonateai/contracts/sandbox";
 import type {
   PlatformFacts,
   SandboxCapacity,
@@ -11,6 +17,8 @@ import {
   readRunScope,
   sandboxIdFor,
 } from "@reasonateai/cto-runtime/run-scope";
+import { DockerSandbox } from "@reasonateai/sandbox/docker";
+import { MastraWorkspaceSandboxAdapter } from "@reasonateai/sandbox/mastra";
 import { SandboxFilesystem } from "./sandbox-filesystem.js";
 
 /**
@@ -26,7 +34,6 @@ import { SandboxFilesystem } from "./sandbox-filesystem.js";
 
 const SANDBOX_CPU_PERIOD = 100_000;
 const SANDBOX_CPU_QUOTA = 100_000;
-const SANDBOX_IMAGE = "node:22";
 const SANDBOX_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
 export const SANDBOX_WORKING_DIRECTORY = "/workspace";
 
@@ -75,6 +82,15 @@ export function resolveBuildSandboxNetworkMode(
   return candidate === "none" ? "none" : "bridge";
 }
 
+export function resolveBuildSandboxImage(
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const candidate = env.REASONATE_BUILD_SANDBOX_IMAGE?.trim();
+  return SandboxImageReferenceSchema.parse(
+    candidate && candidate.length > 0 ? candidate : DEFAULT_BUILD_SANDBOX_IMAGE
+  );
+}
+
 export function resolveBuildSandboxCacheVolume(
   env: NodeJS.ProcessEnv = process.env
 ): string | undefined {
@@ -117,22 +133,22 @@ function createBuildSandbox(scope: RunScope) {
     env.npm_config_cache = "/root/.npm";
   }
 
-  return new DockerSandbox({
-    capDrop: ["ALL"],
-    cpuPeriod: SANDBOX_CPU_PERIOD,
-    cpuQuota: SANDBOX_CPU_QUOTA,
+  const config: SandboxConfig = {
+    cpuLimit: SANDBOX_CPU_QUOTA / SANDBOX_CPU_PERIOD,
     env,
-    id: sandboxId,
-    image: SANDBOX_IMAGE,
-    memory: SANDBOX_MEMORY_BYTES,
-    memorySwap: SANDBOX_MEMORY_BYTES,
-    mounts,
-    network,
-    pidsLimit: 256,
-    securityOpt: ["no-new-privileges:true"],
-    timeout: 120_000,
-    workingDirectory: SANDBOX_WORKING_DIRECTORY,
-  });
+    id: SandboxIdSchema.parse(sandboxId),
+    image: resolveBuildSandboxImage(),
+    memoryLimitMb: SANDBOX_MEMORY_BYTES / (1024 * 1024),
+    mounts: mounts.map((mount) => ({ ...mount, readonly: false })),
+    networkMode: network,
+    ports: [APP_PREVIEW_RELAY_PORT],
+    projectId: scope.projectId,
+    runId: scope.runId,
+    timeoutMs: 120_000,
+    workdir: SANDBOX_WORKING_DIRECTORY,
+  };
+  const sandbox = new DockerSandbox(config, sandboxId);
+  return new MastraWorkspaceSandboxAdapter({ config, sandbox });
 }
 
 export const reasonateBuildWorkspace = new Workspace({

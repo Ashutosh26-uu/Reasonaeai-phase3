@@ -18,3 +18,7 @@ mastra.duckdb*
 
 # Local dev/test SQLite databases
 mastra.db*
+
+# Isolated local verification logs, fixtures, and runtime state
+.verification/
+.verification-*.log

@@ -92,7 +92,13 @@ pnpm --filter @reasonateai/contracts build
 pnpm --filter @reasonateai/api smoke:checkpoint
 ```
 
-`smoke:checkpoint` is the one check that needs Docker and the `node:22` image: it snapshots a real workspace, destroys the sandbox and its volume, restores into a fresh sandbox, reads the files and history back, and proves a failed snapshot keeps the volume.
+Build the shared API/worker sandbox image before starting local services:
+
+```sh
+docker build -f services/build-sandbox/Dockerfile -t reasonate-build-sandbox:node22 services/build-sandbox
+```
+
+The image includes Node.js 22, Python 3.11, Go 1.27.1, and an offline npm cache. Its hash-locked Python baseline provides NumPy/pandas, FastAPI/Uvicorn with upload support, Matplotlib/Seaborn/Plotly, Pillow for common raster-image work, openpyxl for XLSX, and pytest/httpx/Ruff. Matplotlib uses the headless Agg backend. These packages are baked into the image, so sandbox startup does not install dependencies. A project that needs its own Python environment can inherit them with `python -m venv --system-site-packages .venv`; SciPy/scikit-learn, OpenCV, Jupyter, and deep-learning frameworks are deliberately not preloaded. The image also carries an optional Next.js/React/Tailwind/Vitest starter with dependencies installed; it does not choose or scaffold a stack. Use its files only when a new project explicitly uses Next.js. API and worker must use the same image reference through `REASONATE_BUILD_SANDBOX_IMAGE`. `smoke:checkpoint` needs Docker and this image: it snapshots a real workspace, destroys the sandbox and its volume, restores into a fresh sandbox, reads the files and history back, and proves a failed snapshot keeps the volume.
 
 ---
 
@@ -180,8 +186,8 @@ If this release must be rolled back, first stop new run admission and let live q
 | `duplicate key value violates unique constraint "pg_type_typname_nsp_index"` | Concurrent DDL from two processes | Expected to be prevented by the migration advisory lock; the migration also retries, so report it if it reappears |
 | `deadlock detected` while applying a migration | A migration needs an access-exclusive lock, and a writer that holds a read lock while it upgrades past that queued request deadlocks with it | Expected to resolve: the migration waits a bounded time for the lock and retries. A persistent failure means a long-running writer holds the table |
 | `deadlock detected` from integration-test teardown | Every database-backed suite shares one PostgreSQL instance and deletes its fixtures concurrently; the cascade takes the same tables in the opposite order | The teardown retries transient lock conflicts. If a suite still fails this way, re-run it and record the interleaving |
-| `sh: 1: git: not found` inside a sandbox | The sandbox image carries no git, and checkpoints are Git bundles | The build sandbox uses `node:22`, not a `-slim` image. A purpose-built image must include git |
-| First sandbox run takes minutes | `node:22` is a large image and is pulled on first use | Pull it once (`docker pull node:22`); it is cached afterwards |
+| Sandbox creation cannot find the configured image | The build sandbox image was not built or the API and worker use different references | Build the documented `reasonate-build-sandbox:node22` image and set the same `REASONATE_BUILD_SANDBOX_IMAGE` in both services |
+| First sandbox run takes minutes | The Node.js base image and app starter cache are large and need a first pull/build | Build the sandbox image once before launching local services; subsequent sandboxes use the local image |
 | Type tests skip silently | `DATABASE_URL` or `REDIS_URL` unset | Export both, then re-run |
 | Docker-related test failures | Docker daemon not running | Start Docker Desktop and re-run |
 | Docker-backed suite fails only when the whole gate runs | `apps/api` and `packages/sandbox` each start real containers, and the daemon can refuse a start while the other package is churning containers. Both packages run their test files one at a time for this reason | Re-run the gate, or serialize the packages: `pnpm exec turbo run test --concurrency=1` |

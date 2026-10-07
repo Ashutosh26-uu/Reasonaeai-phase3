@@ -66,6 +66,20 @@ export async function request<T>(
       ...init.headers,
     },
   }).catch((cause: unknown) => {
+    if (init.signal?.aborted) {
+      const reason: unknown = init.signal.reason;
+      const timedOut =
+        reason instanceof DOMException && reason.name === "TimeoutError";
+      diagnose(0, timedOut ? "request_timeout" : "request_aborted");
+      // Cancelling one request does not establish that the live stream or
+      // network is offline. Preserve the request failure for its caller.
+      throw new Error(
+        timedOut
+          ? "The product API request timed out. Retry the request."
+          : "The product API request was cancelled.",
+        { cause }
+      );
+    }
     diagnose(0, "network_or_timeout");
     networkManager.notifyNetworkFailure();
     throw new Error(

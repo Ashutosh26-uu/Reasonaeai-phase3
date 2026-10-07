@@ -28,6 +28,13 @@ export const ConversationHeadSchema = z.strictObject({
 });
 export type ConversationHead = z.infer<typeof ConversationHeadSchema>;
 export class ConversationHistoryError extends Error {}
+function assertConversationWritable(archivedAt: Date | null) {
+  if (archivedAt) {
+    throw new ConversationHistoryError(
+      "Restore this archived conversation before changing its history."
+    );
+  }
+}
 export interface HistoryCommand {
   action: "branch" | "retry";
   audit: AuditEvent;
@@ -177,7 +184,10 @@ export function createConversationHistory(input: {
         "select project_id from projects where organization_id=$1 and project_id=$2 for update",
         [scope.organizationId, scope.projectId]
       );
-      const session = await client.query(
+      const session = await client.query<{
+        archived_at: Date | null;
+        stage: string;
+      }>(
         "select * from build_sessions where build_session_id=$1 and organization_id=$2 and project_id=$3 for update",
         [buildSessionId, scope.organizationId, scope.projectId]
       );
@@ -191,6 +201,7 @@ export function createConversationHistory(input: {
       if (replay) {
         return replay;
       }
+      assertConversationWritable(session.rows[0].archived_at);
       const busy = await client.query(
         `select 1 from runs r left join run_leases l using(run_id) where r.organization_id=$1 and r.project_id=$2 and (r.status in ('queued','running','awaiting_approval') or l.expires_at>now()) limit 1`,
         [scope.organizationId, scope.projectId]

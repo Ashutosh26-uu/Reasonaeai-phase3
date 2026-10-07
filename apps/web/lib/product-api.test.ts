@@ -1,10 +1,45 @@
 import { CSRF_COOKIE, CSRF_HEADER } from "@reasonateai/contracts/auth";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { networkManager } from "./network-state";
 import { ApiRequestError, request } from "./product-api";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("authenticated product requests", () => {
+  it.each([
+    new DOMException("deadline", "TimeoutError"),
+    new DOMException("navigation", "AbortError"),
+  ])(
+    "keeps request cancellation separate from network loss: %s",
+    async (reason) => {
+      vi.stubGlobal("document", { cookie: "" });
+      const controller = new AbortController();
+      controller.abort(reason);
+      vi.stubGlobal("fetch", vi.fn().mockRejectedValue(reason));
+      const failure = vi.spyOn(networkManager, "notifyNetworkFailure");
+      const report = vi
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined);
+      try {
+        await expect(
+          request("/v1/example", (value) => value, {
+            signal: controller.signal,
+          })
+        ).rejects.toMatchObject({ cause: reason });
+        expect(failure).not.toHaveBeenCalled();
+        expect(JSON.parse(report.mock.calls[0]?.[0] as string)).toMatchObject({
+          reason:
+            reason.name === "TimeoutError"
+              ? "request_timeout"
+              : "request_aborted",
+        });
+      } finally {
+        failure.mockRestore();
+        report.mockRestore();
+      }
+    }
+  );
+
   it("sends multipart audio with session CSRF and a browser-generated boundary", async () => {
     vi.stubGlobal("document", { cookie: `${CSRF_COOKIE}=test-csrf` });
     const transport = vi

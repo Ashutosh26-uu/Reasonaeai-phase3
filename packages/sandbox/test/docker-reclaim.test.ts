@@ -5,6 +5,7 @@ import type { CheckpointStore } from "../src/checkpoint.js";
 import {
   inspectWorkspaceVolume,
   listRetainedWorkspaceVolumes,
+  parseWorkspaceVolumeName,
   reclaimRetainedWorkspaceVolume,
   reclaimRetainedWorkspaceVolumes,
 } from "../src/reclaim.js";
@@ -119,7 +120,15 @@ describeWithDocker("Live Docker workspace volume reclamation", () => {
     expect(listed.some((v) => v.volumeName === hostGuardVolume)).toBe(false);
 
     // 3. Run sweep with force=true
-    await reclaimRetainedWorkspaceVolumes({ force: true });
+    const scope = parseWorkspaceVolumeName(liveVolume);
+    if (!scope) {
+      throw new Error("Invalid test volume scope");
+    }
+    await reclaimRetainedWorkspaceVolumes({
+      force: true,
+      organizationId: scope.organizationId,
+      projectId: scope.projectId,
+    });
 
     // 4. Verify hostGuardVolume still exists completely untouched
     const guardCheck = await execFileAsync("docker", [

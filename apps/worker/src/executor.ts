@@ -1141,23 +1141,37 @@ export class RunExecutor {
       }
     }
 
-    try {
-      await sandbox.destroy?.();
-    } catch (error) {
-      logger.error("run.sandbox.destroy.failed", {
-        ...fields,
-        failure: describeFailure(error).message,
-      });
-    } finally {
-      // The workspace caches by build session. A follow-up turn must resolve a
-      // fresh instance after this container is destroyed.
-      releaseBuildSandbox(scope);
-    }
+    const previewLease = await this.#deps.store.previews
+      .getBySession(scope.buildSessionId)
+      .catch(() => undefined);
+    const retainForPreview =
+      previewLease?.status === "starting" || previewLease?.status === "ready";
 
-    if (written === undefined) {
+    if (retainForPreview) {
+      logger.info("run.sandbox.retained_for_preview", {
+        ...fields,
+        previewId: previewLease.previewId,
+      });
+    } else {
+      try {
+        await sandbox.destroy?.();
+      } catch (error) {
+        logger.error("run.sandbox.destroy.failed", {
+          ...fields,
+          failure: describeFailure(error).message,
+        });
+      }
+    }
+    // Drop only this process-local adapter. The next run attaches to the
+    // retained container while the conversation still owns an active preview.
+    releaseBuildSandbox(scope);
+
+    if (written === undefined || retainForPreview) {
       logger.warn("run.volume.retained", {
         ...fields,
-        reason: input.retainedReason,
+        reason: retainForPreview
+          ? "an active app preview owns the same run sandbox"
+          : input.retainedReason,
         volume: workspaceVolumeName(scope),
       });
       return;

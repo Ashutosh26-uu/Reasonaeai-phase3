@@ -56,15 +56,16 @@ export interface RailProps {
   onProjectSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   onSettings: () => void;
   onSignOut: () => void;
+  onTogglePin: (id: string) => void;
   organizationId: string;
   organizations: { name: string; organizationId: string }[];
+  pinnedConversationIds: string[];
   projectId: string;
   projects: ProjectSummary[];
   submitting: boolean;
 }
 
 const COLLAPSED_KEY = "reasonate.rail.collapsed";
-const PINNED_CONVERSATIONS_KEY = "reasonate.rail.pinned-conversations";
 
 function readCollapsed(): boolean {
   if (typeof window === "undefined") {
@@ -753,49 +754,14 @@ export function Rail({
   projectId,
   projects,
   submitting,
+  pinnedConversationIds,
+  onTogglePin: togglePinnedConversation,
 }: RailProps) {
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [chatPickerOpen, setChatPickerOpen] = useState(false);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [expandedProjects, setExpandedProjects] = useState<string[]>([]);
-  const [pinnedConversationIds, setPinnedConversationIds] = useState<string[]>(
-    []
-  );
-  const [loadedPinnedOrganizationId, setLoadedPinnedOrganizationId] =
-    useState("");
-
-  useEffect(() => {
-    let storedIds: string[] = [];
-    try {
-      const value: unknown = JSON.parse(
-        window.localStorage.getItem(
-          `${PINNED_CONVERSATIONS_KEY}:${organizationId}`
-        ) ?? "[]"
-      );
-      if (
-        Array.isArray(value) &&
-        value.every((item) => typeof item === "string")
-      ) {
-        storedIds = value;
-      }
-    } catch {
-      storedIds = [];
-    }
-    setPinnedConversationIds(storedIds);
-    setLoadedPinnedOrganizationId(organizationId);
-  }, [organizationId]);
-
-  useEffect(() => {
-    if (loadedPinnedOrganizationId !== organizationId) {
-      return;
-    }
-    window.localStorage.setItem(
-      `${PINNED_CONVERSATIONS_KEY}:${organizationId}`,
-      JSON.stringify(pinnedConversationIds)
-    );
-  }, [loadedPinnedOrganizationId, organizationId, pinnedConversationIds]);
-
   useEffect(() => {
     const media = window.matchMedia("(max-width: 900px)");
     const update = () => {
@@ -962,13 +928,6 @@ export function Rail({
     },
     [closeNavigation, onProjectSelect, startProjectConversation, toggleProject]
   );
-  const togglePinnedConversation = useCallback((buildSessionId: string) => {
-    setPinnedConversationIds((current) =>
-      current.includes(buildSessionId)
-        ? current.filter((item) => item !== buildSessionId)
-        : [buildSessionId, ...current]
-    );
-  }, []);
   const pinConversationFromButton = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       const buildSessionId = event.currentTarget.dataset.conversationId;

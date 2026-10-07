@@ -6,6 +6,7 @@ import {
 import {
   OrganizationIdSchema,
   ProjectIdSchema,
+  RunIdSchema,
 } from "@reasonateai/contracts/identity";
 import { createInMemoryPreviewRepository } from "@reasonateai/project-state/previews";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -33,6 +34,7 @@ describe("preview service - persistence and restart recovery", () => {
   const orgId = OrganizationIdSchema.parse(randomUUID());
   const projId = ProjectIdSchema.parse(randomUUID());
   const sessionId = BuildSessionIdSchema.parse(randomUUID());
+  const runId = RunIdSchema.parse(randomUUID());
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -57,6 +59,7 @@ describe("preview service - persistence and restart recovery", () => {
       buildSessionId: sessionId,
       organizationId: orgId,
       projectId: projId,
+      runId,
     });
 
     expect(view.status).toBe("starting");
@@ -102,6 +105,7 @@ describe("preview service - persistence and restart recovery", () => {
       organizationId: orgId,
       previewId,
       projectId: projId,
+      runId,
       sandboxId: `preview-${previewId}`,
       status: "ready",
     });
@@ -161,6 +165,7 @@ describe("preview service - persistence and restart recovery", () => {
       organizationId: orgId,
       previewId: livePreviewId,
       projectId: projId,
+      runId: RunIdSchema.parse(randomUUID()),
       sandboxId: `preview-${livePreviewId}`,
       status: "ready",
     });
@@ -174,6 +179,7 @@ describe("preview service - persistence and restart recovery", () => {
       organizationId: orgId,
       previewId: deadPreviewId,
       projectId: projId,
+      runId: RunIdSchema.parse(randomUUID()),
       sandboxId: `preview-${deadPreviewId}`,
       status: "ready",
     });
@@ -187,6 +193,7 @@ describe("preview service - persistence and restart recovery", () => {
       organizationId: orgId,
       previewId: expiredPreviewId,
       projectId: projId,
+      runId: RunIdSchema.parse(randomUUID()),
       sandboxId: `preview-${expiredPreviewId}`,
       status: "ready",
     });

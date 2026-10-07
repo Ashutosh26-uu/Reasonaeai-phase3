@@ -6,6 +6,7 @@ import {
 import { subscribeToRedisTopic } from "./redis-topic-stream.js";
 
 export interface RunLiveStreamInput {
+  /** Verified owning session of the run, which may differ from a history branch. */
   buildSessionId: string;
   organizationId: string;
   projectId: string;
@@ -22,7 +23,7 @@ export interface RunLiveStreamInput {
  * a partial message is the last thing that should be handed to the wrong
  * organization.
  */
-function readLiveEvent(
+export function readRunLiveEvent(
   raw: string | undefined,
   scope: RunLiveStreamInput
 ): RunLiveEvent | Error {
@@ -32,6 +33,24 @@ function readLiveEvent(
       typeof raw === "string" ? (JSON.parse(raw) as unknown) : undefined;
   } catch {
     payload = undefined;
+  }
+
+  // Older workers spread their wider execution scope into these transient
+  // frames. Retained entries live for one hour and must survive a rolling
+  // upgrade. Remove only this known field after checking the run's owning session;
+  // the remaining frame still passes the strict schema and tenant/run checks.
+  if (
+    typeof payload === "object" &&
+    payload !== null &&
+    "buildSessionId" in payload
+  ) {
+    if (payload.buildSessionId !== scope.buildSessionId) {
+      return new Error(
+        "A live run frame arrived for a different build session than the subscription."
+      );
+    }
+    const { buildSessionId: _buildSessionId, ...frame } = payload;
+    payload = frame;
   }
 
   const parsed = RunLiveEventSchema.safeParse(payload);
@@ -68,7 +87,7 @@ export function subscribeToRunLiveEvents(
   input: RunLiveStreamInput
 ): Promise<AsyncIterable<RunLiveEvent>> {
   return subscribeToRedisTopic({
-    parse: (raw) => readLiveEvent(raw, input),
+    parse: (raw) => readRunLiveEvent(raw, input),
     registryKey: [
       "live",
       input.organizationId,
