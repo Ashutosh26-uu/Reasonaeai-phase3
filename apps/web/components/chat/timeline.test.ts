@@ -428,4 +428,165 @@ describe("conversation transcript", () => {
       tool: { state: "output-error" },
     });
   });
+
+  it("handles reconnect replay from sequence cursor with complete deduplication", () => {
+    // Initial segment (sequences 1, 2)
+    const initialEvents = [
+      event(1, { kind: "tool_start", toolCallId: "t1", toolName: "read" }),
+      event(2, {
+        isError: false,
+        kind: "tool_end",
+        result: "File content",
+        toolCallId: "t1",
+      }),
+    ];
+    let timeline = initialEvents.reduce(foldDurable, EMPTY_TIMELINE);
+    let transcript = projectTranscript(timeline, []);
+    expect(transcript[0]?.entries).toHaveLength(1);
+    expect(transcript[0]?.entries[0]).toMatchObject({
+      tool: { state: "output-available" },
+    });
+
+    // Replay with overlap (sequence 2 again) plus new events (sequences 3, 4, 5)
+    const replayedEvents = [
+      event(2, {
+        isError: false,
+        kind: "tool_end",
+        result: "File content",
+        toolCallId: "t1",
+      }),
+      event(3, {
+        kind: "tool_start",
+        toolCallId: "t2",
+        toolName: "browser_verify",
+      }),
+      event(4, {
+        isError: false,
+        kind: "tool_end",
+        result: "Verified passed",
+        toolCallId: "t2",
+      }),
+      event(5, {
+        kind: "message_end",
+        role: "assistant",
+        text: "All checks passed in browser.",
+      }),
+    ];
+    for (const ev of replayedEvents) {
+      timeline = foldDurable(timeline, ev);
+    }
+
+    transcript = projectTranscript(timeline, []);
+    expect(transcript[0]?.entries).toHaveLength(3); // 2 tools + 1 text
+    expect(transcript[0]?.entries[0]).toMatchObject({
+      tool: { name: "read" },
+    });
+    expect(transcript[0]?.entries[1]).toMatchObject({
+      tool: { name: "browser_verify" },
+    });
+    expect(transcript[0]?.entries[2]).toMatchObject({
+      text: "All checks passed in browser.",
+    });
+  });
+
+  it("preserves ordering across multiple alternating text / tool segments", () => {
+    const alternatingEvents = [
+      // 1. Narration part 1
+      event(1, {
+        kind: "message_end",
+        role: "assistant",
+        text: "Inspecting codebase structure...",
+      }),
+      // 2. Tool 1: read
+      event(2, { kind: "tool_start", toolCallId: "c1", toolName: "read" }),
+      event(3, {
+        isError: false,
+        kind: "tool_end",
+        result: "Read files",
+        toolCallId: "c1",
+      }),
+      // 3. Narration part 2
+      event(4, {
+        kind: "message_end",
+        role: "assistant",
+        text: "Starting preview and testing in browser...",
+      }),
+      // 4. Tool 2: browser_verify
+      event(5, {
+        kind: "tool_start",
+        toolCallId: "c2",
+        toolName: "browser_verify",
+      }),
+      event(6, {
+        isError: false,
+        kind: "tool_end",
+        result: "Preview render healthy",
+        toolCallId: "c2",
+      }),
+      // 5. Narration part 3
+      event(7, {
+        kind: "message_end",
+        role: "assistant",
+        text: "Everything looks good and verified.",
+      }),
+      // 6. Run completed
+      event(8, { outcome: "succeeded" }, runId, "run.completed"),
+    ];
+
+    const timeline = alternatingEvents.reduce(foldDurable, EMPTY_TIMELINE);
+    const transcript = projectTranscript(timeline, []);
+
+    expect(transcript[0]?.entries).toHaveLength(5);
+    expect(transcript[0]?.entries[0]).toMatchObject({
+      text: "Inspecting codebase structure...",
+    });
+    expect(transcript[0]?.entries[1]).toMatchObject({
+      tool: { name: "read" },
+    });
+    expect(transcript[0]?.entries[2]).toMatchObject({
+      text: "Starting preview and testing in browser...",
+    });
+    expect(transcript[0]?.entries[3]).toMatchObject({
+      tool: { name: "browser_verify" },
+    });
+    expect(transcript[0]?.entries[4]).toMatchObject({
+      text: "Everything looks good and verified.",
+    });
+  });
+
+  it("marks in-flight tools as output-error on run.failed while preserving prior output", () => {
+    const failedRunEvents = [
+      event(1, {
+        kind: "message_end",
+        role: "assistant",
+        text: "Beginning deployment verification...",
+      }),
+      event(2, {
+        kind: "tool_start",
+        toolCallId: "t1",
+        toolName: "browser_verify",
+      }),
+      // Run fails unexpectedly without tool_end
+      event(
+        3,
+        { error: "Container crashed", reason: "OOMKilled" },
+        runId,
+        "run.failed"
+      ),
+    ];
+
+    const timeline = failedRunEvents.reduce(foldDurable, EMPTY_TIMELINE);
+    const transcript = projectTranscript(timeline, []);
+
+    expect(transcript[0]?.entries).toHaveLength(2);
+    expect(transcript[0]?.entries[0]).toMatchObject({
+      text: "Beginning deployment verification...",
+    });
+    expect(transcript[0]?.entries[1]).toMatchObject({
+      tool: {
+        name: "browser_verify",
+        state: "output-error",
+      },
+    });
+  });
 });

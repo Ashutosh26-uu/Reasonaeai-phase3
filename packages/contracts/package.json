@@ -43,6 +43,10 @@
     "./repair": {
       "types": "./src/repair.ts",
       "import": "./dist/repair.js"
+    },
+    "./browser": {
+      "types": "./src/browser.ts",
+      "import": "./dist/browser.js"
     }
   },
   "scripts": {
