@@ -13,6 +13,7 @@ import type { AgentDefinition } from "../types.js";
  */
 export const scoutWorkspaceTools = [
   "read",
+  "browser_verify",
   WORKSPACE_TOOLS.FILESYSTEM.READ_FILE,
   WORKSPACE_TOOLS.FILESYSTEM.LIST_FILES,
   WORKSPACE_TOOLS.FILESYSTEM.FILE_STAT,
@@ -43,6 +44,7 @@ export const reasonateToolUniverse: string[] = [
   "read",
   "edit",
   "write",
+  "browser_verify",
   ...Object.values(WORKSPACE_TOOLS.FILESYSTEM),
   ...Object.values(WORKSPACE_TOOLS.SANDBOX),
   ...Object.values(WORKSPACE_TOOLS.COMPUTER),

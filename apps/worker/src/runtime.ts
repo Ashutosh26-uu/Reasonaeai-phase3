@@ -95,6 +95,7 @@ export function createCtoRuntimeFactory(input: {
   return () => {
     const runtime = createReasonateCtoRuntime({
       ...buildSandboxEnvironment,
+      enableBrowserVerification: true,
       enableTestRunner: true,
       model: input.model,
       storage,

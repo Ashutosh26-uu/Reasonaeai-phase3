@@ -347,6 +347,7 @@ const storage = new MastraCompositeStore({
 
 export const reasonateCtoRuntime = createReasonateCtoRuntime({
   ...buildSandboxEnvironment,
+  enableBrowserVerification: true,
   enableTestRunner: true,
   model: frontierModel,
   storage,
