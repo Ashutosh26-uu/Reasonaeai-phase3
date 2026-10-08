@@ -39,11 +39,15 @@ The initial browser check exposed a pre-existing locale hydration mismatch (`pm`
 
 ![Grouped reasoning and tool history](./turn-activity-evidence/grouped-history.jpg)
 
+## October 8 integration check
+
+Integrated company `main` at `56b471f`, preserving PRs #39, #40 and #42 and the later dialog hardening. Only `.context/PHASE.md` conflicted; both status updates were retained. The feature diff remains limited to the original 17 files. Frozen install, lint (460 files), all 10 type-check tasks and all 230 web tests passed on the integrated branch. The reviewer approved merge; updated CI must pass before merging.
+
 ## Remaining acceptance gate
 
 `pnpm test` was attempted but failed in the unchanged `@reasonateai/sandbox` Mastra adapter integration test: container `reasonate-sbx-66666666-6666-4666-8666-666666666666` was already owned by a parallel session. That run reported 25 passing sandbox tests, one collision failure and four skipped checkpoint tests before aborting the workspace gate. Other sessions' infrastructure was left untouched. A passing root test gate is not claimed.
 
-Clean CI subsequently passed the complete root test gate with dedicated PostgreSQL/Redis/Docker, including the fixture that collided locally. An authenticated API/private-worker browser journey remains an acceptance prerequisite. Browser evidence here verifies rendering/replay of real component inputs, not a fresh model-driven authenticated run. This limit keeps the feature in progress in `.context/PHASE.md` and PR #38 in draft.
+Clean CI subsequently passed the complete root test gate with dedicated PostgreSQL/Redis/Docker, including the fixture that collided locally. An authenticated API/private-worker browser journey remains an acceptance prerequisite. Browser evidence here verifies rendering/replay of real component inputs, not a fresh model-driven authenticated run. On October 8 the reviewer explicitly authorized merge after this limitation and passing browser/CI evidence were disclosed. The authenticated journey remains tracked in `.context/PHASE.md`; merge does not claim that broader acceptance scenario is verified.
 
 ## Security, deployment and recovery
 

@@ -1,49 +1,38 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { promisify } from "node:util";
-import type { BuildSessionId } from "@reasonateai/contracts/execution";
+import {
+  APP_PREVIEW_RELAY_PORT,
+  AppPreviewConfigurationSchema,
+  type BuildSessionId,
+} from "@reasonateai/contracts/execution";
 import type {
   OrganizationId,
   ProjectId,
+  RunId,
 } from "@reasonateai/contracts/identity";
-import type {
-  ISandbox,
-  ISandboxProvider,
-} from "@reasonateai/contracts/sandbox";
+import type { ISandbox } from "@reasonateai/contracts/sandbox";
 import {
   createInMemoryPreviewRepository,
   type PreviewRepository,
   type StoredPreview,
 } from "@reasonateai/project-state/previews";
-import {
-  type CheckpointReference,
-  type CheckpointStore,
-  createGitCheckpointStore,
-  restoreSandbox,
-} from "@reasonateai/sandbox/checkpoint";
-import { DockerSandboxProvider } from "@reasonateai/sandbox/docker";
+import { connectPreviewApp, discoverPreviewApp } from "./preview-port.js";
 
 const execFileAsync = promisify(execFile);
 
 import { z } from "zod";
 
 /**
- * Previews: the project's latest checkpoint, running.
- *
- * A preview is not the build sandbox. The worker destroys its sandbox when a
- * run ends, and that sandbox has no network at all, so a preview allocates its
- * own sandbox from the restored checkpoint, on a bridge network, with one port
- * published on the host's loopback interface. The API then proxies that port,
- * which is what makes the running app framable without ever exposing a sandbox
- * port to the network the API itself listens on.
+ * Previews attach to the exact run sandbox selected by `open_preview`. The
+ * sandbox publishes only its fixed relay port on loopback; the relay forwards
+ * to the validated app port, and the API proxies that host binding. No second
+ * sandbox is allocated and no checkpoint is needed to begin previewing.
  *
  * The lifecycle is deliberately small. One live preview exists per build
- * session; a second `POST` adopts it rather than starting a second container.
- * A preview that nothing has read from or proxied for fifteen minutes is torn
- * down, and every sandbox this service created is destroyed when the process
- * exits.
+ * run; a second `POST` adopts its durable lease. A preview idle for fifteen
+ * minutes releases its run sandbox after the run ends; active runs retain
+ * ownership until worker teardown.
  *
  * Nothing here logs a command's stdout, the checkpoint bytes, or a credential.
  * A failure is reported as a sentence the caller can act on, and a preview
@@ -95,6 +84,7 @@ export interface PreviewRequest {
   readonly buildSessionId: BuildSessionId;
   readonly organizationId: OrganizationId;
   readonly projectId: ProjectId;
+  readonly runId: RunId;
 }
 
 /**
@@ -135,16 +125,16 @@ export interface PreviewService {
 }
 
 export interface PreviewServiceDeps {
-  /**
-   * Host directory holding every tenant's Git checkpoint bundles. Defaults to
-   * the deployment's configured root, then to the same working directory the
-   * execution plane uses.
-   */
-  checkpointRoot?: string | undefined;
-  /** Resolved lazily so a deployment without checkpoints starts normally. */
-  checkpoints?: (() => CheckpointStore) | undefined;
-  /** The sandbox image every preview runs in. */
-  image?: string | undefined;
+  /** Attaches to the authorized build sandbox; previews never allocate another one. */
+  attachRunSandbox?: (scope: {
+    buildSessionId: BuildSessionId;
+    organizationId: OrganizationId;
+    projectId: ProjectId;
+    runId: RunId;
+  }) => Promise<ISandbox | undefined>;
+  isRunActive?: (runId: RunId) => Promise<boolean>;
+  /** Isolates preview containers for independent development deployments. */
+  namespace?: string | undefined;
   /** The clock, injectable so the idle deadline can be observed directly. */
   nowMs?: (() => number) | undefined;
   /**
@@ -162,23 +152,10 @@ export interface PreviewServiceDeps {
     | undefined;
   /** Persistent preview repository backing the registry. */
   previewStore?: PreviewRepository | (() => PreviewRepository) | undefined;
-  provider?: (() => ISandboxProvider) | undefined;
-  /** Where the process-exit teardown is registered; injectable for callers. */
-  registerExitHook?: ((teardown: () => void) => void) | undefined;
-  resolveCheckpoint?: (
-    request: {
-      buildSessionId: BuildSessionId;
-      organizationId: OrganizationId;
-      projectId: ProjectId;
-    },
-    checkpoints: CheckpointStore
-  ) => Promise<
-    (CheckpointReference & { commit?: string; empty?: boolean }) | undefined
-  >;
 }
 
-/** The port a preview listens on inside its container. */
-const PREVIEW_PORT = 3000;
+/** The only sandbox port published for an app preview. */
+const PREVIEW_PORT = APP_PREVIEW_RELAY_PORT;
 
 /**
  * The container prefix every preview's sandbox carries.
@@ -188,41 +165,22 @@ const PREVIEW_PORT = 3000;
  * until someone noticed. The name is what makes them findable, so a fresh
  * process can remove what its predecessors left behind.
  */
-const PREVIEW_CONTAINER_PREFIX = "reasonate-sbx-preview-";
-/** Where the restored checkpoint is served from. */
-const PREVIEW_WORKDIR = "/workspace";
-/** The image the build sandbox uses, so a preview runs what the run produced. */
-const PREVIEW_IMAGE = "node:22";
-const PREVIEW_SANDBOX_CPU = 1;
-const PREVIEW_SANDBOX_MEMORY_MB = 1024;
-/** A checkpoint restore is a Git fetch of one project's history. */
-const SANDBOX_COMMAND_TIMEOUT_MS = 120_000;
-/** `npm install` is the one command that legitimately outlives a short budget. */
-const INSTALL_TIMEOUT_MS = 300_000;
-/** The launcher backgrounds the app and returns; this only bounds the launch. */
-const LAUNCH_TIMEOUT_MS = 15_000;
-/** The app gets a minute to listen before the preview is called failed. */
-const READY_TIMEOUT_MS = 60_000;
-const READY_POLL_INTERVAL_MS = 1000;
+
 /**
  * One probe is one request to the app; a refusal is retried once so a preview
  * is not declared dead by a momentarily closed listening socket.
  */
 const PROBE_TIMEOUT_MS = 3000;
 const PROBE_RETRY_DELAY_MS = 500;
+const READY_TIMEOUT_MS = 5000;
+const READY_POLL_INTERVAL_MS = 150;
 const IDLE_TTL_MS = 15 * 60 * 1000;
 const IDLE_SWEEP_INTERVAL_MS = 60 * 1000;
-/** The served app's own log, inside its container. Never read, never logged. */
-const PREVIEW_LOG_PATH = "/tmp/reasonate-preview.log";
-/** The scripts a generated app may be started with, in preference order. */
-const SCRIPT_NAMES = ["dev", "start", "preview"] as const;
-const SCRIPT_NAME_PATTERN = /^[a-zA-Z0-9:_-]+$/;
-/** What a `package.json` that npm parsed is expected to look like here. */
-const PackageJsonSchema = z.object({
-  scripts: z.record(z.string(), z.string()).optional(),
-});
+const PREVIEW_NAMESPACE_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 
 interface PreviewRecord {
+  appPort: number | null;
+  beginPromise?: Promise<void> | undefined;
   readonly buildSessionId: BuildSessionId;
   detail: string | null;
   hostPort: number | null;
@@ -230,22 +188,10 @@ interface PreviewRecord {
   readonly organizationId: OrganizationId;
   readonly previewId: PreviewId;
   readonly projectId: ProjectId;
+  readonly runId: RunId | null;
   sandbox: ISandbox | undefined;
-  source?:
-    | (CheckpointReference & { commit?: string; empty?: boolean })
-    | undefined;
-  sourceKey?: string | undefined;
   status: PreviewStatus;
 }
-
-/** How the app in a restored checkpoint is started. */
-interface ServePlan {
-  readonly args: string[];
-  readonly command: string;
-  readonly env: Record<string, string>;
-}
-
-type ServeChoice = { readonly detail: string } | { readonly plan: ServePlan };
 
 /** `serving` is any HTTP answer, `refused` is a closed port, `unknown` a stall. */
 type ProbeResult = "serving" | "refused" | "unknown";
@@ -258,18 +204,6 @@ const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
-
-/** The last non-empty stderr line, which is where a CLI states its own failure. */
-function lastStderrLine(stderr: string): string | undefined {
-  const line = stderr
-    .split("\n")
-    .map((candidate) => candidate.trim())
-    .filter((candidate) => candidate.length > 0)
-    .at(-1);
-  return line === undefined || line.length === 0
-    ? undefined
-    : line.slice(0, 200);
-}
 
 function describeFailure(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -306,11 +240,15 @@ async function probePreview(hostPort: number | null): Promise<ProbeResult> {
   }
 
   try {
-    await fetch(`http://127.0.0.1:${hostPort}/`, {
+    const response = await fetch(`http://127.0.0.1:${hostPort}/`, {
       redirect: "manual",
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
-    return "serving";
+    await response.body?.cancel();
+    return response.headers.get("x-reasonate-preview-upstream") ===
+      "unavailable"
+      ? "refused"
+      : "serving";
   } catch (error) {
     return error instanceof Error && error.name === "TimeoutError"
       ? "unknown"
@@ -318,30 +256,32 @@ async function probePreview(hostPort: number | null): Promise<ProbeResult> {
   }
 }
 
+async function waitForRelay(hostPort: number, deadline: number): Promise<void> {
+  const state = await probePreview(hostPort);
+  if (state === "serving") {
+    return;
+  }
+  if (state === "refused" && Date.now() >= deadline) {
+    throw new Error("The preview relay did not become ready.");
+  }
+  if (Date.now() < deadline) {
+    await sleep(READY_POLL_INTERVAL_MS);
+    return waitForRelay(hostPort, deadline);
+  }
+  throw new Error("The preview relay readiness check timed out.");
+}
+
 export function createPreviewService(
   deps: PreviewServiceDeps = {}
 ): PreviewService {
   const nowMs = deps.nowMs ?? (() => Date.now());
-  const image = deps.image ?? PREVIEW_IMAGE;
-
-  let provider: ISandboxProvider | undefined;
-  const sandboxes = (): ISandboxProvider => {
-    provider ??= deps.provider ? deps.provider() : new DockerSandboxProvider();
-    return provider;
-  };
-
-  let store: CheckpointStore | undefined;
-  const checkpoints = (): CheckpointStore => {
-    store ??=
-      deps.checkpoints?.() ??
-      createGitCheckpointStore({
-        root:
-          deps.checkpointRoot ??
-          process.env.REASONATE_CHECKPOINT_ROOT ??
-          join(homedir(), ".reasonateai", "checkpoints"),
-      });
-    return store;
-  };
+  const namespace = z
+    .string()
+    .regex(PREVIEW_NAMESPACE_PATTERN)
+    .optional()
+    .parse(deps.namespace);
+  const sandboxPrefix = namespace ? `preview-${namespace}-` : "preview-";
+  const containerPrefix = `reasonate-sbx-${sandboxPrefix}`;
 
   const byId = new Map<PreviewId, PreviewRecord>();
   const bySession = new Map<BuildSessionId, PreviewRecord>();
@@ -364,34 +304,17 @@ export function createPreviewService(
   const attachSandbox = async (
     stored: StoredPreview
   ): Promise<ISandbox | undefined> => {
-    const prov = sandboxes();
-    if (
-      "attach" in prov &&
-      typeof (prov as { attach?: unknown }).attach === "function"
-    ) {
-      try {
-        const attached = await (
-          prov as {
-            attach: (config: unknown) => Promise<ISandbox | null>;
-          }
-        ).attach({
-          cpuLimit: PREVIEW_SANDBOX_CPU,
-          id: stored.sandboxId,
-          image,
-          memoryLimitMb: PREVIEW_SANDBOX_MEMORY_MB,
-          networkMode: "bridge",
-          ports: [PREVIEW_PORT],
-          projectId: stored.projectId,
-          runId: null,
-          timeoutMs: SANDBOX_COMMAND_TIMEOUT_MS,
-          workdir: PREVIEW_WORKDIR,
-        });
-        return attached ?? undefined;
-      } catch {
-        return undefined;
-      }
+    if (!(stored.runId && deps.attachRunSandbox)) {
+      return;
     }
-    return undefined;
+    return await deps
+      .attachRunSandbox({
+        buildSessionId: stored.buildSessionId,
+        organizationId: stored.organizationId,
+        projectId: stored.projectId,
+        runId: stored.runId,
+      })
+      .catch(() => undefined);
   };
 
   const live = (record: PreviewRecord): boolean =>
@@ -408,17 +331,53 @@ export function createPreviewService(
   const viewOf = (record: PreviewRecord): PreviewView =>
     PreviewViewSchema.parse({
       detail: record.detail,
-      port: record.hostPort,
+      port:
+        record.status === "stopped" || record.status === "failed"
+          ? null
+          : (record.appPort ?? record.hostPort),
       previewId: record.previewId,
       status: record.status,
       url: `${PREVIEW_PUBLIC_PATH_PREFIX}/${record.previewId}/`,
     });
 
+  const selectedAppPort = async (
+    sandbox: ISandbox | undefined
+  ): Promise<number | null> => {
+    if (!sandbox) {
+      return null;
+    }
+    try {
+      const configuration = AppPreviewConfigurationSchema.parse(
+        JSON.parse(await sandbox.readFile(".reasonate/preview.json"))
+      );
+      if (configuration.port !== undefined) {
+        return configuration.port;
+      }
+    } catch {
+      // Configuration absent or invalid; attempt port auto-discovery
+    }
+    try {
+      const app = await discoverPreviewApp(sandbox);
+      return app?.port ?? null;
+    } catch {
+      return null;
+    }
+  };
+
   const destroySandbox = async (record: PreviewRecord): Promise<void> => {
+    if (record.runId !== null && deps.isRunActive) {
+      try {
+        if (await deps.isRunActive(record.runId)) {
+          return;
+        }
+      } catch {
+        return;
+      }
+    }
     const { sandbox } = record;
     record.sandbox = undefined;
     if (sandbox === undefined) {
-      const containerName = `${PREVIEW_CONTAINER_PREFIX}${record.previewId}`;
+      const containerName = `${containerPrefix}${record.previewId}`;
       await execFileAsync("docker", ["rm", "-f", "-v", containerName]).catch(
         () => undefined
       );
@@ -432,11 +391,74 @@ export function createPreviewService(
     }
   };
 
+  const preparePreview = async (
+    record: PreviewRecord
+  ): Promise<{ appPort: number; hostPort: number; sandbox: ISandbox }> => {
+    if (record.runId === null || !deps.attachRunSandbox) {
+      throw new Error("The selected run sandbox is no longer available.");
+    }
+    const sandbox =
+      record.sandbox ??
+      (await deps.attachRunSandbox({
+        buildSessionId: record.buildSessionId,
+        organizationId: record.organizationId,
+        projectId: record.projectId,
+        runId: record.runId,
+      }));
+    if (!sandbox) {
+      throw new Error("The selected run sandbox is no longer available.");
+    }
+    record.sandbox = sandbox;
+    if (!live(record)) {
+      throw new Error("This preview request has been stopped.");
+    }
+
+    let configuration:
+      | z.infer<typeof AppPreviewConfigurationSchema>
+      | undefined;
+    try {
+      configuration = AppPreviewConfigurationSchema.parse(
+        JSON.parse(await sandbox.readFile(".reasonate/preview.json"))
+      );
+    } catch {
+      configuration = undefined;
+    }
+
+    const app = await discoverPreviewApp(
+      sandbox,
+      configuration?.port,
+      configuration?.host
+    );
+    if (!app) {
+      if (configuration?.port !== undefined) {
+        throw new Error(
+          `The selected app is not listening on port ${configuration.port}.`
+        );
+      }
+      throw new Error("The selected app port was not saved by open_preview.");
+    }
+    const appPort = app.port;
+    record.appPort = appPort;
+    if (!sandbox.exposePort) {
+      throw new Error("This sandbox provider cannot expose the private relay.");
+    }
+    const hostPort = await sandbox.exposePort(PREVIEW_PORT);
+    record.hostPort = hostPort;
+    getPreviewStore()
+      .update(record.previewId, { hostPort })
+      .catch(() => undefined);
+    const selectedBasePath = `${PREVIEW_PUBLIC_PATH_PREFIX}/${record.previewId}/`;
+    await connectPreviewApp(sandbox, app, PREVIEW_PORT, selectedBasePath);
+    await waitForRelay(hostPort, nowMs() + READY_TIMEOUT_MS);
+    return { appPort, hostPort, sandbox };
+  };
+
   /** A failed preview has nothing left to serve, so its sandbox goes with it. */
   const fail = async (record: PreviewRecord, detail: string): Promise<void> => {
     record.status = "failed";
     record.detail = detail.slice(0, DETAIL_MAX_LENGTH);
     record.hostPort = null;
+    record.appPort = null;
     await destroySandbox(record);
     getPreviewStore()
       .update(record.previewId, {
@@ -454,6 +476,8 @@ export function createPreviewService(
     if (bySession.get(record.buildSessionId) === record) {
       bySession.delete(record.buildSessionId);
     }
+    record.hostPort = null;
+    record.appPort = null;
     await destroySandbox(record);
     getPreviewStore()
       .update(record.previewId, {
@@ -461,242 +485,19 @@ export function createPreviewService(
       })
       .catch(() => undefined);
   };
-  /**
-   * How to start what the checkpoint contains: a declared npm script first,
-   * because that is what the project's own author chose, then the directory
-   * itself. Nothing here reaches the network for a tool that is not installed.
-   */
-  const planServing = async (sandbox: ISandbox): Promise<ServeChoice> => {
-    const packageJson = await sandbox
-      .readFile("package.json")
-      .catch(() => undefined);
-
-    if (packageJson !== undefined) {
-      const choice = await planFromPackageJson(sandbox, packageJson);
-      if (choice !== undefined) {
-        return choice;
-      }
-    }
-
-    if (await exists(sandbox, "index.html")) {
-      return await planStatic(sandbox);
-    }
-
-    return {
-      detail: packageJson
-        ? "The checkpoint's package.json declares no dev, start, or preview script, and there is no index.html to serve."
-        : "The checkpoint has neither a package.json nor an index.html to serve.",
-    };
-  };
-
-  /**
-   * The npm path: install once, then run the project's own script. The script
-   * name comes from the checkpoint, so it is validated before it reaches a
-   * shell, and `HOST`/`PORT` are what the app is told to bind.
-   */
-  const planFromPackageJson = async (
-    sandbox: ISandbox,
-    packageJson: string
-  ): Promise<ServeChoice | undefined> => {
-    let parsed: z.infer<typeof PackageJsonSchema>;
-    try {
-      const candidate = PackageJsonSchema.safeParse(JSON.parse(packageJson));
-      if (!candidate.success) {
-        return { detail: "The checkpoint's package.json is not an object." };
-      }
-      parsed = candidate.data;
-    } catch {
-      return { detail: "The checkpoint's package.json is not valid JSON." };
-    }
-
-    const scripts = parsed.scripts ?? {};
-    const script = SCRIPT_NAMES.find((name) => scripts[name] !== undefined);
-    if (script === undefined) {
-      return;
-    }
-    if (!SCRIPT_NAME_PATTERN.test(script)) {
-      return {
-        detail: `The checkpoint's package.json declares a ${script} script name that cannot be run.`,
-      };
-    }
-
-    if (!(await exists(sandbox, "node_modules"))) {
-      const installed = await sandbox.runCommand({
-        args: ["install", "--no-audit", "--no-fund"],
-        command: "npm",
-        timeoutMs: INSTALL_TIMEOUT_MS,
-      });
-      if (installed.exitCode !== 0) {
-        const tail = lastStderrLine(installed.stderr);
-        return {
-          detail: `npm install failed with exit code ${installed.exitCode}${tail === undefined ? "" : `: ${tail}`}.`,
-        };
-      }
-    }
-
-    return {
-      plan: {
-        args: [
-          "-c",
-          `nohup npm run ${script} > ${PREVIEW_LOG_PATH} 2>&1 </dev/null &`,
-        ],
-        command: "sh",
-        env: { HOST: "0.0.0.0", PORT: String(PREVIEW_PORT) },
-      },
-    };
-  };
-
-  /**
-   * The static path: the directory as it is. The image carries Python, so this
-   * is a real server rather than a promise of one; a checkpoint whose static
-   * site cannot be served is reported as failed instead of looking ready.
-   */
-  const planStatic = async (sandbox: ISandbox): Promise<ServeChoice> => {
-    const python = await sandbox.runCommand({
-      args: ["--version"],
-      command: "python3",
-    });
-    if (python.exitCode !== 0) {
-      return { detail: "no static server available" };
-    }
-
-    return {
-      plan: {
-        args: [
-          "-c",
-          `nohup python3 -m http.server ${PREVIEW_PORT} --bind 0.0.0.0 > ${PREVIEW_LOG_PATH} 2>&1 </dev/null &`,
-        ],
-        command: "sh",
-        env: {},
-      },
-    };
-  };
-
-  /**
-   * Polls the app until it answers. The sandbox's own state is checked on the
-   * same beat, so a container that died during startup fails immediately
-   * instead of spending the whole minute on a port that cannot come up. Each
-   * beat is awaited before the next is scheduled, which is a recursion here
-   * because a loop cannot await between its iterations.
-   */
-  const awaitServing = async (
-    sandbox: ISandbox,
-    hostPort: number,
-    deadlineMs: number
-  ): Promise<string | undefined> => {
-    if ((await probePreview(hostPort)) === "serving") {
-      return;
-    }
-
-    const state = await sandbox.getState().catch(() => undefined);
-    if (state !== undefined && state.status !== "running") {
-      return `The preview's sandbox is ${state.status}.`;
-    }
-
-    if (nowMs() >= deadlineMs) {
-      return `The app did not start serving on port ${PREVIEW_PORT} within ${READY_TIMEOUT_MS / 1000} seconds.`;
-    }
-
-    await sleep(READY_POLL_INTERVAL_MS);
-    return await awaitServing(sandbox, hostPort, deadlineMs);
-  };
-
-  const restorableSource = async (record: PreviewRecord) => {
-    const latest:
-      | (CheckpointReference & { commit?: string; empty?: boolean })
-      | undefined = deps.resolveCheckpoint
-      ? record.source
-      : await checkpoints().latest({
-          organizationId: record.organizationId,
-          projectId: record.projectId,
-        });
-    if (latest === undefined) {
-      throw new Error("This project has no saved checkpoint to preview yet.");
-    }
-    if (latest.empty) {
-      throw new Error(
-        "This conversation's workspace is empty before the selected turn."
-      );
-    }
-    return latest;
-  };
-
-  /** Restores, starts, and reports readiness. Nothing here rejects. */
+  /** Connects the relay to the exact app port selected by `open_preview`. */
   const begin = async (record: PreviewRecord): Promise<void> => {
     try {
-      const latest = await restorableSource(record);
-
-      const sandbox = await sandboxes().create({
-        cpuLimit: PREVIEW_SANDBOX_CPU,
-        id: `preview-${record.previewId}`,
-        image,
-        memoryLimitMb: PREVIEW_SANDBOX_MEMORY_MB,
-        // A preview is reached through its published port, which needs an
-        // interface to publish on; the build sandbox's `none` has none.
-        networkMode: "bridge",
-        ports: [PREVIEW_PORT],
-        projectId: record.projectId,
-        runId: null,
-        timeoutMs: SANDBOX_COMMAND_TIMEOUT_MS,
-        workdir: PREVIEW_WORKDIR,
-      });
-      record.sandbox = sandbox;
       if (!live(record)) {
-        await destroySandbox(record);
         return;
       }
-
-      if (sandbox.exposePort === undefined) {
-        await fail(record, "This sandbox provider cannot publish a port.");
+      const { appPort, hostPort, sandbox } = await preparePreview(record);
+      if (!live(record)) {
         return;
       }
-      const hostPort = await sandbox.exposePort(PREVIEW_PORT);
+      record.appPort = appPort;
       record.hostPort = hostPort;
-      getPreviewStore()
-        .update(record.previewId, { hostPort })
-        .catch(() => undefined);
-
-      await restoreSandbox({
-        ...(latest.commit ? { commit: latest.commit } : {}),
-        checkpointId: latest.checkpointId,
-        sandbox,
-        store: checkpoints(),
-        workdir: PREVIEW_WORKDIR,
-      });
-
-      const choice = await planServing(sandbox);
-      if ("detail" in choice) {
-        await fail(record, choice.detail);
-        return;
-      }
-
-      const launched = await sandbox.runCommand({
-        args: choice.plan.args,
-        command: choice.plan.command,
-        env: choice.plan.env,
-        timeoutMs: LAUNCH_TIMEOUT_MS,
-      });
-      if (launched.exitCode !== 0) {
-        await fail(
-          record,
-          `The preview process could not be started (exit code ${launched.exitCode}).`
-        );
-        return;
-      }
-
-      const failure = await awaitServing(
-        sandbox,
-        hostPort,
-        nowMs() + READY_TIMEOUT_MS
-      );
-      if (failure !== undefined) {
-        await fail(record, failure);
-        return;
-      }
-
-      if (!live(record)) {
-        return;
-      }
+      record.sandbox = sandbox;
       record.status = "ready";
       record.detail = null;
       getPreviewStore()
@@ -712,6 +513,15 @@ export function createPreviewService(
       }
       await fail(record, describeFailure(error));
     }
+  };
+
+  const launch = (record: PreviewRecord): void => {
+    if (record.status !== "starting" || record.beginPromise) {
+      return;
+    }
+    record.beginPromise = begin(record).finally(() => {
+      record.beginPromise = undefined;
+    });
   };
 
   /** Confirms a preview still is what it says it is, then reports it. */
@@ -763,25 +573,38 @@ export function createPreviewService(
         reason: "idle_expired" | "container_exited" | "probe_refused";
       };
 
-  const recoverPreviewItem = async (
+  const retireExpiredPreview = async (
     item: StoredPreview,
+    runId: RunId,
     cutoff: number,
     previewRepo: PreviewRepository
-  ): Promise<RecoverItemResult> => {
-    const { containerName, previewId } = item;
-
-    if (item.lastUsedAt.getTime() <= cutoff) {
-      await execFileAsync("docker", ["rm", "-f", "-v", containerName]).catch(
-        () => undefined
-      );
-      await previewRepo.update(previewId, {
-        detail: "Preview retired after idle expiration during service restart.",
-        status: "stopped",
-      });
-      return { outcome: "retired", previewId, reason: "idle_expired" };
+  ): Promise<RecoverItemResult | undefined> => {
+    if (item.lastUsedAt.getTime() > cutoff) {
+      return undefined;
     }
+    const active = deps.isRunActive
+      ? await deps.isRunActive(runId).catch(() => true)
+      : false;
+    if (active) {
+      await previewRepo.touch(item.previewId);
+      return undefined;
+    }
+    const sandbox = await attachSandbox(item);
+    await sandbox?.destroy().catch(() => undefined);
+    await previewRepo.update(item.previewId, {
+      detail: "Preview retired after idle expiration during service restart.",
+      status: "stopped",
+    });
+    return {
+      outcome: "retired",
+      previewId: item.previewId,
+      reason: "idle_expired",
+    };
+  };
 
-    let isRunning = false;
+  const isRunSandboxRunning = async (
+    containerName: string
+  ): Promise<boolean> => {
     try {
       const inspectRes = await execFileAsync("docker", [
         "inspect",
@@ -789,15 +612,75 @@ export function createPreviewService(
         "{{.State.Running}}",
         containerName,
       ]);
-      isRunning = inspectRes.stdout.trim() === "true";
+      return inspectRes.stdout.trim() === "true";
     } catch {
-      isRunning = false;
+      return false;
     }
+  };
 
-    if (!isRunning) {
+  const getPublishedPreviewPort = async (
+    containerName: string,
+    fallback: number | null
+  ): Promise<number | null> => {
+    try {
+      const portRes = await execFileAsync("docker", [
+        "port",
+        containerName,
+        String(PREVIEW_PORT),
+      ]);
+      return parsePublishedPortOutput(portRes.stdout) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
+  const recoveredRecord = async (
+    item: StoredPreview,
+    sandbox: ISandbox | undefined,
+    hostPort: number | null,
+    recoveredStatus: "ready" | "starting"
+  ): Promise<PreviewRecord> => ({
+    appPort: await selectedAppPort(sandbox),
+    buildSessionId: item.buildSessionId,
+    detail: null,
+    hostPort,
+    lastUsedAtMs: nowMs(),
+    organizationId: item.organizationId,
+    previewId: item.previewId,
+    projectId: item.projectId,
+    runId: item.runId,
+    sandbox,
+    status: recoveredStatus,
+  });
+
+  const recoverPreviewItem = async (
+    item: StoredPreview,
+    cutoff: number,
+    previewRepo: PreviewRepository
+  ): Promise<RecoverItemResult> => {
+    const { containerName, previewId } = item;
+
+    if (item.runId === null) {
       await execFileAsync("docker", ["rm", "-f", "-v", containerName]).catch(
         () => undefined
       );
+      await previewRepo.update(previewId, {
+        detail: "The legacy isolated preview sandbox was retired.",
+        status: "stopped",
+      });
+      return { outcome: "retired", previewId, reason: "container_exited" };
+    }
+
+    const expired = await retireExpiredPreview(
+      item,
+      item.runId,
+      cutoff,
+      previewRepo
+    );
+    if (expired) {
+      return expired;
+    }
+    if (!(await isRunSandboxRunning(containerName))) {
       await previewRepo.update(previewId, {
         detail:
           "The preview container exited while the service was restarting.",
@@ -806,26 +689,36 @@ export function createPreviewService(
       return { outcome: "retired", previewId, reason: "container_exited" };
     }
 
-    let { hostPort } = item;
-    try {
-      const portRes = await execFileAsync("docker", [
-        "port",
-        containerName,
-        String(PREVIEW_PORT),
-      ]);
-      const discovered = parsePublishedPortOutput(portRes.stdout);
-      if (discovered !== null) {
-        hostPort = discovered;
-      }
-    } catch {
-      // Keep existing
-    }
+    const hostPort = await getPublishedPreviewPort(
+      containerName,
+      item.hostPort
+    );
 
+    const attached = await attachSandbox(item);
+    const runIsActive = item.runId
+      ? await deps.isRunActive?.(item.runId).catch(() => true)
+      : false;
     const probe = await probePreview(hostPort);
-    if (probe !== "serving") {
-      await execFileAsync("docker", ["rm", "-f", "-v", containerName]).catch(
-        () => undefined
+    if (runIsActive && probe !== "serving" && attached) {
+      await previewRepo.touch(previewId);
+      if (hostPort !== item.hostPort) {
+        await previewRepo.update(previewId, { hostPort, status: "starting" });
+      }
+      const record = await recoveredRecord(
+        item,
+        attached,
+        hostPort,
+        "starting"
       );
+      return {
+        containerName,
+        hostPort,
+        outcome: "recovered",
+        previewId,
+        record,
+      };
+    }
+    if (probe !== "serving") {
       await previewRepo.update(previewId, {
         detail:
           "The preview stopped answering its published port during service restart.",
@@ -834,18 +727,7 @@ export function createPreviewService(
       return { outcome: "retired", previewId, reason: "probe_refused" };
     }
 
-    const attached = await attachSandbox(item);
-    const record: PreviewRecord = {
-      buildSessionId: item.buildSessionId,
-      detail: null,
-      hostPort,
-      lastUsedAtMs: nowMs(),
-      organizationId: item.organizationId,
-      previewId,
-      projectId: item.projectId,
-      sandbox: attached,
-      status: "ready",
-    };
+    const record = await recoveredRecord(item, attached, hostPort, "ready");
 
     if (hostPort !== item.hostPort) {
       await previewRepo.update(previewId, {
@@ -914,14 +796,18 @@ export function createPreviewService(
         "ps",
         "-a",
         "--filter",
-        `name=${PREVIEW_CONTAINER_PREFIX}`,
+        `name=${containerPrefix}`,
         "--format",
         "{{.Names}}",
       ]);
       const allPreviewContainers = listed.stdout
         .split("\n")
         .map((l: string) => l.trim())
-        .filter((n: string) => n.startsWith(PREVIEW_CONTAINER_PREFIX));
+        .filter(
+          (n: string) =>
+            n.startsWith(containerPrefix) &&
+            PreviewIdSchema.safeParse(n.slice(containerPrefix.length)).success
+        );
 
       const trueOrphans = allPreviewContainers.filter(
         (name: string) => !recoveredContainers.has(name)
@@ -960,21 +846,19 @@ export function createPreviewService(
 
   const start = async (request: PreviewRequest): Promise<PreviewView> => {
     await sweepOrphans();
-    const source = await deps.resolveCheckpoint?.(request, checkpoints());
-    const sourceKey = deps.resolveCheckpoint
-      ? JSON.stringify([source?.checkpointId, source?.commit, source?.empty])
-      : undefined;
-    let existing = bySession.get(request.buildSessionId);
+    const persisted = await getPreviewStore().getByRun(request.runId);
+    let existing = persisted ? byId.get(persisted.previewId) : undefined;
     if (existing === undefined) {
       try {
-        const dbExisting = await getPreviewStore().getBySession(
-          request.buildSessionId
-        );
+        const dbExisting = persisted;
         if (
           dbExisting &&
           (dbExisting.status === "ready" || dbExisting.status === "starting")
         ) {
+          const sandbox = await attachSandbox(dbExisting);
+          const appPort = await selectedAppPort(sandbox);
           existing = {
+            appPort,
             buildSessionId: dbExisting.buildSessionId,
             detail: dbExisting.detail,
             hostPort: dbExisting.hostPort,
@@ -982,7 +866,8 @@ export function createPreviewService(
             organizationId: dbExisting.organizationId,
             previewId: dbExisting.previewId,
             projectId: dbExisting.projectId,
-            sandbox: await attachSandbox(dbExisting),
+            runId: dbExisting.runId,
+            sandbox,
             status: dbExisting.status,
           };
           byId.set(existing.previewId, existing);
@@ -996,15 +881,21 @@ export function createPreviewService(
     if (existing !== undefined) {
       // A live preview is adopted: the panel retries a dropped request, and a
       // retry must not leave the first container running behind it.
-      if (existing.status !== "failed" && existing.sourceKey === sourceKey) {
+      if (existing.status !== "failed") {
+        launch(existing);
         return viewOf(touched(existing));
       }
       await teardown(existing);
     }
 
     const previewId = PreviewIdSchema.parse(randomUUID());
-    const containerName = `${PREVIEW_CONTAINER_PREFIX}${previewId}`;
+    const sandboxId =
+      `reasonate-${request.organizationId}-${request.projectId}-${request.buildSessionId}`.replaceAll(
+        /[^a-zA-Z0-9_.-]/g,
+        "-"
+      );
     const record: PreviewRecord = {
+      appPort: null,
       buildSessionId: request.buildSessionId,
       detail: null,
       hostPort: null,
@@ -1012,30 +903,28 @@ export function createPreviewService(
       organizationId: request.organizationId,
       previewId,
       projectId: request.projectId,
+      runId: request.runId,
       sandbox: undefined,
-      source,
-      sourceKey,
       status: "starting",
     };
     byId.set(previewId, record);
     bySession.set(record.buildSessionId, record);
 
-    getPreviewStore()
-      .record({
-        buildSessionId: request.buildSessionId,
-        containerName,
-        organizationId: request.organizationId,
-        previewId,
-        projectId: request.projectId,
-        sandboxId: `preview-${previewId}`,
-        status: "starting",
-      })
-      .catch(() => undefined);
+    await getPreviewStore().record({
+      buildSessionId: request.buildSessionId,
+      containerName: sandboxId,
+      organizationId: request.organizationId,
+      previewId,
+      projectId: request.projectId,
+      runId: request.runId,
+      sandboxId,
+      status: "starting",
+    });
 
     // The caller gets the id and `starting` now; the container, the restore,
     // and the app all happen behind it, and a failure lands in `detail`.
     // `begin` reports its own failures, so there is nothing to await here.
-    begin(record).catch(() => undefined);
+    launch(record);
 
     return viewOf(record);
   };
@@ -1048,7 +937,9 @@ export function createPreviewService(
       try {
         const stored = await getPreviewStore().get(previewId);
         if (stored) {
+          const sandbox = await attachSandbox(stored);
           record = {
+            appPort: await selectedAppPort(sandbox),
             buildSessionId: stored.buildSessionId,
             detail: stored.detail,
             hostPort: stored.hostPort,
@@ -1056,7 +947,8 @@ export function createPreviewService(
             organizationId: stored.organizationId,
             previewId: stored.previewId,
             projectId: stored.projectId,
-            sandbox: await attachSandbox(stored),
+            runId: stored.runId,
+            sandbox,
             status: stored.status,
           };
           byId.set(previewId, record);
@@ -1087,7 +979,9 @@ export function createPreviewService(
       try {
         const stored = await getPreviewStore().get(previewId);
         if (stored) {
+          const sandbox = await attachSandbox(stored);
           record = {
+            appPort: await selectedAppPort(sandbox),
             buildSessionId: stored.buildSessionId,
             detail: stored.detail,
             hostPort: stored.hostPort,
@@ -1095,7 +989,8 @@ export function createPreviewService(
             organizationId: stored.organizationId,
             previewId: stored.previewId,
             projectId: stored.projectId,
-            sandbox: await attachSandbox(stored),
+            runId: stored.runId,
+            sandbox,
             status: stored.status,
           };
         }
@@ -1111,6 +1006,7 @@ export function createPreviewService(
     record.status = "stopped";
     record.detail = null;
     record.hostPort = null;
+    record.appPort = null;
     return viewOf(record);
   };
 
@@ -1127,7 +1023,9 @@ export function createPreviewService(
       try {
         const stored = await getPreviewStore().get(previewId);
         if (stored) {
+          const sandbox = await attachSandbox(stored);
           record = {
+            appPort: await selectedAppPort(sandbox),
             buildSessionId: stored.buildSessionId,
             detail: stored.detail,
             hostPort: stored.hostPort,
@@ -1135,7 +1033,8 @@ export function createPreviewService(
             organizationId: stored.organizationId,
             previewId: stored.previewId,
             projectId: stored.projectId,
-            sandbox: await attachSandbox(stored),
+            runId: stored.runId,
+            sandbox,
             status: stored.status,
           };
           byId.set(previewId, record);
@@ -1174,15 +1073,25 @@ export function createPreviewService(
           expired
             .filter((item) => !byId.has(item.previewId))
             .map(async (item) => {
-              try {
+              if (item.runId && deps.isRunActive) {
+                const active = await deps
+                  .isRunActive(item.runId)
+                  .catch(() => true);
+                if (active) {
+                  await getPreviewStore().touch(item.previewId);
+                  return;
+                }
+              }
+              const sandbox = await attachSandbox(item);
+              if (sandbox) {
+                await sandbox.destroy().catch(() => undefined);
+              } else if (item.runId === null) {
                 await execFileAsync("docker", [
                   "rm",
                   "-f",
                   "-v",
                   item.containerName,
-                ]);
-              } catch {
-                // Ignore teardown failure
+                ]).catch(() => undefined);
               }
               await getPreviewStore().update(item.previewId, {
                 status: "stopped",
@@ -1205,39 +1114,5 @@ export function createPreviewService(
     await Promise.all(Array.from(byId.values(), (record) => teardown(record)));
   };
 
-  const registerExitHook =
-    deps.registerExitHook ??
-    ((teardownAll: () => void): void => {
-      process.once("exit", teardownAll);
-    });
-
-  registerExitHook(() => {
-    for (const record of byId.values()) {
-      const { sandbox } = record;
-      if (sandbox === undefined) {
-        continue;
-      }
-      // `exit` cannot await, so the synchronous teardown is what actually runs
-      // here; `disposeAll` and the sweep are the graceful paths.
-      if (sandbox.destroySync === undefined) {
-        sandbox.destroy().catch(() => undefined);
-      } else {
-        sandbox.destroySync();
-      }
-    }
-  });
-
   return { disposeAll, recover, start, status, stop, sweepOrphans, target };
-}
-
-/** Whether a path exists in the sandbox, file or directory. */
-async function exists(
-  sandbox: ISandbox,
-  relativePath: string
-): Promise<boolean> {
-  const result = await sandbox.runCommand({
-    args: ["-e", relativePath],
-    command: "test",
-  });
-  return result.exitCode === 0;
 }

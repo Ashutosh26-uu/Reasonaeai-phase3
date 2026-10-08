@@ -18,6 +18,8 @@ import {
   type ConversationAttachment,
   type ConversationMessage,
   ConversationMessageSchema,
+  type ConversationMetadata,
+  ConversationMetadataSchema,
   type ConversationSummary,
   ConversationSummarySchema,
   type PromptAttachment,
@@ -26,6 +28,8 @@ import {
   type SandboxEnvironmentId,
   SandboxEnvironmentIdSchema,
   SandboxEnvironmentSchema,
+  type UpdateConversationRequest,
+  UpdateConversationRequestSchema,
 } from "@reasonateai/contracts/execution";
 import {
   type ArtifactManifest,
@@ -87,6 +91,49 @@ import { createUsageRepository, type UsageRepository } from "./usage.js";
 import { USAGE_MIGRATION_SQL } from "./usage-schema.js";
 import { createUserRepository, type UserRepository } from "./users.js";
 
+function conversationMetadata(
+  buildSessionId: BuildSessionId,
+  title: string | null,
+  archivedAt: Date | null,
+  updatedAt: Date
+): ConversationMetadata {
+  return ConversationMetadataSchema.parse({
+    archivedAt: archivedAt ? asIso(archivedAt) : null,
+    buildSessionId,
+    title,
+    updatedAt: asIso(updatedAt),
+  });
+}
+
+async function assertConversationArchivable(
+  client: PoolClient,
+  update: UpdateConversationRequest,
+  input: {
+    buildSessionId: BuildSessionId;
+    runId: string;
+    scope: TenantScope;
+  }
+): Promise<void> {
+  if (!("archived" in update && update.archived)) {
+    return;
+  }
+  const pending = await client.query(
+    `select 1 from runs r left join run_leases l using(run_id)
+      where r.organization_id=$1 and r.project_id=$2
+        and (r.build_session_id=$3 or r.run_id=$4)
+        and (r.status not in ('completed', 'failed', 'cancelled') or l.expires_at>now()) limit 1`,
+    [
+      input.scope.organizationId,
+      input.scope.projectId,
+      input.buildSessionId,
+      input.runId,
+    ]
+  );
+  if (pending.rowCount) {
+    throw new ConversationBusyError();
+  }
+}
+
 export interface TenantScope {
   organizationId: OrganizationId;
   projectId: ProjectId;
@@ -96,6 +143,13 @@ export interface BuildSessionAllocation {
   buildSession: BuildSession;
   created: boolean;
   sandbox: SandboxEnvironment;
+}
+
+export class ConversationArchivedError extends Error {
+  constructor() {
+    super("Restore this archived conversation before sending another turn.");
+    this.name = "ConversationArchivedError";
+  }
 }
 
 export class ConversationBusyError extends Error {
@@ -431,7 +485,10 @@ export interface ProjectStateStore {
     scope: TenantScope;
     userId?: UserId;
   }) => Promise<ConversationMessage[]>;
-  listConversations: (scope: TenantScope) => Promise<ConversationSummary[]>;
+  listConversations: (
+    scope: TenantScope,
+    archived?: boolean
+  ) => Promise<ConversationSummary[]>;
   /**
    * The caller's own organizations, for the session view. Membership is
    * resolved from the caller's identifier and nowhere else, so a caller cannot
@@ -541,6 +598,12 @@ export interface ProjectStateStore {
     scope: TenantScope;
     toolCallId: string;
   }) => Promise<string | undefined>;
+  updateConversation: (input: {
+    scope: TenantScope;
+    buildSessionId: BuildSessionId;
+    update: UpdateConversationRequest;
+    audit: AuditEvent;
+  }) => Promise<ConversationMetadata | undefined>;
   usage: UsageRepository;
   users: UserRepository;
 }
@@ -942,8 +1005,11 @@ export function createProjectStateStore(config: {
         "select project_id from projects where organization_id=$1 and project_id=$2 for update",
         [input.scope.organizationId, input.scope.projectId]
       );
-      const session = await client.query<{ build_session_id: string }>(
-        `select build_session_id from build_sessions
+      const session = await client.query<{
+        build_session_id: string;
+        archived_at: Date | null;
+      }>(
+        `select build_session_id, archived_at from build_sessions
           where build_session_id = $1 and organization_id = $2 and project_id = $3
           for update`,
         [
@@ -955,7 +1021,6 @@ export function createProjectStateStore(config: {
       if (session.rowCount !== 1) {
         throw new Error("Conversation not found in this project.");
       }
-
       const replay = await client.query<{
         run_id: string;
       }>(
@@ -974,6 +1039,9 @@ export function createProjectStateStore(config: {
           created: false,
           runId: RunIdSchema.parse(replay.rows[0].run_id),
         };
+      }
+      if (session.rows[0]?.archived_at) {
+        throw new ConversationArchivedError();
       }
 
       const active = await client.query(
@@ -1046,24 +1114,27 @@ export function createProjectStateStore(config: {
   }
 
   async function listConversations(
-    scope: TenantScope
+    scope: TenantScope,
+    archived = false
   ): Promise<ConversationSummary[]> {
     const result = await pool.query(
-      `select bs.build_session_id, bs.created_at, bs.updated_at, bs.status,
+      `select bs.build_session_id, bs.created_at, bs.updated_at, bs.status, bs.archived_at,
               bs.run_id, r.status as run_status,
-              (select left(trim(first_run.user_message), 120)
+              coalesce(bs.title, (select left(trim(first_run.user_message), 120)
                  from runs first_run join conversation_history history on history.run_id=first_run.run_id
                 where history.build_session_id = bs.build_session_id
                   and first_run.user_message is not null
-                order by first_run.created_at, first_run.run_id limit 1) as title
+                order by first_run.created_at, first_run.run_id limit 1)) as title
          from build_sessions bs
          join runs r on r.run_id = bs.run_id
         where bs.organization_id = $1 and bs.project_id = $2
+          and (bs.archived_at is not null) = $3
         order by bs.updated_at desc, bs.build_session_id desc`,
-      [scope.organizationId, scope.projectId]
+      [scope.organizationId, scope.projectId, archived]
     );
     return result.rows.map((row) =>
       ConversationSummarySchema.parse({
+        archivedAt: row.archived_at ? asIso(row.archived_at as Date) : null,
         buildSessionId: row.build_session_id,
         createdAt: asIso(row.created_at as Date),
         latestRunId: row.run_id,
@@ -1078,6 +1149,78 @@ export function createProjectStateStore(config: {
         updatedAt: asIso(row.updated_at as Date),
       })
     );
+  }
+
+  async function updateConversation(input: {
+    scope: TenantScope;
+    buildSessionId: BuildSessionId;
+    update: UpdateConversationRequest;
+    audit: AuditEvent;
+  }): Promise<ConversationMetadata | undefined> {
+    const update = UpdateConversationRequestSchema.parse(input.update);
+    return await withTransaction(async (client) => {
+      // Match history/turn admission lock order so archive cannot race either.
+      await client.query(
+        "select project_id from projects where organization_id=$1 and project_id=$2 for update",
+        [input.scope.organizationId, input.scope.projectId]
+      );
+      const selected = await client.query<{
+        run_id: string;
+        title: string | null;
+        archived_at: Date | null;
+        updated_at: Date;
+      }>(
+        `select run_id, title, archived_at, updated_at from build_sessions
+          where organization_id = $1 and project_id = $2 and build_session_id = $3
+          for update`,
+        [
+          input.scope.organizationId,
+          input.scope.projectId,
+          input.buildSessionId,
+        ]
+      );
+      const [row] = selected.rows;
+      if (!row) {
+        return;
+      }
+      await assertConversationArchivable(client, update, {
+        buildSessionId: input.buildSessionId,
+        runId: row.run_id,
+        scope: input.scope,
+      });
+      const title = "title" in update ? update.title : row.title;
+      let archivedAt = row.archived_at;
+      if ("archived" in update) {
+        archivedAt = update.archived ? (row.archived_at ?? new Date()) : null;
+      }
+      // Repeating an archive/restore/rename has no extra audit or timestamp effect.
+      if (title === row.title && archivedAt === row.archived_at) {
+        return conversationMetadata(
+          input.buildSessionId,
+          title,
+          archivedAt,
+          row.updated_at
+        );
+      }
+      const changed = await client.query<{ updated_at: Date }>(
+        `update build_sessions set title = $4, archived_at = $5, updated_at = now()
+          where organization_id = $1 and project_id = $2 and build_session_id = $3 returning updated_at`,
+        [
+          input.scope.organizationId,
+          input.scope.projectId,
+          input.buildSessionId,
+          title,
+          archivedAt,
+        ]
+      );
+      await recordWith(client, input.audit);
+      return conversationMetadata(
+        input.buildSessionId,
+        title,
+        archivedAt,
+        changed.rows[0]?.updated_at ?? row.updated_at
+      );
+    });
   }
 
   async function listConversationMessages(input: {
@@ -2399,6 +2542,7 @@ export function createProjectStateStore(config: {
     setRunStatus,
     steering,
     takeRunAnswer,
+    updateConversation,
     usage,
     users,
   };

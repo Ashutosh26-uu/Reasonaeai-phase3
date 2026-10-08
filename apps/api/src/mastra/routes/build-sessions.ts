@@ -18,8 +18,10 @@ import {
   BuildSessionIdSchema,
   BuildSessionSchema,
   ConversationListSchema,
+  ConversationMetadataSchema,
   ConversationTurnAcceptedSchema,
   type PromptAttachment,
+  UpdateConversationRequestSchema,
 } from "@reasonateai/contracts/execution";
 import {
   ConversationTranscriptSchema,
@@ -37,11 +39,13 @@ import {
 } from "@reasonateai/contracts/identity";
 import {
   type BuildSessionAllocation,
+  ConversationArchivedError,
   ConversationBusyError,
   type ProjectStateStore,
 } from "@reasonateai/project-state/postgres";
 import { z } from "zod";
 import { apiErrorResponse } from "../principal";
+import { auditEvent } from "./auth";
 
 /**
  * Product routes live outside the `/api` prefix on purpose. The ingress denial
@@ -161,7 +165,10 @@ async function appendAcceptedConversationTurn(input: {
       organizationId: input.scope.organizationId,
       runId: null,
     });
-    if (error instanceof ConversationBusyError) {
+    if (
+      error instanceof ConversationBusyError ||
+      error instanceof ConversationArchivedError
+    ) {
       return apiErrorResponse({
         code: "conflict",
         message: error.message,
@@ -917,10 +924,21 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
           requestId: rid,
         });
       }
-      const conversations = await deps.store().listConversations({
-        organizationId: organizationId.data,
-        projectId: projectId.data,
-      });
+      const archived = c.req.query("archived") ?? "false";
+      if (archived !== "true" && archived !== "false") {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message: "The archived filter must be true or false.",
+          requestId: rid,
+        });
+      }
+      const conversations = await deps.store().listConversations(
+        {
+          organizationId: organizationId.data,
+          projectId: projectId.data,
+        },
+        archived === "true"
+      );
       return c.json(ConversationListSchema.parse({ conversations }), 200);
     },
 
@@ -991,6 +1009,111 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
         { buildSession: BuildSessionSchema.parse(buildSession) },
         200
       );
+    },
+    updateConversation: async (c: HandlerContext): Promise<Response> => {
+      const requestId = c.req.header("x-request-id") ?? crypto.randomUUID();
+      const principal = await deps.resolvePrincipal({
+        cookieHeader: c.req.header("cookie"),
+      });
+      if (!principal) {
+        return apiErrorResponse({
+          code: "unauthenticated",
+          message: "A valid browser session is required.",
+          requestId,
+        });
+      }
+      const organizationId = OrganizationIdSchema.safeParse(
+        c.req.query("organizationId")
+      );
+      const projectId = ProjectIdSchema.safeParse(c.req.query("projectId"));
+      const buildSessionId = BuildSessionIdSchema.safeParse(
+        c.req.param("buildSessionId")
+      );
+      const body = UpdateConversationRequestSchema.safeParse(
+        await c.req.json().catch(() => null)
+      );
+      if (
+        !(
+          organizationId.success &&
+          projectId.success &&
+          buildSessionId.success &&
+          body.success
+        )
+      ) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message:
+            "Provide the conversation scope and either a title (1–500 characters) or an archive decision.",
+          requestId,
+        });
+      }
+      const scope = {
+        organizationId: organizationId.data,
+        projectId: projectId.data,
+      };
+      const decision = await authorizeProjectAction({
+        action: "project:update",
+        deps,
+        principal,
+        ...scope,
+      });
+      if (!decision.allowed) {
+        await deps.store().audit.record(
+          auditEvent({
+            action: "authorization.denied",
+            actor: principal,
+            metadata: { action: "project:update", reason: decision.reason },
+            ...scope,
+            requestId,
+          })
+        );
+        return apiErrorResponse({
+          code: "forbidden",
+          message: "You are not authorized to manage this conversation.",
+          requestId,
+        });
+      }
+      let action:
+        | "conversation.renamed"
+        | "conversation.archived"
+        | "conversation.restored" = "conversation.renamed";
+      if ("archived" in body.data) {
+        action = body.data.archived
+          ? "conversation.archived"
+          : "conversation.restored";
+      }
+      try {
+        const result = await deps.store().updateConversation({
+          audit: auditEvent({
+            action,
+            actor: principal,
+            metadata: { buildSessionId: buildSessionId.data },
+            ...scope,
+            requestId,
+          }),
+          buildSessionId: buildSessionId.data,
+          scope,
+          update: body.data,
+        });
+        if (!result) {
+          return apiErrorResponse({
+            code: "not_found",
+            message: "No such conversation.",
+            requestId,
+          });
+        }
+        return c.json(ConversationMetadataSchema.parse(result), 200);
+      } catch (cause) {
+        if (cause instanceof ConversationBusyError) {
+          return apiErrorResponse({
+            code: "conflict",
+            message:
+              "Wait for the current run to finish before archiving this conversation.",
+            requestId,
+          });
+        }
+        throw cause;
+      }
     },
   };
 }

@@ -1,21 +1,23 @@
 "use client";
 
+import type { ConversationMessage } from "@reasonateai/contracts/execution";
 import {
   ArrowLeft,
   ArrowRight,
-  Code2,
   ExternalLink,
-  Eye,
   FileCode2,
   FolderClosed,
   Loader2,
   Monitor,
+  Plus,
   RotateCw,
   Smartphone,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { Timeline } from "@/components/chat/timeline";
 import { request } from "@/lib/product-api";
+import type { AgentPreviewSelection } from "./agent-preview";
 import { FileContentPreview } from "./file-content";
 import styles from "./panel.module.css";
 import {
@@ -28,14 +30,31 @@ import {
   recordPreviewPath,
   workspaceFilePath,
 } from "./preview-path";
+import {
+  addWorkspaceTab,
+  chooseWorkspaceView,
+  closeWorkspaceTab,
+  INITIAL_WORKSPACE_TABS,
+  MAX_WORKSPACE_TABS,
+  openWorkspaceView,
+  parseWorkspaceTabs,
+  type WorkspaceTabs,
+  type WorkspaceView,
+  workspaceTabsKey,
+} from "./workspace-tabs";
+import {
+  ChangesView,
+  NewWorkspaceTab,
+  RunActivityView,
+  WORKSPACE_VIEWS,
+} from "./workspace-views";
 
 /**
  * The workspace panel: what the agent actually produced.
  *
- * Two views of one thing. Files reads the project's latest Git checkpoint, so it
- * is the real source rather than a rendering of it, and Preview runs that source
- * in its own sandbox and frames it. Without this the conversation is a claim
- * about a product nobody can look at.
+ * Files and Changes read saved Git checkpoints. App preview attaches to the
+ * current run's existing mutable sandbox and selected app port; it does not
+ * wait for or restore a checkpoint. Live unsaved file browsing is not exposed.
  */
 
 interface TreeEntry {
@@ -61,6 +80,7 @@ interface FileResponse {
 
 interface PreviewResponse {
   detail: string | null;
+  port: number | null;
   previewId: string;
   status: "failed" | "ready" | "starting" | "stopped";
   url: string;
@@ -68,10 +88,16 @@ interface PreviewResponse {
 
 export interface PanelProps {
   buildSessionId: string;
+  messages: ConversationMessage[];
+  newTabRequest: number;
   onClose: () => void;
+  onNewTabHandled: () => void;
   organizationId: string;
+  previewSelection?: AgentPreviewSelection | undefined;
   projectId: string;
   refreshKey?: number | undefined;
+  requestedView: "new" | "preview";
+  timeline: Timeline;
 }
 
 const treeUrl = (
@@ -262,13 +288,21 @@ function FilesView({
   );
 }
 
-function ReadyPreview({ root }: { root: string }) {
+function ReadyPreview({
+  root,
+  port,
+  initialPath,
+}: {
+  root: string;
+  port: number | null;
+  initialPath: string;
+}) {
   const [history, setHistory] = useState<PreviewHistory>({
     index: 0,
-    paths: ["/"],
+    paths: [initialPath],
   });
-  const [framePath, setFramePath] = useState("/");
-  const [address, setAddress] = useState("/");
+  const [framePath, setFramePath] = useState(initialPath);
+  const [address, setAddress] = useState(initialPath);
   const [navigationError, setNavigationError] = useState("");
   const [locationNotice, setLocationNotice] = useState("");
   const [loading, setLoading] = useState(true);
@@ -276,7 +310,7 @@ function ReadyPreview({ root }: { root: string }) {
   const [revision, setRevision] = useState(0);
   const [mobile, setMobile] = useState(false);
   const frame = useRef<HTMLIFrameElement>(null);
-  const pendingPath = useRef<string | null>("/");
+  const pendingPath = useRef<string | null>(initialPath);
   const currentPath = history.paths[history.index] ?? "/";
   const source = previewTransportUrl(root, framePath);
   const openUrl = previewTransportUrl(root, currentPath);
@@ -407,6 +441,17 @@ function ReadyPreview({ root }: { root: string }) {
 
   return (
     <>
+      <div className="workspace-preview-address">
+        <a
+          href={openUrl ?? root}
+          rel="noopener noreferrer"
+          target="_blank"
+          title={openUrl ?? root}
+        >
+          {openUrl ?? root}
+        </a>
+        {port && <span>Preview port {port}</span>}
+      </div>
       <div className={styles.chrome}>
         <button
           aria-label="Back in preview"
@@ -521,10 +566,16 @@ function PreviewView({
   buildSessionId,
   organizationId,
   projectId,
+  runId,
+  selectedPort,
+  initialPath,
 }: {
   buildSessionId: string;
   organizationId: string;
   projectId: string;
+  runId: string | undefined;
+  selectedPort: number | undefined;
+  initialPath: string;
 }) {
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [error, setError] = useState("");
@@ -533,9 +584,16 @@ function PreviewView({
   const start = useCallback(async () => {
     setStarting(true);
     setError("");
+    if (!runId) {
+      setError(
+        "Ask the agent to open the running app with open_preview first."
+      );
+      setStarting(false);
+      return;
+    }
     try {
       const created = await request(
-        `/v1/build-sessions/${buildSessionId}/preview?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}`,
+        `/v1/build-sessions/${buildSessionId}/preview?organizationId=${encodeURIComponent(organizationId)}&projectId=${encodeURIComponent(projectId)}&runId=${encodeURIComponent(runId)}`,
         (value) => value as PreviewResponse,
         { method: "POST" }
       );
@@ -547,16 +605,14 @@ function PreviewView({
     } finally {
       setStarting(false);
     }
-  }, [buildSessionId, organizationId, projectId]);
+  }, [buildSessionId, organizationId, projectId, runId]);
 
   useEffect(() => {
     start().catch(() => undefined);
   }, [start]);
 
-  // Poll while the sandbox is coming up, so the panel reports readiness rather
-  // than guessing at it. A preview is process-local state: an API restart drops
-  // the registry, and the honest answer to a preview this process no longer
-  // knows is to start it again rather than to show a dead panel.
+  // Poll while the relay is connecting. The API persists a run-scoped preview
+  // lease and can reattach to the same sandbox after a process restart.
   useEffect(() => {
     if (preview === null || preview.status !== "starting") {
       return;
@@ -598,8 +654,8 @@ function PreviewView({
   if (preview === null || preview.status === "starting") {
     return (
       <div className="panel-state">
-        <Loader2 aria-hidden="true" className="spin" size={15} /> Starting the
-        app from the latest checkpoint…
+        <Loader2 aria-hidden="true" className="spin" size={15} /> Connecting to
+        port {selectedPort ?? "—"} in this run sandbox…
       </div>
     );
   }
@@ -643,66 +699,312 @@ function PreviewView({
       </div>
     );
   }
-  return <ReadyPreview key={root} root={root} />;
+  return (
+    <ReadyPreview
+      initialPath={initialPath}
+      key={`${root}:${initialPath}`}
+      port={preview.port}
+      root={root}
+    />
+  );
 }
 
-export function Panel({
-  buildSessionId,
-  onClose,
-  organizationId,
-  projectId,
-  refreshKey,
-}: PanelProps) {
-  const [tab, setTab] = useState<"files" | "preview">("preview");
-  const showFiles = useCallback(() => setTab("files"), []);
-  const showPreview = useCallback(() => setTab("preview"), []);
-
+function AppPreviewContent(props: PanelProps) {
+  const selection = props.previewSelection;
   return (
-    <aside className="panel">
-      <div className="panel-head">
-        <div className="panel-tabs">
-          <button
-            className="panel-tab"
-            data-active={tab === "preview" || undefined}
-            onClick={showPreview}
-            type="button"
-          >
-            <Eye aria-hidden="true" size={14} /> Preview
-          </button>
-          <button
-            className="panel-tab"
-            data-active={tab === "files" || undefined}
-            onClick={showFiles}
-            type="button"
-          >
-            <Code2 aria-hidden="true" size={14} /> Files
-          </button>
+    <PreviewView
+      {...props}
+      initialPath={selection?.path ?? "/"}
+      key={`${props.buildSessionId}:${props.refreshKey ?? 0}:${selection?.runId ?? ""}:${selection?.sequence ?? 0}`}
+      runId={selection?.runId}
+      selectedPort={selection?.port}
+    />
+  );
+}
+
+function AppWorkspaceView(props: PanelProps) {
+  const [view, setView] = useState<"preview" | "files" | "changes">("preview");
+  const chooseView = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      const next = event.currentTarget.value;
+      if (next === "preview" || next === "files" || next === "changes") {
+        setView(next);
+      }
+    },
+    []
+  );
+  return (
+    <>
+      <fieldset
+        aria-label="App preview views"
+        className="workspace-preview-views"
+      >
+        <button
+          aria-pressed={view === "preview"}
+          onClick={chooseView}
+          type="button"
+          value="preview"
+        >
+          Preview
+        </button>
+        <button
+          aria-pressed={view === "files"}
+          onClick={chooseView}
+          type="button"
+          value="files"
+        >
+          Files
+        </button>
+        <button
+          aria-pressed={view === "changes"}
+          onClick={chooseView}
+          type="button"
+          value="changes"
+        >
+          Changes
+        </button>
+      </fieldset>
+      <div className="workspace-tab-content" hidden={view !== "preview"}>
+        <AppPreviewContent {...props} />
+      </div>
+      {view === "files" && <FilesView {...props} />}
+      {view === "changes" && (
+        <ChangesView scope={props} timeline={props.timeline} />
+      )}
+    </>
+  );
+}
+
+function WorkspaceTabBody({
+  tab,
+  onChoose,
+  ...props
+}: PanelProps & {
+  tab: { id: string; view: WorkspaceView };
+  onChoose: (id: string, view: WorkspaceView) => void;
+}) {
+  const choose = useCallback(
+    (view: WorkspaceView) => onChoose(tab.id, view),
+    [onChoose, tab.id]
+  );
+  return <WorkspaceViewContent {...props} onChoose={choose} view={tab.view} />;
+}
+
+function WorkspaceViewContent({
+  view,
+  onChoose,
+  ...props
+}: PanelProps & {
+  view: WorkspaceView;
+  onChoose: (view: WorkspaceView) => void;
+}) {
+  switch (view) {
+    case "preview":
+      return <AppWorkspaceView {...props} />;
+    case "files":
+      return <FilesView {...props} />;
+    case "changes":
+      return <ChangesView scope={props} timeline={props.timeline} />;
+    case "activity":
+      return (
+        <RunActivityView messages={props.messages} timeline={props.timeline} />
+      );
+    default:
+      return <NewWorkspaceTab onChoose={onChoose} />;
+  }
+}
+
+export function Panel(props: PanelProps) {
+  const { buildSessionId, organizationId, projectId } = props;
+  const storageKey = workspaceTabsKey(
+    organizationId,
+    projectId,
+    buildSessionId
+  );
+  const [state, setState] = useState(INITIAL_WORKSPACE_TABS);
+  const [loaded, setLoaded] = useState(false);
+  const [visited, setVisited] = useState<string[]>([]);
+  useEffect(() => {
+    if (loaded) {
+      setVisited((current) =>
+        current.includes(state.activeId)
+          ? current
+          : [...current, state.activeId]
+      );
+    }
+  }, [loaded, state.activeId]);
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let saved: WorkspaceTabs | undefined;
+    try {
+      saved = parseWorkspaceTabs(
+        JSON.parse(window.sessionStorage.getItem(storageKey) ?? "null")
+      );
+    } catch {
+      saved = undefined;
+    }
+    setState(saved ?? INITIAL_WORKSPACE_TABS);
+    setLoaded(true);
+  }, [storageKey]);
+  useEffect(() => {
+    if (!loaded) {
+      return;
+    }
+    try {
+      window.sessionStorage.setItem(storageKey, JSON.stringify(state));
+    } catch {
+      /* Tabs still work when browser storage is unavailable. */
+    }
+  }, [loaded, state, storageKey]);
+  useEffect(() => {
+    if (!loaded || props.newTabRequest <= 0) {
+      return;
+    }
+    setState((current) =>
+      props.requestedView === "preview"
+        ? openWorkspaceView(current, "preview", crypto.randomUUID())
+        : addWorkspaceTab(current, crypto.randomUUID())
+    );
+    props.onNewTabHandled();
+  }, [loaded, props.newTabRequest, props.requestedView, props.onNewTabHandled]);
+  const newTab = useCallback(
+    () => setState((current) => addWorkspaceTab(current, crypto.randomUUID())),
+    []
+  );
+  const handleTabKeys = useCallback((event: React.KeyboardEvent) => {
+    if (
+      !(event.target instanceof HTMLElement) ||
+      event.target.getAttribute("role") !== "tab"
+    ) {
+      return;
+    }
+    const tabs = Array.from(
+      listRef.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? []
+    );
+    const index = tabs.indexOf(event.target as HTMLButtonElement);
+    let next = index;
+    if (event.key === "ArrowRight") {
+      next = (index + 1) % tabs.length;
+    } else if (event.key === "ArrowLeft") {
+      next = (index + tabs.length - 1) % tabs.length;
+    } else if (event.key === "Home") {
+      next = 0;
+    } else if (event.key === "End") {
+      next = tabs.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    tabs[next]?.focus();
+    tabs[next]?.click();
+  }, []);
+  const selectTab = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      const id = event.currentTarget.value;
+      setState((current) => ({ ...current, activeId: id }));
+    },
+    []
+  );
+  const chooseTabView = useCallback(
+    (id: string, view: WorkspaceView) =>
+      setState((current) => chooseWorkspaceView(current, id, view)),
+    []
+  );
+  const closeTab = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    const id = event.currentTarget.value;
+    setState((current) => closeWorkspaceTab(current, id));
+  }, []);
+  return (
+    <aside aria-label="Conversation workspace" className="panel">
+      <div className="panel-head workspace-tabs-head">
+        <div
+          aria-label="Workspace views"
+          className="workspace-tab-strip"
+          onKeyDown={handleTabKeys}
+          ref={listRef}
+          role="tablist"
+        >
+          {state.tabs.map((tab) => {
+            const definition = WORKSPACE_VIEWS.find(
+              (item) => item.view === tab.view
+            );
+            const Icon = definition?.icon ?? Plus;
+            const title = definition?.title ?? "New tab";
+            return (
+              <div
+                className="workspace-tab"
+                data-active={state.activeId === tab.id || undefined}
+                key={tab.id}
+              >
+                <button
+                  aria-controls={`workspace-view-${tab.id}`}
+                  aria-selected={state.activeId === tab.id}
+                  className="workspace-tab-select"
+                  id={`workspace-tab-${tab.id}`}
+                  onClick={selectTab}
+                  role="tab"
+                  tabIndex={state.activeId === tab.id ? 0 : -1}
+                  type="button"
+                  value={tab.id}
+                >
+                  <Icon aria-hidden="true" size={16} />
+                  <span>{title}</span>
+                </button>
+                <button
+                  aria-label={`Close ${title} tab`}
+                  className="workspace-tab-close"
+                  onClick={closeTab}
+                  type="button"
+                  value={tab.id}
+                >
+                  <X aria-hidden="true" size={13} />
+                </button>
+              </div>
+            );
+          })}
         </div>
+        <button
+          aria-label="New workspace tab"
+          className="panel-close"
+          disabled={
+            state.tabs.length >= MAX_WORKSPACE_TABS &&
+            !state.tabs.some((tab) => tab.view === "new")
+          }
+          onClick={newTab}
+          title="New workspace tab"
+          type="button"
+        >
+          <Plus aria-hidden="true" size={18} />
+        </button>
         <button
           aria-label="Close the workspace panel"
           className="panel-close"
-          onClick={onClose}
+          onClick={props.onClose}
           type="button"
         >
-          <X size={14} />
+          <X aria-hidden="true" size={16} />
         </button>
       </div>
       <div className="panel-body">
-        {tab === "preview" ? (
-          <PreviewView
-            buildSessionId={buildSessionId}
-            key={`${buildSessionId}:${refreshKey ?? 0}`}
-            organizationId={organizationId}
-            projectId={projectId}
-          />
-        ) : (
-          <FilesView
-            buildSessionId={buildSessionId}
-            organizationId={organizationId}
-            projectId={projectId}
-            refreshKey={refreshKey}
-          />
-        )}
+        {loaded &&
+          state.tabs.map((tab) => (
+            <div
+              aria-labelledby={`workspace-tab-${tab.id}`}
+              className="workspace-tab-content"
+              hidden={state.activeId !== tab.id}
+              id={`workspace-view-${tab.id}`}
+              key={tab.id}
+              role="tabpanel"
+            >
+              {(state.activeId === tab.id || visited.includes(tab.id)) && (
+                <WorkspaceTabBody
+                  {...props}
+                  onChoose={chooseTabView}
+                  tab={tab}
+                />
+              )}
+            </div>
+          ))}
       </div>
     </aside>
   );

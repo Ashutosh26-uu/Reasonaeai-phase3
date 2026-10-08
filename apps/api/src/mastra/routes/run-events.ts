@@ -210,6 +210,14 @@ export function createRunEventHandlers(deps: RunEventRouteDeps) {
         : (query.data.after ?? 0);
 
       const { runId } = buildSession;
+      const run = await deps.store().getRun({ ...scope, runId });
+      if (!run) {
+        return apiErrorResponse({
+          code: "not_found",
+          message: "No such run in this project.",
+          requestId: rid,
+        });
+      }
       const encoder = new TextEncoder();
       const abortSignal = c.req.raw?.signal;
 
@@ -339,7 +347,9 @@ export function createRunEventHandlers(deps: RunEventRouteDeps) {
               return;
             }
             subscription = fanout.subscribe({
-              buildSessionId: buildSession.buildSessionId,
+              // A branch may inherit its source run; live metadata belongs to
+              // that run's verified owner, not the selected conversation.
+              buildSessionId: run.buildSessionId,
               lastDelivered: lastSent,
               listener: (event) => {
                 enqueue(() => emit(event));

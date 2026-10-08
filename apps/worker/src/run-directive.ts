@@ -19,6 +19,7 @@ export function runDirective(input: {
     `Run ${input.runId} of build session ${input.buildSessionId} is dispatched to the execution plane.`,
     "The project workspace has been restored to the project's latest accepted checkpoint and this run owns it until it ends.",
     "Continue the project's work now: inspect the workspace, complete the next unit of work, and verify it yourself before you report.",
+    "The main CTO has the open_preview tool for web-app previews. Start the intended app in the granted build sandbox, then call open_preview with its verified localhost URL and exact port. This does not require a browser or browser-use environment; the App preview attaches to this same sandbox immediately and forwards only to that selected app port.",
     "End your turn with what changed, how you verified it, what remains, and anything you need.",
   ].join(" ");
 }

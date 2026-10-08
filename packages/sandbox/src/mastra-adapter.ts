@@ -71,6 +71,15 @@ export class MastraWorkspaceSandboxAdapter implements WorkspaceSandbox {
       }
 
       if (
+        "attach" in this.sandbox &&
+        typeof (this.sandbox as DockerSandbox).attach === "function" &&
+        (await (this.sandbox as DockerSandbox).attach())
+      ) {
+        this.status = "running";
+        return { outcome: "connected" };
+      }
+
+      if (
         "init" in this.sandbox &&
         typeof (this.sandbox as DockerSandbox).init === "function"
       ) {
@@ -112,6 +121,16 @@ export class MastraWorkspaceSandboxAdapter implements WorkspaceSandbox {
 
   readonly isReady = (): Promise<boolean> =>
     Promise.resolve(this.status === "running");
+
+  readonly exposePort = async (containerPort: number): Promise<number> => {
+    if (
+      !("exposePort" in this.sandbox) ||
+      typeof this.sandbox.exposePort !== "function"
+    ) {
+      throw new Error("This sandbox provider cannot expose preview ports.");
+    }
+    return await this.sandbox.exposePort(containerPort);
+  };
 
   readonly getInfo = async (): Promise<SandboxInfo> => {
     const state = await this.sandbox.getState().catch(() => null);

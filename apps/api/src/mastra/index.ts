@@ -12,14 +12,16 @@ import {
 } from "@mastra/observability";
 import type { ArtifactStore } from "@reasonateai/artifact-store";
 import { createLocalArtifactStore } from "@reasonateai/artifact-store/local";
+import { PreviewIdSchema } from "@reasonateai/contracts/execution";
 import { createReasonateCtoRuntime } from "@reasonateai/cto-runtime";
+import { sandboxIdFor } from "@reasonateai/cto-runtime/run-scope";
 import {
   createProjectStateStore,
   type ProjectStateStore,
 } from "@reasonateai/project-state/postgres";
 import { resolveAsrAdapter } from "./adapters/asr";
 import { createMagicLinkSender } from "./adapters/magic-link-sender";
-import { conversationCheckpoint } from "./conversation-checkpoint";
+import { createTtsAdapterFromEnv } from "./adapters/tts";
 import { createCsrfMiddleware } from "./middleware";
 import { frontierModel } from "./model";
 import { startOutboxRelay } from "./outbox-relay";
@@ -77,7 +79,11 @@ import {
   createRunSteeringHandlers,
   RUN_STEERING_PATH,
 } from "./routes/steering";
-import { createVoiceHandlers, VOICE_TRANSCRIPTION_PATH } from "./routes/voice";
+import {
+  createVoiceHandlers,
+  VOICE_SPEECH_PATH,
+  VOICE_TRANSCRIPTION_PATH,
+} from "./routes/voice";
 import {
   createWorkspaceHandlers,
   WORKSPACE_CHECKPOINT_DIFF_PATH,
@@ -87,6 +93,7 @@ import {
 } from "./routes/workspace";
 import { serverMiddleware } from "./server";
 import {
+  attachBuildSandbox,
   buildSandboxEnvironment,
   reasonateBuildWorkspace,
   SANDBOX_WORKING_DIRECTORY,
@@ -267,12 +274,28 @@ const workspaceHandlers = createWorkspaceHandlers({
 });
 
 /**
- * The preview service owns sandboxes for previews, not for runs: it restores a
- * project's latest checkpoint into its own container and starts the app there.
- * One service per process, so its idle sweep and its exit teardown cover every
- * preview this process started.
+ * The preview service attaches to the run sandbox selected by open_preview.
+ * One service per process owns its preview registry and idle sweep.
  */
 const previewService = createPreviewService({
+  attachRunSandbox: async (scope) => await attachBuildSandbox(scope),
+  isRunActive: async (runId) => {
+    const preview = await stateStore().previews.getByRun(runId);
+    if (!preview) {
+      return false;
+    }
+    const run = await stateStore().getRun({
+      organizationId: preview.organizationId,
+      projectId: preview.projectId,
+      runId,
+    });
+    return (
+      run?.status === "queued" ||
+      run?.status === "leased" ||
+      run?.status === "running"
+    );
+  },
+  namespace: process.env.REASONATE_PREVIEW_NAMESPACE,
   onOrphansRemoved: (count) => {
     // Reported rather than cleaned silently: a deployment that keeps finding
     // orphans is telling you its API is restarting more than it should.
@@ -291,16 +314,6 @@ const previewService = createPreviewService({
     );
   },
   previewStore: () => stateStore().previews,
-  resolveCheckpoint: (record, checkpoints) =>
-    conversationCheckpoint({
-      buildSessionId: record.buildSessionId,
-      checkpoints,
-      scope: {
-        organizationId: record.organizationId,
-        projectId: record.projectId,
-      },
-      store: stateStore(),
-    }),
 });
 // When configured, ensure schema migrations are applied so the persistent
 // preview registry is available before recovering previews at startup.
@@ -310,6 +323,7 @@ if (process.env.DATABASE_URL) {
 await previewService.sweepOrphans();
 
 const previewHandlers = createPreviewHandlers({
+  frameOrigin: process.env.REASONATE_PREVIEW_FRAME_ORIGIN,
   previews: previewService,
   resolvePrincipal: resolvePrincipalFrom,
   store: stateStore,
@@ -323,6 +337,7 @@ const voiceHandlers = createVoiceHandlers({
   asr: () => resolveAsrAdapter(process.env),
   resolvePrincipal: resolvePrincipalFrom,
   store: stateStore,
+  tts: () => createTtsAdapterFromEnv(process.env),
 });
 
 const artifactHandlers = createArtifactHandlers({
@@ -350,6 +365,23 @@ export const reasonateCtoRuntime = createReasonateCtoRuntime({
   enableBrowserVerification: true,
   enableTestRunner: true,
   model: frontierModel,
+  registerPreview: async ({ appPort, ...scope }) => {
+    if (await stateStore().previews.getByRun(scope.runId)) {
+      return;
+    }
+    const sandboxId = sandboxIdFor(scope);
+    await stateStore().previews.record({
+      buildSessionId: scope.buildSessionId,
+      containerName: sandboxId,
+      detail: `Selected app port ${appPort}`,
+      organizationId: scope.organizationId,
+      previewId: PreviewIdSchema.parse(crypto.randomUUID()),
+      projectId: scope.projectId,
+      runId: scope.runId,
+      sandboxId,
+      status: "starting",
+    });
+  },
   storage,
   workspace: reasonateBuildWorkspace,
   workspaceRoot: SANDBOX_WORKING_DIRECTORY,
@@ -459,6 +491,16 @@ export const mastra = new Mastra({
         },
       }),
       registerApiRoute(BUILD_SESSION_ITEM_PATH, {
+        handler: (c) => buildSessionHandlers.updateConversation(c),
+        method: "PATCH",
+        openapi: {
+          description:
+            "Updates metadata in an authorized project and records an audit event. Archiving retains history and checkpoints and refuses active runs.",
+          summary: "Rename, archive, or restore a conversation",
+          tags: ["Build sessions"],
+        },
+      }),
+      registerApiRoute(BUILD_SESSION_ITEM_PATH, {
         handler: (c) => buildSessionHandlers.read(c),
         method: "GET",
         openapi: {
@@ -523,7 +565,7 @@ export const mastra = new Mastra({
         method: "POST",
         openapi: {
           description:
-            "Starts the generated app from the project's latest checkpoint in its own sandbox and returns the preview's status and proxied address. Calling it again while a preview is live returns that preview rather than starting a second one.",
+            "Opens the app port selected by open_preview from the existing run sandbox and returns preview status. It does not restore a checkpoint or create another sandbox.",
           summary: "Start a preview",
           tags: ["Previews"],
         },
@@ -578,6 +620,16 @@ export const mastra = new Mastra({
           description:
             "Transcribes one recorded message through the deployment's configured speech-to-text adapter. A deployment with no adapter answers with a typed refusal that names what is missing.",
           summary: "Transcribe a recorded message",
+          tags: ["Voice"],
+        },
+      }),
+      registerApiRoute(VOICE_SPEECH_PATH, {
+        handler: (c) => voiceHandlers.synthesize(c),
+        method: "POST",
+        openapi: {
+          description:
+            "Synthesizes spoken audio from text through the deployment's configured text-to-speech adapter. A deployment with no adapter answers with a typed refusal that names what is missing.",
+          summary: "Synthesize speech from text",
           tags: ["Voice"],
         },
       }),

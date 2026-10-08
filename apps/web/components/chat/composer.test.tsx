@@ -85,6 +85,18 @@ describe("composer primary action", () => {
     expect(html).not.toContain("lucide-square");
     expect(html).toContain("disabled");
   });
+  it("renders attach menu and accepts tool customization props", () => {
+    const onToggleTool = vi.fn();
+    const html = renderToStaticMarkup(
+      <Composer
+        {...props}
+        hasConversation
+        onToggleTool={onToggleTool}
+        selectedTools={["read_file", "edit_file"]}
+      />
+    );
+    expect(html).toContain('aria-label="Add to message"');
+  });
 });
 
 describe("composer suggestions", () => {

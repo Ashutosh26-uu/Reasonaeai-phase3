@@ -6,7 +6,7 @@
  * ledger that browser reconnect depends on. Redis Streams is transport and
  * never the only record of work.
  */
-export const PROJECT_STATE_SCHEMA_VERSION = 7;
+export const PROJECT_STATE_SCHEMA_VERSION = 8;
 
 export const PROJECT_STATE_MIGRATION_SQL = `
 create table if not exists organizations (
@@ -38,6 +38,11 @@ create table if not exists build_sessions (
   foreign key (organization_id, project_id)
     references projects (organization_id, project_id) on delete cascade
 );
+
+-- Additive v8 over checkpoint-aware history v7: archive retains related records.
+alter table build_sessions add column if not exists title text
+  check (title is null or (length(trim(title)) between 1 and 500));
+alter table build_sessions add column if not exists archived_at timestamptz;
 
 -- Conversations are separate build sessions within one project. An explicit
 -- idempotency key reconnects to the same conversation; a new key creates one.

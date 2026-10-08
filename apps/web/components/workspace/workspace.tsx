@@ -14,8 +14,10 @@ import {
   ConversationFeedbackResponseSchema,
   ConversationListSchema,
   type ConversationMessage,
+  ConversationMetadataSchema,
   type ConversationSummary,
   ConversationTurnAcceptedSchema,
+  type UpdateConversationRequest,
 } from "@reasonateai/contracts/execution";
 import {
   ConversationTranscriptSchema,
@@ -24,7 +26,7 @@ import {
   type RunEventEnvelope,
 } from "@reasonateai/contracts/execution-protocol";
 import { RunSteeringAcceptedSchema } from "@reasonateai/contracts/steering";
-import { FolderClosed, PanelRight, RefreshCw } from "lucide-react";
+import { FolderClosed } from "lucide-react";
 import Image from "next/image";
 import {
   type CSSProperties,
@@ -39,28 +41,38 @@ import {
   useState,
 } from "react";
 import { turnCheckpoint } from "@/components/chat/checkpoint-state";
-import { Composer } from "@/components/chat/composer";
+import { createComposerDraft } from "@/components/chat/composer-draft";
+import { DraftComposer } from "@/components/chat/draft-composer";
 import { EmptyState } from "@/components/chat/empty-state";
 import { PlanCard } from "@/components/chat/plan-card";
 import { QuestionCard } from "@/components/chat/question-card";
 import { runProgressLabel, runStreamEnded } from "@/components/chat/run-state";
-import {
-  generatePromptSuggestions,
-  type PromptSuggestion,
-} from "@/components/chat/suggestions";
+import { generatePromptSuggestions } from "@/components/chat/suggestions";
 import {
   latestCompletedTurn as completedSuggestionTurn,
   pendingPlan,
   pendingQuestion,
   projectTranscript,
+  type Timeline,
 } from "@/components/chat/timeline";
 import { Transcript } from "@/components/chat/transcript";
 import { useRunStream } from "@/components/chat/use-run-stream";
 import { VoiceMode } from "@/components/chat/voice-mode";
+import {
+  type AgentPreviewSelection,
+  agentPreviewSelection,
+} from "@/components/workspace/agent-preview";
+import { ConversationHeader } from "@/components/workspace/conversation-header";
 import { Panel } from "@/components/workspace/panel";
 import { Rail } from "@/components/workspace/rail";
 import { Settings } from "@/components/workspace/settings";
-import { describeError, request, scopeQuery } from "@/lib/product-api";
+import { useConversationPins } from "@/components/workspace/use-conversation-pins";
+import {
+  describeError,
+  request,
+  scopeQuery,
+  synthesizeSpeech,
+} from "@/lib/product-api";
 
 const DRAFT_LIMIT = 20_000;
 const MODEL = "deepseek-flash";
@@ -266,6 +278,12 @@ function useProjectConversationIndex({
 }
 
 function ResizableWorkspacePanel({
+  previewSelection,
+  messages,
+  timeline,
+  newTabRequest,
+  requestedView,
+  onNewTabHandled,
   buildSessionId,
   isOpen,
   onClose,
@@ -279,6 +297,7 @@ function ResizableWorkspacePanel({
   refreshKey,
   workAreaRef,
 }: {
+  previewSelection?: AgentPreviewSelection | undefined;
   buildSessionId: string;
   isOpen: boolean;
   onClose: () => void;
@@ -291,6 +310,11 @@ function ResizableWorkspacePanel({
   projectId: string;
   refreshKey?: number;
   workAreaRef: { current: HTMLDivElement | null };
+  messages: ConversationMessage[];
+  timeline: Timeline;
+  newTabRequest: number;
+  requestedView: "new" | "preview";
+  onNewTabHandled: () => void;
 }) {
   if (!isOpen) {
     return null;
@@ -321,10 +345,17 @@ function ResizableWorkspacePanel({
       />
       <Panel
         buildSessionId={buildSessionId}
+        key={`${organizationId}:${projectId}:${buildSessionId}`}
+        messages={messages}
+        newTabRequest={newTabRequest}
         onClose={onClose}
+        onNewTabHandled={onNewTabHandled}
         organizationId={organizationId}
+        previewSelection={previewSelection}
         projectId={projectId}
         refreshKey={refreshKey}
+        requestedView={requestedView}
+        timeline={timeline}
       />
     </>
   );
@@ -434,68 +465,6 @@ export interface WorkspaceProps {
   session: SessionView;
 }
 
-function ConversationHeader({
-  conversationId,
-  heading,
-  onOpenPanel,
-  onRefresh,
-  projectName,
-  selectedProject,
-  working,
-  settling,
-  progressLabel,
-}: {
-  conversationId: string;
-  heading: string;
-  onOpenPanel: () => void;
-  onRefresh: () => void;
-  projectName: string;
-  selectedProject: boolean;
-  working: boolean;
-  settling: boolean;
-  progressLabel: string;
-}) {
-  return (
-    <header className="pane-head">
-      <div className="pane-titles">
-        <div className="pane-title">{heading}</div>
-        <div className="pane-meta">
-          <span>{projectName}</span>
-          <span aria-hidden="true">·</span>
-          <span data-state={working ? "working" : "ready"}>
-            {settling ? "Saving checkpoint…" : null}
-            {!settling && (working ? progressLabel : "Ready")}
-          </span>
-        </div>
-      </div>
-      <div className="pane-tools">
-        {selectedProject && (
-          <button
-            aria-label="Refresh conversation"
-            className="pane-button pane-icon-button"
-            onClick={onRefresh}
-            title="Refresh conversation"
-            type="button"
-          >
-            <RefreshCw aria-hidden="true" size={18} />
-          </button>
-        )}
-        {selectedProject && conversationId.length > 0 && (
-          <button
-            aria-label="Open workspace"
-            className="pane-button pane-icon-button"
-            onClick={onOpenPanel}
-            title="Open workspace"
-            type="button"
-          >
-            <PanelRight aria-hidden="true" size={18} />
-          </button>
-        )}
-      </div>
-    </header>
-  );
-}
-
 /**
  * The open workspace: the rail, the conversation, and the workspace panel.
  *
@@ -516,6 +485,8 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   const [organizationId, setOrganizationId] = useState(
     initialOrganizationId(session)
   );
+  const { pinnedConversationIds, togglePin } =
+    useConversationPins(organizationId);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [projectId, setProjectId] = useState(route.projectId);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -538,7 +509,8 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   const projectIdentity = `${organizationId}:${projectId}`;
   const selectedProjectIdentity = useRef(projectIdentity);
   selectedProjectIdentity.current = projectIdentity;
-  const [draft, setDraft] = useState("");
+  const [draftStore] = useState(createComposerDraft);
+  const setDraft = draftStore.setValue;
   const [voiceOpen, setVoiceOpen] = useState(false);
   const steeringAttempt = useRef<{
     runId: string;
@@ -578,6 +550,13 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     setSuggestionSeed(0);
   }, [conversationId]);
 
+  const [newTabRequest, setNewTabRequest] = useState(0);
+  const [requestedView, setRequestedView] = useState<"new" | "preview">("new");
+  const previewAfterRun = useRef<{ identity: string; runId: string } | null>(
+    null
+  );
+  const [newTabConversationId, setNewTabConversationId] = useState("");
+  const consumeNewTabRequest = useCallback(() => setNewTabRequest(0), []);
   const [panelOpen, setPanelOpen] = useState(
     () => route.conversationId.length > 0
   );
@@ -713,6 +692,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   useEffect(() => {
     const onPopState = () => {
       setVoiceOpen(false);
+      setDraft("");
       const next = readRoute();
       setProjectId(next.projectId);
       setConversationId(next.conversationId);
@@ -721,7 +701,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+  }, [setDraft]);
 
   useEffect(() => {
     writeRoute(projectId, conversationId, true);
@@ -734,10 +714,13 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
    * notice that outlives the outage reports a state that is no longer true.
    */
   const onOpened = useCallback(() => {
-    if (!stoppingRunId) {
-      setNotice("");
-    }
-  }, [stoppingRunId]);
+    setNotice((current) =>
+      current === "Connection interrupted. Reconnecting…" ||
+      current === "Message accepted. Reconnecting to its progress…"
+        ? ""
+        : current
+    );
+  }, []);
 
   /**
    * One committed message, keyed by the ledger event that recorded it — the same
@@ -962,13 +945,6 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     setWorkspaceRefreshKey((key) => key + 1);
   }, []);
 
-  const updateDraft = useCallback(
-    (event: React.ChangeEvent<HTMLTextAreaElement>) => {
-      setDraft(event.currentTarget.value);
-    },
-    []
-  );
-
   const promptKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (event.key === "Enter" && !event.shiftKey) {
@@ -1111,7 +1087,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       }
       return sent;
     },
-    [organizationId, projectId, sendTurn]
+    [organizationId, projectId, sendTurn, setDraft]
   );
 
   const steerMessage = useCallback(
@@ -1303,10 +1279,13 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     [loadConversations, organizationId, projectId]
   );
 
-  const editMessage = useCallback((text: string) => {
-    setDraft(text);
-    requestAnimationFrame(() => document.getElementById("prompt")?.focus());
-  }, []);
+  const editMessage = useCallback(
+    (text: string) => {
+      setDraft(text);
+      requestAnimationFrame(() => document.getElementById("prompt")?.focus());
+    },
+    [setDraft]
+  );
 
   /**
    * Speech becomes a draft in the field, never a sent turn: a transcription is
@@ -1335,6 +1314,16 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
         { body, method: "POST" }
       );
     },
+    [organizationId, projectId]
+  );
+
+  const synthesize = useCallback(
+    (text: string): Promise<Blob> =>
+      synthesizeSpeech({
+        organizationId,
+        projectId,
+        text,
+      }),
     [organizationId, projectId]
   );
 
@@ -1392,36 +1381,45 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     []
   );
 
-  const selectOrganization = useCallback((nextOrganizationId: string) => {
-    setVoiceOpen(false);
-    setOrganizationId(nextOrganizationId);
-    setProjectId("");
-    setConversationId("");
-    setConversations([]);
-    setConversationsByProject({});
-    setFailedConversationProjects([]);
-    setMessages([]);
-    setPanelOpen(false);
-  }, []);
+  const selectOrganization = useCallback(
+    (nextOrganizationId: string) => {
+      setVoiceOpen(false);
+      setDraft("");
+      setOrganizationId(nextOrganizationId);
+      setProjectId("");
+      setConversationId("");
+      setConversations([]);
+      setConversationsByProject({});
+      setFailedConversationProjects([]);
+      setMessages([]);
+      setPanelOpen(false);
+    },
+    [setDraft]
+  );
 
-  const selectProject = useCallback((nextProjectId: string) => {
-    setVoiceOpen(false);
-    setProjectId(nextProjectId);
-    setConversationId("");
-    setMessages([]);
-    setPanelOpen(false);
-    writeRoute(nextProjectId, "");
-  }, []);
+  const selectProject = useCallback(
+    (nextProjectId: string) => {
+      setVoiceOpen(false);
+      setDraft("");
+      setProjectId(nextProjectId);
+      setConversationId("");
+      setMessages([]);
+      setPanelOpen(false);
+      writeRoute(nextProjectId, "");
+    },
+    [setDraft]
+  );
 
   const selectConversation = useCallback(
     (nextProjectId: string, nextConversationId: string) => {
       setVoiceOpen(false);
+      setDraft("");
       setProjectId(nextProjectId);
       setConversationId(nextConversationId);
       setMessages([]);
       writeRoute(nextProjectId, nextConversationId);
     },
-    []
+    [setDraft]
   );
   const branchConversation = useCallback(
     async (sourceRunId: string) => {
@@ -1493,19 +1491,69 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     setPanelOpen(false);
     writeRoute(projectId, "");
     document.getElementById("prompt")?.focus();
-  }, [projectId]);
+  }, [projectId, setDraft]);
 
-  const newConversationForProject = useCallback((nextProjectId: string) => {
-    setVoiceOpen(false);
-    setProjectId(nextProjectId);
-    setConversationId("");
-    setMessages([]);
-    setDraft("");
-    setNotice("");
-    setPanelOpen(false);
-    writeRoute(nextProjectId, "");
-    document.getElementById("prompt")?.focus();
-  }, []);
+  const updateConversation = useCallback(
+    async (id: string, update: UpdateConversationRequest) => {
+      const identity = `${organizationId}:${projectId}`;
+      const result = await request(
+        `/v1/build-sessions/${id}?${scopeQuery(organizationId, projectId)}`,
+        ConversationMetadataSchema.parse,
+        { body: JSON.stringify(update), method: "PATCH" }
+      );
+      if (selectedProjectIdentity.current !== identity) {
+        return;
+      }
+      const apply = (items: ConversationSummary[]) =>
+        items
+          .filter((item) => !(item.buildSessionId === id && result.archivedAt))
+          .map((item) =>
+            item.buildSessionId === id ? { ...item, ...result } : item
+          );
+      setConversations(apply);
+      setConversationsByProject((current) => ({
+        ...current,
+        [projectId]: apply(current[projectId] ?? []),
+      }));
+      if (
+        result.archivedAt &&
+        selectedHistory.current === `${organizationId}:${projectId}:${id}`
+      ) {
+        newConversation();
+      }
+      // The mutation is already committed. A reload failure is reported separately.
+      loadConversations().catch((cause: unknown) =>
+        setError(
+          describeError(
+            cause,
+            "The change was saved, but conversations could not be refreshed."
+          )
+        )
+      );
+    },
+    [
+      conversationId,
+      loadConversations,
+      newConversation,
+      organizationId,
+      projectId,
+    ]
+  );
+
+  const newConversationForProject = useCallback(
+    (nextProjectId: string) => {
+      setVoiceOpen(false);
+      setProjectId(nextProjectId);
+      setConversationId("");
+      setMessages([]);
+      setDraft("");
+      setNotice("");
+      setPanelOpen(false);
+      writeRoute(nextProjectId, "");
+      document.getElementById("prompt")?.focus();
+    },
+    [setDraft]
+  );
 
   const refreshConversation = useCallback(() => {
     loadConversations().catch((cause: unknown) =>
@@ -1518,7 +1566,12 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
 
   const dismissError = useCallback(() => setError(""), []);
   const dismissNotice = useCallback(() => setNotice(""), []);
-  const openPanel = useCallback(() => setPanelOpen(true), []);
+  const openPanel = useCallback(() => {
+    setRequestedView("new");
+    setPanelOpen(true);
+    setNewTabConversationId(conversationId);
+    setNewTabRequest((value) => value + 1);
+  }, [conversationId]);
   const closePanel = useCallback(() => setPanelOpen(false), []);
   const openSettings = useCallback(() => setSettingsOpen(true), []);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
@@ -1541,7 +1594,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       setDraft(event.currentTarget.value);
       document.getElementById("prompt")?.focus();
     },
-    []
+    [setDraft]
   );
 
   /**
@@ -1584,6 +1637,14 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   }
   const emptyConversation =
     messages.length === 0 && Object.keys(timeline.runs).length === 0;
+  const pinActiveConversation = useCallback(
+    () => togglePin(conversationId),
+    [conversationId, togglePin]
+  );
+  let conversationStatus = working ? progressLabel : "Ready";
+  if (savingStoppedRun) {
+    conversationStatus = "Saving checkpoint…";
+  }
   const heading = conversationHeading(active, conversationId);
   const project = projects.find((item) => item.projectId === projectId);
   const renderedMessages = visibleHistory(
@@ -1637,6 +1698,68 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     return turnCheckpoint(events);
   }, [latestCompletedTurn, timeline]);
 
+  const summaryCheckpoint = useMemo(
+    () =>
+      projectTranscript(timeline, renderedMessages)
+        .map((turn) =>
+          turnCheckpoint(Object.values(timeline.runs[turn.id]?.events ?? {}))
+        )
+        .findLast((turn) => turn !== undefined),
+    [renderedMessages, timeline]
+  );
+
+  const agentPreview = useMemo(
+    () => agentPreviewSelection(timeline, conversationId),
+    [conversationId, timeline]
+  );
+  const openedAgentPreview = useRef("");
+  useEffect(() => {
+    if (
+      !agentPreview ||
+      (agentPreview.runId !== pendingRunId &&
+        agentPreview.runId !== previewAfterRun.current?.runId)
+    ) {
+      return;
+    }
+    const identity = `${historyIdentity}:${agentPreview.runId}:${agentPreview.sequence}`;
+    if (openedAgentPreview.current === identity) {
+      return;
+    }
+    openedAgentPreview.current = identity;
+    setRequestedView("preview");
+    setNewTabConversationId(conversationId);
+    setNewTabRequest((value) => value + 1);
+    setPanelOpen(true);
+  }, [agentPreview, conversationId, historyIdentity, pendingRunId]);
+
+  useEffect(() => {
+    if (pendingRunId) {
+      previewAfterRun.current = {
+        identity: historyIdentity,
+        runId: pendingRunId,
+      };
+      return;
+    }
+    const pending = previewAfterRun.current;
+    if (
+      !pending ||
+      pending.identity !== historyIdentity ||
+      pending.runId !== latestCheckpoint?.runId
+    ) {
+      return;
+    }
+    previewAfterRun.current = null;
+    if (
+      latestCheckpoint.outcome === "succeeded" &&
+      latestCheckpoint.checkpoint?.status === "available"
+    ) {
+      setRequestedView("preview");
+      setNewTabConversationId(conversationId);
+      setNewTabRequest((value) => value + 1);
+      setPanelOpen(true);
+    }
+  }, [pendingRunId, historyIdentity, latestCheckpoint, conversationId]);
+
   const suggestions = useMemo(() => {
     if (
       !latestCompletedTurn ||
@@ -1679,29 +1802,21 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     setSuggestionSeed((s) => s + 1);
   }, []);
 
-  const selectSuggestion = useCallback((suggestion: PromptSuggestion) => {
-    setDraft(suggestion.prompt);
-    document.getElementById("prompt")?.focus();
-  }, []);
-
   const composer = (
-    <Composer
+    <DraftComposer
       busy={submitting || savingStoppedRun}
-      count={draft.length}
-      draft={draft}
+      draftStore={draftStore}
       hasConversation={conversationId.length > 0}
       key={`${organizationId}:${projectId}:${conversationId}`}
       limit={DRAFT_LIMIT}
       listFiles={listFiles}
       model={MODEL}
-      onChange={updateDraft}
       onCreateProject={createProjectNamed}
       onDismissSuggestions={dismissSuggestions}
       onKeyDown={promptKeyDown}
       onOpenSideChat={openSideChat}
       onProjectSelect={selectProject}
       onRefreshSuggestions={refreshSuggestions}
-      onSelectSuggestion={selectSuggestion}
       onSteer={steerMessage}
       onStop={stopRun}
       onSubmit={submitMessage}
@@ -1791,8 +1906,10 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
         onProjectSubmit={createProject}
         onSettings={openSettings}
         onSignOut={signOut}
+        onTogglePin={togglePin}
         organizationId={organizationId}
         organizations={organizations}
+        pinnedConversationIds={pinnedConversationIds}
         projectId={projectId}
         projects={projects}
         submitting={submitting}
@@ -1806,15 +1923,27 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       >
         <main className="pane">
           <ConversationHeader
+            canManage={["owner", "admin", "builder"].includes(organizationRole)}
             conversationId={conversationId}
             heading={heading}
+            isPinned={pinnedConversationIds.includes(conversationId)}
+            key={`${organizationId}:${projectId}:${conversationId}`}
+            messages={renderedMessages}
+            onNewConversation={newConversation}
             onOpenPanel={openPanel}
+            onPin={pinActiveConversation}
             onRefresh={refreshConversation}
-            progressLabel={progressLabel}
+            onUpdate={updateConversation}
             projectName={project?.name ?? "No project selected"}
+            scope={{
+              buildSessionId: conversationId,
+              organizationId,
+              projectId,
+            }}
             selectedProject={selectedProject}
-            settling={savingStoppedRun}
-            working={working}
+            status={conversationStatus}
+            turn={summaryCheckpoint}
+            working={pendingRunId !== null}
           />
 
           {error.length > 0 && (
@@ -1843,6 +1972,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
                 onClose={closeVoice}
                 onStop={stopRun}
                 onSubmit={sendTurn}
+                onSynthesize={synthesize}
                 onTranscribe={transcribe}
                 projectName={project?.name ?? "Your project"}
                 question={interactiveForm}
@@ -1895,15 +2025,23 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
         <ResizableWorkspacePanel
           buildSessionId={conversationId}
           isOpen={showWorkspacePanel}
+          messages={renderedMessages}
+          newTabRequest={
+            newTabConversationId === conversationId ? newTabRequest : 0
+          }
           onClose={closePanel}
           onKeyDown={onResizeKeyDown}
+          onNewTabHandled={consumeNewTabRequest}
           onPointerDown={onResizePointerDown}
           onPointerMove={onResizePointerMove}
           onPointerUp={onResizePointerUp}
           organizationId={organizationId}
           panelWidth={panelWidth}
+          previewSelection={agentPreview}
           projectId={projectId}
           refreshKey={workspaceRefreshKey}
+          requestedView={requestedView}
+          timeline={timeline}
           workAreaRef={workAreaRef}
         />
       </div>

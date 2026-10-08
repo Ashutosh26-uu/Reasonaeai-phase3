@@ -3,6 +3,7 @@ import {
   RunCommandRequestSchema,
   RunCommandResultSchema,
   SandboxConfigSchema,
+  SandboxImageReferenceSchema,
   SandboxStateSchema,
 } from "../src/sandbox.js";
 
@@ -11,6 +12,18 @@ const projectId = "22222222-2222-4222-8222-222222222222";
 const runId = "33333333-3333-4333-8333-333333333333";
 
 describe("sandbox contracts", () => {
+  it("accepts tagged or digest-pinned image references and rejects option injection", () => {
+    expect(
+      SandboxImageReferenceSchema.parse("reasonate-build-sandbox:node22")
+    ).toBe("reasonate-build-sandbox:node22");
+    expect(
+      SandboxImageReferenceSchema.safeParse(
+        `registry.example/team/image@sha256:${"a".repeat(64)}`
+      ).success
+    ).toBe(true);
+    expect(SandboxImageReferenceSchema.safeParse("--help").success).toBe(false);
+  });
+
   it("parses valid sandbox config with defaults applied", () => {
     const parsed = SandboxConfigSchema.parse({
       id: sandboxId,
