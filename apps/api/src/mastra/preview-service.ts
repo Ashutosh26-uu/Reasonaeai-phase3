@@ -350,7 +350,15 @@ export function createPreviewService(
       const configuration = AppPreviewConfigurationSchema.parse(
         JSON.parse(await sandbox.readFile(".reasonate/preview.json"))
       );
-      return configuration.port ?? null;
+      if (configuration.port !== undefined) {
+        return configuration.port;
+      }
+    } catch {
+      // Configuration absent or invalid; attempt port auto-discovery
+    }
+    try {
+      const app = await discoverPreviewApp(sandbox);
+      return app?.port ?? null;
     } catch {
       return null;
     }
@@ -405,18 +413,32 @@ export function createPreviewService(
       throw new Error("This preview request has been stopped.");
     }
 
-    const configuration = AppPreviewConfigurationSchema.parse(
-      JSON.parse(await sandbox.readFile(".reasonate/preview.json"))
+    let configuration:
+      | z.infer<typeof AppPreviewConfigurationSchema>
+      | undefined;
+    try {
+      configuration = AppPreviewConfigurationSchema.parse(
+        JSON.parse(await sandbox.readFile(".reasonate/preview.json"))
+      );
+    } catch {
+      configuration = undefined;
+    }
+
+    const app = await discoverPreviewApp(
+      sandbox,
+      configuration?.port,
+      configuration?.host
     );
-    if (configuration.port === undefined) {
+    if (!app) {
+      if (configuration?.port !== undefined) {
+        throw new Error(
+          `The selected app is not listening on port ${configuration.port}.`
+        );
+      }
       throw new Error("The selected app port was not saved by open_preview.");
     }
-    const appPort = configuration.port;
+    const appPort = app.port;
     record.appPort = appPort;
-    const app = await discoverPreviewApp(sandbox, appPort, configuration.host);
-    if (!app || app.port !== appPort) {
-      throw new Error(`The selected app is not listening on port ${appPort}.`);
-    }
     if (!sandbox.exposePort) {
       throw new Error("This sandbox provider cannot expose the private relay.");
     }

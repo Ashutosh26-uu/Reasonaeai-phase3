@@ -4,10 +4,12 @@ import {
   PreviewIdSchema,
 } from "@reasonateai/contracts/execution";
 import {
+  IsoDateTimeSchema,
   OrganizationIdSchema,
   ProjectIdSchema,
   RunIdSchema,
 } from "@reasonateai/contracts/identity";
+import { type ISandbox, SandboxIdSchema } from "@reasonateai/contracts/sandbox";
 import { createInMemoryPreviewRepository } from "@reasonateai/project-state/previews";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -140,6 +142,70 @@ describe("preview service - persistence and restart recovery", () => {
     expect(statusReport?.view.previewId).toBe(previewId);
     expect(statusReport?.view.port).toBe(39_001);
     expect(statusReport?.view.status).toBe("ready");
+
+    fetchSpy.mockRestore();
+  });
+
+  it("lazily hydrates preview and resolves appPort from attached sandbox configuration", async () => {
+    const store = createInMemoryPreviewRepository();
+    const previewId = PreviewIdSchema.parse(randomUUID());
+
+    await store.record({
+      buildSessionId: sessionId,
+      containerName: `reasonate-sbx-preview-${previewId}`,
+      hostPort: 39_002,
+      organizationId: orgId,
+      previewId,
+      projectId: projId,
+      runId,
+      sandboxId: `preview-${previewId}`,
+      status: "ready",
+    });
+
+    const mockSandbox: ISandbox = {
+      destroy: vi.fn().mockResolvedValue(undefined),
+      getState: vi.fn().mockResolvedValue({
+        config: {
+          id: SandboxIdSchema.parse(`preview-${previewId}`),
+          image: "node:22",
+          networkMode: "bridge",
+          projectId: projId,
+          runId,
+        },
+        createdAt: IsoDateTimeSchema.parse(new Date().toISOString()),
+        id: SandboxIdSchema.parse(`preview-${previewId}`),
+        status: "running",
+        stoppedAt: null,
+      }),
+      id: SandboxIdSchema.parse(`preview-${previewId}`),
+      readFile: vi
+        .fn()
+        .mockResolvedValue(JSON.stringify({ host: "127.0.0.1", port: 5173 })),
+      runCommand: vi.fn(),
+      writeFile: vi.fn(),
+    };
+
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("OK", { status: 200 }));
+
+    const service = createPreviewService({
+      attachRunSandbox: async () => mockSandbox,
+      previewStore: store,
+    });
+
+    const statusReport = await service.status(previewId);
+    expect(statusReport).toBeDefined();
+    expect(statusReport?.view.previewId).toBe(previewId);
+    expect(statusReport?.view.port).toBe(5173);
+    expect(statusReport?.view.status).toBe("ready");
+
+    const target = await service.target(previewId);
+    expect(target?.hostPort).toBe(39_002);
+
+    const stopped = await service.stop(previewId);
+    expect(stopped?.status).toBe("stopped");
+    expect(stopped?.port).toBeNull();
 
     fetchSpy.mockRestore();
   });

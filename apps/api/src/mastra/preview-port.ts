@@ -9,6 +9,7 @@ const ListeningAppSchema = z.strictObject({
 const RELAY_PATH = "/tmp/reasonate-preview-relay.cjs";
 const RELAY_LOG = "/tmp/reasonate-preview-relay.log";
 const RELAY_READY_PATH = "/tmp/reasonate-preview-relay.ready";
+const RELAY_PID_PATH = "/tmp/reasonate-preview-relay.pid";
 
 /** Probe only listening sockets inside the assigned preview sandbox, never host URLs. */
 export async function discoverPreviewApp(
@@ -20,12 +21,14 @@ export async function discoverPreviewApp(
 const fs = require('node:fs');
 const ports = new Set();
 for (const path of ['/proc/net/tcp', '/proc/net/tcp6']) {
-  for (const row of fs.readFileSync(path, 'utf8').trim().split('\\n').slice(1)) {
-    const fields = row.trim().split(/\\s+/);
-    if (fields[3] !== '0A') continue;
-    const port = parseInt(fields[1].split(':')[1], 16);
-    if (port >= 1024 && port <= 65535) ports.add(port);
-  }
+  try {
+    for (const row of fs.readFileSync(path, 'utf8').trim().split('\\n').slice(1)) {
+      const fields = row.trim().split(/\\s+/);
+      if (fields[3] !== '0A') continue;
+      const port = parseInt(fields[1].split(':')[1], 16);
+      if (port >= 1024 && port <= 65535) ports.add(port);
+    }
+  } catch {}
 }
 const preferred = ${preferredPort ?? "null"};
 const priority = [3000,5173,4173,4321,4200,8080,8000];
@@ -91,12 +94,22 @@ http.createServer((request, response) => {
   upstream.on('error', () => { if (!response.headersSent) response.writeHead(502, { 'x-reasonate-preview-upstream': 'unavailable' }); response.end('The app server is unavailable.'); });
   response.on('close', () => upstream.destroy());
   request.pipe(upstream);
-}).listen(${publishedPort}, address, () => fs.writeFileSync(${JSON.stringify(RELAY_READY_PATH)}, ${JSON.stringify(readyToken)}));
+}).listen(${publishedPort}, address, () => {
+  try { fs.writeFileSync(${JSON.stringify(RELAY_PID_PATH)}, String(process.pid)); } catch {}
+  fs.writeFileSync(${JSON.stringify(RELAY_READY_PATH)}, ${JSON.stringify(readyToken)});
+});
 `;
   const written = await sandbox.runCommand({
     args: [
       "-e",
-      `const fs = require('node:fs'); fs.rmSync(${JSON.stringify(RELAY_READY_PATH)}, { force: true }); fs.writeFileSync(${JSON.stringify(RELAY_PATH)}, ${JSON.stringify(code)});`,
+      `const fs = require('node:fs');
+try {
+  const oldPid = parseInt(fs.readFileSync(${JSON.stringify(RELAY_PID_PATH)}, 'utf8'), 10);
+  if (oldPid && !Number.isNaN(oldPid)) process.kill(oldPid);
+} catch {}
+fs.rmSync(${JSON.stringify(RELAY_READY_PATH)}, { force: true });
+fs.rmSync(${JSON.stringify(RELAY_PID_PATH)}, { force: true });
+fs.writeFileSync(${JSON.stringify(RELAY_PATH)}, ${JSON.stringify(code)});`,
     ],
     command: "node",
     timeoutMs: 5000,
