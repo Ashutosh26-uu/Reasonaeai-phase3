@@ -87,6 +87,7 @@ import {
 import {
   createWorkspaceHandlers,
   WORKSPACE_CHECKPOINT_DIFF_PATH,
+  WORKSPACE_EXPORT_PATH,
   WORKSPACE_FILE_PATH,
   WORKSPACE_RESTORE_PATH,
   WORKSPACE_TREE_PATH,
@@ -557,6 +558,16 @@ export const mastra = new Mastra({
           description:
             "Restores the project workspace from a durable Git checkpoint bundle into the build sandbox and records an audit log entry.",
           summary: "Restore workspace from checkpoint",
+          tags: ["Workspace"],
+        },
+      }),
+      registerApiRoute(WORKSPACE_EXPORT_PATH, {
+        handler: (c) => workspaceHandlers.export(c),
+        method: "GET",
+        openapi: {
+          description:
+            "Exports the project workspace source code from the latest Git checkpoint as a standard ZIP archive, cleanly excluding repository metadata, dependencies, caches, and build artifacts.",
+          summary: "Export project source ZIP",
           tags: ["Workspace"],
         },
       }),

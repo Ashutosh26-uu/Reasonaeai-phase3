@@ -4,6 +4,7 @@ import type { ConversationMessage } from "@reasonateai/contracts/execution";
 import {
   ArrowLeft,
   ArrowRight,
+  Download,
   ExternalLink,
   FileCode2,
   FolderClosed,
@@ -16,7 +17,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Timeline } from "@/components/chat/timeline";
-import { request } from "@/lib/product-api";
+import { exportWorkspaceZip, request } from "@/lib/product-api";
 import type { AgentPreviewSelection } from "./agent-preview";
 import { FileContentPreview } from "./file-content";
 import styles from "./panel.module.css";
@@ -95,6 +96,7 @@ export interface PanelProps {
   organizationId: string;
   previewSelection?: AgentPreviewSelection | undefined;
   projectId: string;
+  projectName?: string | undefined;
   refreshKey?: number | undefined;
   requestedView: "new" | "preview";
   timeline: Timeline;
@@ -147,21 +149,26 @@ function FileView({ file }: { file: FileResponse | null }) {
   );
 }
 
-function FilesView({
+export function FilesView({
   buildSessionId,
+  initialTree,
   organizationId,
   projectId,
+  projectName,
   refreshKey,
 }: {
   buildSessionId: string;
+  initialTree?: TreeResponse | null;
   organizationId: string;
   projectId: string;
+  projectName?: string | undefined;
   refreshKey?: number | undefined;
 }) {
-  const [tree, setTree] = useState<TreeResponse | null>(null);
+  const [tree, setTree] = useState<TreeResponse | null>(initialTree ?? null);
   const [file, setFile] = useState<FileResponse | null>(null);
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(initialTree === undefined);
+  const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -191,8 +198,10 @@ function FilesView({
   }, [buildSessionId, organizationId, projectId]);
 
   useEffect(() => {
-    load().catch(() => undefined);
-  }, [load, refreshKey]);
+    if (!initialTree) {
+      load().catch(() => undefined);
+    }
+  }, [load, refreshKey, initialTree]);
 
   const openFile = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -210,6 +219,44 @@ function FilesView({
     },
     [buildSessionId, organizationId, projectId]
   );
+
+  const handleExport = useCallback(async () => {
+    if (exporting) {
+      return;
+    }
+    setExporting(true);
+    try {
+      const blob = await exportWorkspaceZip({
+        buildSessionId,
+        organizationId,
+        projectId,
+        projectName,
+      });
+      const objectUrl = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      const safeName =
+        (projectName ?? "project")
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]+/g, "-")
+          .replace(/^-+|-+$/g, "") || "project";
+      anchor.download = `${safeName}-source.zip`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => {
+        window.URL.revokeObjectURL(objectUrl);
+      }, 1000);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not export the workspace."
+      );
+    } finally {
+      setExporting(false);
+    }
+  }, [buildSessionId, exporting, organizationId, projectId, projectName]);
 
   if (loading) {
     return (
@@ -252,6 +299,21 @@ function FilesView({
         >
           {file ? workspaceFilePath(file.path) : "/workspace"}
         </span>
+        <button
+          aria-label="Export ZIP"
+          className={styles.exportButton}
+          disabled={exporting}
+          onClick={handleExport}
+          title="Download Source"
+          type="button"
+        >
+          {exporting ? (
+            <Loader2 aria-hidden="true" className="spin" size={13} />
+          ) : (
+            <Download aria-hidden="true" size={13} />
+          )}
+          <span>{exporting ? "Exporting…" : "Export ZIP"}</span>
+        </button>
       </div>
       <div className="files">
         <div className="files-tree">

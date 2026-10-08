@@ -252,3 +252,86 @@ export async function synthesizeSpeech(
 
   return await response.blob();
 }
+
+export interface ExportWorkspaceZipInput {
+  buildSessionId: string;
+  organizationId: string;
+  projectId: string;
+  projectName?: string | undefined;
+}
+
+/**
+ * Requests an exported standard ZIP archive of the project workspace source code,
+ * cleanly excluding repository metadata, dependencies, caches, and build artifacts.
+ */
+export async function exportWorkspaceZip(
+  input: ExportWorkspaceZipInput
+): Promise<Blob> {
+  const csrf = csrfToken();
+  const requestId = crypto.randomUUID();
+  const query = new URLSearchParams({
+    organizationId: input.organizationId,
+    projectId: input.projectId,
+  });
+  if (input.projectName) {
+    query.set("projectName", input.projectName);
+  }
+  const path = `/v1/build-sessions/${encodeURIComponent(input.buildSessionId)}/workspace/export?${query.toString()}`;
+
+  const diagnose = (status: number, reason: string) =>
+    console.warn(
+      JSON.stringify({
+        event: "product.workspace_export.failed",
+        path: path.split("?")[0],
+        reason,
+        requestId,
+        status,
+      })
+    );
+
+  const response = await fetch(path, {
+    credentials: "same-origin",
+    headers: {
+      "x-request-id": requestId,
+      ...(csrf ? { [CSRF_HEADER]: csrf } : {}),
+    },
+    method: "GET",
+  }).catch((cause: unknown) => {
+    diagnose(0, "network_or_timeout");
+    networkManager.notifyNetworkFailure();
+    throw new Error(
+      "The workspace export service could not be reached. Retry when the connection returns.",
+      { cause }
+    );
+  });
+
+  networkManager.notifyNetworkSuccess();
+
+  if (!response.ok) {
+    diagnose(response.status, "export_refusal");
+    let refusalBody: unknown;
+    try {
+      refusalBody = await response.json();
+    } catch {
+      // Body not JSON
+    }
+
+    const parsedError = extractApiError(refusalBody);
+    if (parsedError) {
+      throw new ApiRequestError(
+        response.status,
+        parsedError.message,
+        requestId,
+        parsedError.code ? { code: parsedError.code } : undefined
+      );
+    }
+
+    throw new ApiRequestError(
+      response.status,
+      `Workspace export failed (${response.status}).`,
+      requestId
+    );
+  }
+
+  return await response.blob();
+}
