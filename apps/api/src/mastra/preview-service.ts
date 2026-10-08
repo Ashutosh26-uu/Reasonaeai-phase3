@@ -331,7 +331,10 @@ export function createPreviewService(
   const viewOf = (record: PreviewRecord): PreviewView =>
     PreviewViewSchema.parse({
       detail: record.detail,
-      port: record.appPort,
+      port:
+        record.status === "stopped" || record.status === "failed"
+          ? null
+          : (record.appPort ?? record.hostPort),
       previewId: record.previewId,
       status: record.status,
       url: `${PREVIEW_PUBLIC_PATH_PREFIX}/${record.previewId}/`,
@@ -433,6 +436,7 @@ export function createPreviewService(
     record.status = "failed";
     record.detail = detail.slice(0, DETAIL_MAX_LENGTH);
     record.hostPort = null;
+    record.appPort = null;
     await destroySandbox(record);
     getPreviewStore()
       .update(record.previewId, {
@@ -450,6 +454,8 @@ export function createPreviewService(
     if (bySession.get(record.buildSessionId) === record) {
       bySession.delete(record.buildSessionId);
     }
+    record.hostPort = null;
+    record.appPort = null;
     await destroySandbox(record);
     getPreviewStore()
       .update(record.previewId, {
@@ -978,6 +984,7 @@ export function createPreviewService(
     record.status = "stopped";
     record.detail = null;
     record.hostPort = null;
+    record.appPort = null;
     return viewOf(record);
   };
 
