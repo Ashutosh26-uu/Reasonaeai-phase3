@@ -122,9 +122,10 @@ describe.skipIf(!dockerAvailable)(
       expect(page.headers.get("content-type")).toContain("text/html");
       const html = await page.text();
       expect(html).toContain("main.js");
+      expect(html).toContain("Vite app loaded");
       const script = await fetch(`${base}/main.js`);
       expect(script.headers.get("content-type")).toContain("javascript");
-      expect(await script.text()).toContain("Vite app loaded");
+      expect(await script.text()).toContain("window.previewLoaded = true");
       await app.runCommand({
         args: ["-f", "node app.cjs"],
         command: "pkill",
