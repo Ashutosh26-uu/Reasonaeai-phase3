@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { mintCsrfToken } from "@reasonateai/auth/csrf";
 import {
   CSRF_COOKIE,
   CSRF_HEADER,
@@ -61,6 +62,7 @@ describe("workspace source export route", () => {
 
   let tempDir: string;
   let checkpointRoot: string;
+  let checkpointStore: ReturnType<typeof createGitCheckpointStore>;
   let handlers: ReturnType<typeof createWorkspaceHandlers>;
   let emptyHandlers: ReturnType<typeof createWorkspaceHandlers>;
 
@@ -127,8 +129,8 @@ describe("workspace source export route", () => {
   function makeContext(
     options: {
       cookie?: string | null;
-      csrfHeader?: string | undefined;
-      csrfCookie?: string | undefined;
+      csrfHeader?: string | null | undefined;
+      csrfCookie?: string | null | undefined;
       sessionId?: string;
       query?: Record<string, string>;
       customHeaders?: Record<string, string>;
@@ -137,9 +139,13 @@ describe("workspace source export route", () => {
     const cookie =
       options.cookie === null ? undefined : (options.cookie ?? ownerCookie);
     const csrfHeader =
-      options.csrfHeader === undefined ? validCsrf : options.csrfHeader;
+      options.csrfHeader === null
+        ? undefined
+        : (options.csrfHeader ?? validCsrf);
     const csrfCookie =
-      options.csrfCookie === undefined ? validCsrf : options.csrfCookie;
+      options.csrfCookie === null
+        ? undefined
+        : (options.csrfCookie ?? validCsrf);
     const sessionId = options.sessionId ?? buildSessionId;
     const query = options.query ?? {};
     const customHeaders = options.customHeaders ?? {};
@@ -182,7 +188,7 @@ describe("workspace source export route", () => {
   beforeAll(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "reasonate-export-test-"));
     checkpointRoot = join(tempDir, "checkpoints");
-    const checkpointStore = createGitCheckpointStore({ root: checkpointRoot });
+    checkpointStore = createGitCheckpointStore({ root: checkpointRoot });
 
     // Create a real git repository with valid source files AND excluded files
     const workDir = join(tempDir, "git-work");
@@ -336,7 +342,7 @@ describe("workspace source export route", () => {
     // Missing header
     const missingHeaderCtx = makeContext({
       csrfCookie: "secret-csrf",
-      csrfHeader: undefined,
+      csrfHeader: null,
     });
     const res1 = await handlers.export(missingHeaderCtx);
     expect(res1.status).toBe(403);
@@ -357,6 +363,63 @@ describe("workspace source export route", () => {
       error: { code: string; message: string };
     };
     expect(body2.error.code).toBe("forbidden");
+  });
+
+  it("returns 403 forbidden when CSRF cookie is missing or both CSRF tokens are absent", async () => {
+    // Missing CSRF cookie
+    const missingCookieCtx = makeContext({
+      csrfCookie: null,
+      csrfHeader: validCsrf,
+    });
+    const res1 = await handlers.export(missingCookieCtx);
+    expect(res1.status).toBe(403);
+    const body1 = (await res1.json()) as {
+      error: { code: string; message: string };
+    };
+    expect(body1.error.code).toBe("forbidden");
+
+    // Both CSRF cookie and header missing
+    const missingBothCtx = makeContext({
+      csrfCookie: null,
+      csrfHeader: null,
+    });
+    const res2 = await handlers.export(missingBothCtx);
+    expect(res2.status).toBe(403);
+    const body2 = (await res2.json()) as {
+      error: { code: string; message: string };
+    };
+    expect(body2.error.code).toBe("forbidden");
+  });
+
+  it("verifies cryptographic CSRF token against sessionId when csrfSecret is configured", async () => {
+    const testSecret = "super-secret-csrf-key";
+    const cryptoHandlers = createWorkspaceHandlers({
+      checkpoints: checkpointStore,
+      csrfSecret: () => testSecret,
+      resolvePrincipal: () => Promise.resolve(ownerPrincipal),
+      store: () => mockStore,
+    });
+
+    const validCryptoToken = mintCsrfToken({
+      secret: testSecret,
+      sessionId: ownerSessionId,
+    });
+
+    // Valid minted token succeeds
+    const successCtx = makeContext({
+      csrfCookie: validCryptoToken,
+      csrfHeader: validCryptoToken,
+    });
+    const successRes = await cryptoHandlers.export(successCtx);
+    expect(successRes.status).toBe(200);
+
+    // Tampered token fails
+    const tamperedCtx = makeContext({
+      csrfCookie: "tampered-token",
+      csrfHeader: "tampered-token",
+    });
+    const failRes = await cryptoHandlers.export(tamperedCtx);
+    expect(failRes.status).toBe(403);
   });
 
   it("returns 404 when build session does not exist in store", async () => {
@@ -429,5 +492,17 @@ describe("workspace source export route", () => {
     expect(unzipListing).not.toContain(".cache");
     expect(unzipListing).not.toContain("dist");
     expect(unzipListing).not.toContain(".next");
+  });
+
+  it("sanitizes projectName preventing path traversal or special character injection in filename", async () => {
+    const ctx = makeContext({
+      query: { projectName: "../../../etc/passwd\r\nX-Injected: evil" },
+    });
+    const response = await handlers.export(ctx);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-disposition")).toBe(
+      'attachment; filename="etc-passwd-x-injected-evil-source.zip"'
+    );
   });
 });

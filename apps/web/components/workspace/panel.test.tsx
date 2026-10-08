@@ -2,7 +2,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EMPTY_TIMELINE } from "@/components/chat/timeline";
 import { exportWorkspaceZip } from "@/lib/product-api";
-import { FilesView, Panel, type PanelProps } from "./panel";
+import {
+  FilesView,
+  Panel,
+  type PanelProps,
+  sanitizeDownloadFilename,
+  triggerBlobDownload,
+} from "./panel";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -21,6 +27,90 @@ const defaultPanelProps: PanelProps = {
   requestedView: "new",
   timeline: EMPTY_TIMELINE,
 };
+
+describe("sanitizeDownloadFilename helper", () => {
+  it("sanitizes names, converts to lowercase, replaces symbols with dashes", () => {
+    expect(sanitizeDownloadFilename("Super App 2026!")).toBe(
+      "super-app-2026-source.zip"
+    );
+  });
+
+  it("neutralizes path traversal attempts and special characters", () => {
+    expect(sanitizeDownloadFilename("../../../etc/passwd")).toBe(
+      "etc-passwd-source.zip"
+    );
+    expect(sanitizeDownloadFilename("..\\..\\windows\\system32")).toBe(
+      "windows-system32-source.zip"
+    );
+  });
+
+  it("falls back to project-source.zip for undefined, empty, or whitespace strings", () => {
+    expect(sanitizeDownloadFilename(undefined)).toBe("project-source.zip");
+    expect(sanitizeDownloadFilename("")).toBe("project-source.zip");
+    expect(sanitizeDownloadFilename("   ---   ")).toBe("project-source.zip");
+  });
+});
+
+describe("triggerBlobDownload helper", () => {
+  it("creates object URL, appends anchor, triggers click, and cleans up URL", () => {
+    vi.useFakeTimers();
+
+    const mockBlob = new Blob(["test-data"], { type: "application/zip" });
+    const mockUrl = "blob:http://localhost:3000/mock-uuid";
+
+    const mockCreateObjectURL = vi.fn().mockReturnValue(mockUrl);
+    const mockRevokeObjectURL = vi.fn();
+
+    vi.stubGlobal("window", {
+      URL: {
+        createObjectURL: mockCreateObjectURL,
+        revokeObjectURL: mockRevokeObjectURL,
+      },
+    });
+
+    const clicked: string[] = [];
+    const mockAnchor = {
+      click: vi.fn(function (this: { download: string }) {
+        clicked.push(this.download);
+      }),
+      download: "",
+      href: "",
+      remove: vi.fn(),
+    };
+
+    const appendedNodes: unknown[] = [];
+    vi.stubGlobal("document", {
+      body: {
+        appendChild: vi.fn((node) => {
+          appendedNodes.push(node);
+          return node;
+        }),
+      },
+      createElement: vi.fn((tag: string) => {
+        if (tag === "a") {
+          return mockAnchor;
+        }
+        return {};
+      }),
+    });
+
+    triggerBlobDownload(mockBlob, "my-app-source.zip");
+
+    expect(mockCreateObjectURL).toHaveBeenCalledWith(mockBlob);
+    expect(mockAnchor.href).toBe(mockUrl);
+    expect(mockAnchor.download).toBe("my-app-source.zip");
+    expect(mockAnchor.click).toHaveBeenCalledTimes(1);
+    expect(mockAnchor.remove).toHaveBeenCalledTimes(1);
+    expect(appendedNodes).toContain(mockAnchor);
+
+    // Revocation happens after timeout
+    expect(mockRevokeObjectURL).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1000);
+    expect(mockRevokeObjectURL).toHaveBeenCalledWith(mockUrl);
+
+    vi.useRealTimers();
+  });
+});
 
 describe("FilesView component", () => {
   it("renders loading state when tree has not yet settled", () => {
@@ -90,8 +180,8 @@ describe("FilesView component", () => {
     expect(html).toContain("<svg");
   });
 
-  it("triggers native browser download and cleans up Object URL lifecycle on export", async () => {
-    const mockBlob = new Blob(["PK\x03\x04testdata"], {
+  it("handles exportWorkspaceZip integration and triggers file download", async () => {
+    const mockBlob = new Blob(["PK\x03\x04zipdata"], {
       type: "application/zip",
     });
     const mockFetch = vi.fn().mockResolvedValue({
@@ -102,47 +192,8 @@ describe("FilesView component", () => {
     });
     vi.stubGlobal("fetch", mockFetch);
 
-    const createdObjectUrls: string[] = [];
-    const revokedObjectUrls: string[] = [];
-
-    const mockCreateObjectURL = vi.fn((_blob: Blob) => {
-      const url = `blob:http://localhost:3000/${crypto.randomUUID()}`;
-      createdObjectUrls.push(url);
-      return url;
-    });
-    const mockRevokeObjectURL = vi.fn((url: string) => {
-      revokedObjectUrls.push(url);
-    });
-
-    vi.stubGlobal("URL", {
-      createObjectURL: mockCreateObjectURL,
-      revokeObjectURL: mockRevokeObjectURL,
-    });
-
-    const clickedAnchors: { download: string; href: string }[] = [];
-    const mockAnchor = {
-      click: vi.fn(function (this: { download: string; href: string }) {
-        clickedAnchors.push({ download: this.download, href: this.href });
-      }),
-      download: "",
-      href: "",
-      remove: vi.fn(),
-    };
-
-    const mockDocument = {
-      body: {
-        appendChild: vi.fn((node) => node),
-      },
-      cookie: "",
-      createElement: vi.fn((tag: string) => {
-        if (tag === "a") {
-          return mockAnchor;
-        }
-        return {};
-      }),
-    };
-
-    vi.stubGlobal("document", mockDocument);
+    const mockCreateObjectURL = vi.fn().mockReturnValue("blob:test-url");
+    const mockRevokeObjectURL = vi.fn();
     vi.stubGlobal("window", {
       URL: {
         createObjectURL: mockCreateObjectURL,
@@ -150,34 +201,33 @@ describe("FilesView component", () => {
       },
     });
 
-    // Exercise export trigger directly
-    const exportedBlob = await exportWorkspaceZip({
+    const mockAnchor = {
+      click: vi.fn(),
+      download: "",
+      href: "",
+      remove: vi.fn(),
+    };
+    vi.stubGlobal("document", {
+      body: { appendChild: vi.fn() },
+      cookie: "",
+      createElement: vi.fn(() => mockAnchor),
+    });
+
+    const blob = await exportWorkspaceZip({
       buildSessionId: "session-123",
       organizationId: "org-1",
       projectId: "proj-1",
       projectName: "Super App",
     });
 
-    const objectUrl = window.URL.createObjectURL(exportedBlob);
-    const anchor = document.createElement("a");
-    anchor.href = objectUrl;
-    anchor.download = "super-app-source.zip";
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    window.URL.revokeObjectURL(objectUrl);
+    const filename = sanitizeDownloadFilename("Super App");
+    triggerBlobDownload(blob, filename);
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(mockFetch.mock.calls[0]?.[0]).toContain(
-      "/v1/build-sessions/session-123/workspace/export"
-    );
-
     expect(mockCreateObjectURL).toHaveBeenCalledWith(mockBlob);
-    expect(mockAnchor.click).toHaveBeenCalledTimes(1);
     expect(mockAnchor.download).toBe("super-app-source.zip");
-    expect(mockAnchor.href).toBe(createdObjectUrls[0]);
-    expect(mockAnchor.remove).toHaveBeenCalledTimes(1);
-    expect(mockRevokeObjectURL).toHaveBeenCalledWith(createdObjectUrls[0]);
+    expect(mockAnchor.href).toBe("blob:test-url");
+    expect(mockAnchor.click).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -149,6 +149,30 @@ function FileView({ file }: { file: FileResponse | null }) {
   );
 }
 
+export function sanitizeDownloadFilename(rawName: string | undefined): string {
+  const clean = (rawName ?? "project")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${clean || "project"}-source.zip`;
+}
+
+export function triggerBlobDownload(blob: Blob, filename: string): void {
+  if (typeof window === "undefined" || !window.URL) {
+    return;
+  }
+  const objectUrl = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => {
+    window.URL.revokeObjectURL(objectUrl);
+  }, 1000);
+}
+
 export function FilesView({
   buildSessionId,
   initialTree,
@@ -167,8 +191,10 @@ export function FilesView({
   const [tree, setTree] = useState<TreeResponse | null>(initialTree ?? null);
   const [file, setFile] = useState<FileResponse | null>(null);
   const [error, setError] = useState("");
+  const [exportError, setExportError] = useState("");
   const [loading, setLoading] = useState(initialTree === undefined);
   const [exporting, setExporting] = useState(false);
+  const isMountedRef = useRef<boolean>(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -198,9 +224,12 @@ export function FilesView({
   }, [buildSessionId, organizationId, projectId]);
 
   useEffect(() => {
-    if (!initialTree) {
-      load().catch(() => undefined);
+    if (!isMountedRef.current && initialTree !== undefined) {
+      isMountedRef.current = true;
+      return;
     }
+    isMountedRef.current = true;
+    load().catch(() => undefined);
   }, [load, refreshKey, initialTree]);
 
   const openFile = useCallback(
@@ -225,6 +254,7 @@ export function FilesView({
       return;
     }
     setExporting(true);
+    setExportError("");
     try {
       const blob = await exportWorkspaceZip({
         buildSessionId,
@@ -232,23 +262,10 @@ export function FilesView({
         projectId,
         projectName,
       });
-      const objectUrl = window.URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = objectUrl;
-      const safeName =
-        (projectName ?? "project")
-          .toLowerCase()
-          .replace(/[^a-z0-9_-]+/g, "-")
-          .replace(/^-+|-+$/g, "") || "project";
-      anchor.download = `${safeName}-source.zip`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      setTimeout(() => {
-        window.URL.revokeObjectURL(objectUrl);
-      }, 1000);
+      const filename = sanitizeDownloadFilename(projectName);
+      triggerBlobDownload(blob, filename);
     } catch (cause) {
-      setError(
+      setExportError(
         cause instanceof Error
           ? cause.message
           : "Could not export the workspace."
@@ -257,6 +274,10 @@ export function FilesView({
       setExporting(false);
     }
   }, [buildSessionId, exporting, organizationId, projectId, projectName]);
+
+  const dismissExportError = useCallback(() => {
+    setExportError("");
+  }, []);
 
   if (loading) {
     return (
@@ -315,6 +336,19 @@ export function FilesView({
           <span>{exporting ? "Exporting…" : "Export ZIP"}</span>
         </button>
       </div>
+      {exportError ? (
+        <div className={styles.exportErrorNotice} role="alert">
+          <span>{exportError}</span>
+          <button
+            aria-label="Dismiss export error"
+            className={styles.dismissExportError}
+            onClick={dismissExportError}
+            type="button"
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
       <div className="files">
         <div className="files-tree">
           <div className="files-meta" title={tree.commit}>

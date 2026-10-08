@@ -270,6 +270,7 @@ const steeringHandlers = createRunSteeringHandlers({
 });
 
 const workspaceHandlers = createWorkspaceHandlers({
+  csrfSecret: sessionSecret,
   resolvePrincipal: resolvePrincipalFrom,
   store: stateStore,
 });

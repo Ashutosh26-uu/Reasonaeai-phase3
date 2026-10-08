@@ -153,3 +153,30 @@
   outline: 2px solid var(--ink-3);
   outline-offset: 2px;
 }
+
+.exportErrorNotice {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--ink-2);
+  background: var(--raised);
+  border-bottom: 1px solid var(--line);
+}
+
+.dismissExportError {
+  padding: 0 4px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--ink-3);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+}
+
+.dismissExportError:hover {
+  color: var(--ink);
+}

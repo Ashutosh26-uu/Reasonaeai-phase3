@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { authorize } from "@reasonateai/auth/authorize";
+import { verifyCsrfToken } from "@reasonateai/auth/csrf";
 import type { ApiErrorCode } from "@reasonateai/contracts/api-error";
 import { CSRF_COOKIE, CSRF_HEADER } from "@reasonateai/contracts/auth";
 import {
@@ -313,6 +314,7 @@ export interface WorkspaceRouteDeps {
    * worker writes with, so a deployment that changes one changes both.
    */
   checkpoints?: CheckpointStore;
+  csrfSecret?: () => string;
   resolvePrincipal: (input: {
     cookieHeader: string | undefined;
   }) => Promise<UserPrincipal | undefined>;
@@ -987,12 +989,24 @@ async function readCheckpointDiff({
   return answer(patch.stdout.toString("utf8"));
 }
 
-function isValidCsrf(
-  cookieHeader: string | undefined,
-  csrfHeader: string | undefined
-): boolean {
-  const csrfCookie = readCookie(cookieHeader, CSRF_COOKIE);
-  return !csrfCookie || csrfHeader === csrfCookie;
+function isValidCsrf(input: {
+  cookieHeader: string | undefined;
+  csrfHeader: string | undefined;
+  csrfSecret?: (() => string) | undefined;
+  sessionId?: string | undefined;
+}): boolean {
+  const csrfCookie = readCookie(input.cookieHeader, CSRF_COOKIE);
+  if (!(csrfCookie && input.csrfHeader && input.csrfHeader === csrfCookie)) {
+    return false;
+  }
+  if (input.csrfSecret && input.sessionId) {
+    return verifyCsrfToken({
+      secret: input.csrfSecret(),
+      sessionId: input.sessionId,
+      token: input.csrfHeader,
+    });
+  }
+  return true;
 }
 
 function sanitizeExportZipFilename(rawName: string | undefined): string {
@@ -1024,7 +1038,7 @@ async function executeGitArchiveZip(
   commit?: string | null
 ): Promise<
   | { ok: true; stdout: Buffer }
-  | { emptyFallback: boolean; ok: false; stderr: string }
+  | { emptyFallback: boolean; ok: false; oversized?: boolean; stderr: string }
 > {
   const archive = await runGit(
     [
@@ -1041,10 +1055,53 @@ async function executeGitArchiveZip(
   if (archive.code === 0) {
     return { ok: true, stdout: archive.stdout };
   }
+  const isOversized =
+    archive.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
+    (typeof archive.code === "string" && archive.code.includes("MAXBUFFER"));
   const isPathspecEmpty =
     archive.stderr.includes("did not match any files") ||
     archive.stderr.includes("fatal: pathspec");
-  return { emptyFallback: isPathspecEmpty, ok: false, stderr: archive.stderr };
+  return {
+    emptyFallback: isPathspecEmpty,
+    ok: false,
+    oversized: isOversized,
+    stderr: archive.stderr,
+  };
+}
+
+async function buildExportArchiveResponse(input: {
+  commit?: string | null;
+  directory: string;
+  filename: string;
+  requestId: string;
+}): Promise<Response> {
+  const archiveResult = await executeGitArchiveZip(
+    input.directory,
+    input.commit
+  );
+  if (!archiveResult.ok) {
+    if (archiveResult.emptyFallback) {
+      return zipArchiveResponse(
+        EMPTY_ZIP_BUFFER,
+        input.filename,
+        input.requestId
+      );
+    }
+    if (archiveResult.oversized) {
+      return apiErrorResponse({
+        code: "invalid_request",
+        message:
+          "The exported workspace archive exceeds the maximum allowed size of 64MB.",
+        requestId: input.requestId,
+      });
+    }
+    return gitFailure(input.requestId, archiveResult.stderr);
+  }
+  return zipArchiveResponse(
+    archiveResult.stdout,
+    input.filename,
+    input.requestId
+  );
 }
 
 export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
@@ -1152,7 +1209,14 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
         return unauthenticatedResponse(rid);
       }
 
-      if (!isValidCsrf(cookieHeader, c.req.header(CSRF_HEADER))) {
+      if (
+        !isValidCsrf({
+          cookieHeader,
+          csrfHeader: c.req.header(CSRF_HEADER),
+          csrfSecret: deps.csrfSecret,
+          sessionId: principal.sessionId,
+        })
+      ) {
         return apiErrorResponse({
           code: "forbidden",
           message: "A valid CSRF token is required for this request.",
@@ -1207,19 +1271,12 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
       }
 
       const directory = await materializeCheckout({ checkpoint, checkpoints });
-      const archiveResult = await executeGitArchiveZip(
+      return await buildExportArchiveResponse({
+        commit: checkpoint.commit,
         directory,
-        checkpoint.commit
-      );
-
-      if (!archiveResult.ok) {
-        if (archiveResult.emptyFallback) {
-          return zipArchiveResponse(EMPTY_ZIP_BUFFER, filename, rid);
-        }
-        return gitFailure(rid, archiveResult.stderr);
-      }
-
-      return zipArchiveResponse(archiveResult.stdout, filename, rid);
+        filename,
+        requestId: rid,
+      });
     },
 
     /**
