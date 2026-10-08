@@ -32,11 +32,11 @@ import {
   usePromptInputAttachments,
 } from "@/components/ai-elements/prompt-input";
 import styles from "./composer.module.css";
-import { ComposerAddMenu } from "./composer-add-menu";
 import {
   MAX_QUEUED_MESSAGES,
   type PromptSubmissionInput,
 } from "./message-queue";
+import { PromptAttachMenu } from "./prompt-attach-menu";
 import { QueuedMessageRow } from "./queued-messages";
 import { SuggestionBubbles } from "./suggestion-bubbles";
 import type { PromptSuggestion } from "./suggestions";
@@ -994,6 +994,18 @@ export function Composer({
     [onChange]
   );
 
+  const handleInsertUrl = useCallback(
+    (url: string) => {
+      const trimmed = draft.trim();
+      const next = trimmed ? `${trimmed}\n\n${url}` : url;
+      setDraft(next);
+      setTimeout(() => {
+        document.getElementById("prompt")?.focus();
+      }, 0);
+    },
+    [draft, setDraft]
+  );
+
   const handleSelectSuggestion = useCallback(
     (suggestion: PromptSuggestion) => {
       onSelectSuggestion?.(suggestion);
@@ -1248,9 +1260,10 @@ export function Composer({
 
               <PromptInputFooter className={`prompt-bottom ${styles.toolbar}`}>
                 <PromptInputTools>
-                  <ComposerAddMenu
+                  <PromptAttachMenu
                     busy={busy}
                     filesAvailable={listFiles !== undefined}
+                    onAddUrl={handleInsertUrl}
                     onErrorClear={clearAttachmentError}
                     onOpenFiles={openFiles}
                     onProjectSelect={onProjectSelect}
