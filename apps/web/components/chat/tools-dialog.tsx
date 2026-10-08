@@ -123,6 +123,7 @@ export const CTO_RUNTIME_TOOLS: readonly CtoRuntimeToolDefinition[] = [
 export interface ToolsDialogProps {
   onOpenChange: (open: boolean) => void;
   onResetDefaults?: (() => void) | undefined;
+  onReturnFocus?: (() => void) | undefined;
   onToggleTool?: ((toolId: string, enabled: boolean) => void) | undefined;
   open: boolean;
   selectedTools?: string[] | undefined;
@@ -143,7 +144,7 @@ function ToolRow({ tool, isEnabled, onToggle }: ToolRowProps) {
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLButtonElement>) => {
-      if (e.key === "Enter" || e.key === " ") {
+      if (e.key === " ") {
         e.preventDefault();
         onToggle(tool.id);
       }
@@ -211,6 +212,7 @@ export function ToolsDialog({
   selectedTools,
   onToggleTool,
   onResetDefaults,
+  onReturnFocus,
 }: ToolsDialogProps) {
   const [search, setSearch] = useState("");
   const [internalSelected, setInternalSelected] = useState<Set<string>>(
@@ -221,6 +223,26 @@ export function ToolsDialog({
   );
 
   const searchId = useId();
+
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen) {
+        setSearch("");
+      }
+      onOpenChange(nextOpen);
+    },
+    [onOpenChange]
+  );
+
+  const handleCloseAutoFocus = useCallback(
+    (event: Event) => {
+      if (onReturnFocus) {
+        event.preventDefault();
+        onReturnFocus();
+      }
+    },
+    [onReturnFocus]
+  );
 
   const currentSelectedSet = useMemo(() => {
     if (selectedTools !== undefined) {
@@ -241,8 +263,8 @@ export function ToolsDialog({
   }, []);
 
   const handleDone = useCallback(() => {
-    onOpenChange(false);
-  }, [onOpenChange]);
+    handleOpenChange(false);
+  }, [handleOpenChange]);
 
   const handleToggle = useCallback(
     (toolId: string) => {
@@ -312,8 +334,11 @@ export function ToolsDialog({
   ).length;
 
   return (
-    <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden border-border bg-background p-0 shadow-2xl sm:max-w-2xl md:max-w-3xl">
+    <Dialog onOpenChange={handleOpenChange} open={open}>
+      <DialogContent
+        className="flex max-h-[85vh] flex-col gap-0 overflow-hidden border-border bg-background p-0 shadow-2xl sm:max-w-2xl md:max-w-3xl"
+        onCloseAutoFocus={handleCloseAutoFocus}
+      >
         <DialogHeader className="sticky top-0 z-10 space-y-4 border-border border-b bg-background/95 p-6 pb-4 text-left backdrop-blur-md">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">

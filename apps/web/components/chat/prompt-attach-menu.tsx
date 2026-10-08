@@ -270,16 +270,19 @@ export function PromptAttachMenu({
       <UrlDialog
         onAddUrl={handleAddUrl}
         onOpenChange={setUrlOpen}
+        onReturnFocus={returnFocus}
         open={urlOpen}
       />
 
       <ConnectorsDialog
         onOpenChange={setConnectorsOpen}
+        onReturnFocus={returnFocus}
         open={connectorsOpen}
       />
 
       <ToolsDialog
         onOpenChange={setToolsOpen}
+        onReturnFocus={returnFocus}
         onToggleTool={onToggleTool}
         open={toolsOpen}
         selectedTools={selectedTools}

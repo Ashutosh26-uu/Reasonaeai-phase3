@@ -17,10 +17,45 @@ import { useCallback, useState } from "react";
 export interface UrlDialogProps {
   onAddUrl: (url: string) => void;
   onOpenChange: (open: boolean) => void;
+  onReturnFocus?: (() => void) | undefined;
   open: boolean;
 }
 
-const SCHEME_REGEX = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
+const SCHEME_WITH_SLASHES_REGEX = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
+const SPECIAL_SCHEME_REGEX = /^(?:javascript|data|file|mailto|about|blob):/i;
+const IPV4_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
+const TLD_REGEX = /^[a-zA-Z]{2,}$/;
+const PUNYCODE_TLD_REGEX = /^xn--[a-zA-Z0-9]+$/;
+const DOMAIN_LABEL_REGEX = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
+
+function isHostValid(hostname: string): boolean {
+  if (!hostname) {
+    return false;
+  }
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+    return true;
+  }
+  if (hostname.startsWith("[") && hostname.endsWith("]")) {
+    return true;
+  }
+  if (IPV4_REGEX.test(hostname)) {
+    const parts = hostname.split(".").map(Number);
+    return parts.every((p) => p >= 0 && p <= 255);
+  }
+  const parts = hostname.split(".");
+  if (parts.length < 2) {
+    return false;
+  }
+  return parts.every((p, idx) => {
+    if (!p) {
+      return false;
+    }
+    if (idx === parts.length - 1) {
+      return TLD_REGEX.test(p) || PUNYCODE_TLD_REGEX.test(p);
+    }
+    return DOMAIN_LABEL_REGEX.test(p);
+  });
+}
 
 export function normalizeAndValidateUrl(rawUrl: string): {
   error?: string;
@@ -32,8 +67,23 @@ export function normalizeAndValidateUrl(rawUrl: string): {
     return { error: "Please enter a web URL.", valid: false };
   }
 
-  const hasScheme = SCHEME_REGEX.test(trimmed);
-  const candidate = hasScheme ? trimmed : `https://${trimmed}`;
+  if (SPECIAL_SCHEME_REGEX.test(trimmed)) {
+    return {
+      error: "URL protocol must be HTTP or HTTPS.",
+      valid: false,
+    };
+  }
+
+  let candidate: string;
+  if (SCHEME_WITH_SLASHES_REGEX.test(trimmed)) {
+    candidate = trimmed;
+  } else {
+    const isLocal =
+      trimmed.startsWith("localhost") ||
+      trimmed.startsWith("127.0.0.1") ||
+      trimmed.startsWith("[::1]");
+    candidate = isLocal ? `http://${trimmed}` : `https://${trimmed}`;
+  }
 
   try {
     const parsed = new URL(candidate);
@@ -43,9 +93,10 @@ export function normalizeAndValidateUrl(rawUrl: string): {
         valid: false,
       };
     }
-    if (!parsed.hostname?.includes(".")) {
+    if (!isHostValid(parsed.hostname)) {
       return {
-        error: "Please enter a valid web domain (e.g. https://example.com).",
+        error:
+          "Please enter a valid web domain (e.g. https://example.com) or host.",
         valid: false,
       };
     }
@@ -58,7 +109,12 @@ export function normalizeAndValidateUrl(rawUrl: string): {
   }
 }
 
-export function UrlDialog({ open, onOpenChange, onAddUrl }: UrlDialogProps) {
+export function UrlDialog({
+  open,
+  onOpenChange,
+  onAddUrl,
+  onReturnFocus,
+}: UrlDialogProps) {
   const [url, setUrl] = useState("");
   const [title, setTitle] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -118,9 +174,22 @@ export function UrlDialog({ open, onOpenChange, onAddUrl }: UrlDialogProps) {
     [handleOpenChange, onAddUrl, title, url]
   );
 
+  const handleCloseAutoFocus = useCallback(
+    (event: Event) => {
+      if (onReturnFocus) {
+        event.preventDefault();
+        onReturnFocus();
+      }
+    },
+    [onReturnFocus]
+  );
+
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent
+        className="sm:max-w-md"
+        onCloseAutoFocus={handleCloseAutoFocus}
+      >
         <DialogHeader>
           <div className="flex items-center gap-2">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-border bg-muted text-muted-foreground">

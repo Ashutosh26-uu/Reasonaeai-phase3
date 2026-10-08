@@ -182,6 +182,8 @@ export interface ComposerProps {
   /** Stops the active CTO run while its response is streaming. */
   onStop: () => void;
   onSubmit: (input: PromptSubmissionInput) => Promise<boolean>;
+  /** Callback to toggle individual runtime tool capabilities. */
+  onToggleTool?: ((toolId: string, enabled: boolean) => void) | undefined;
   /** Turns recorded audio into text, or reports why it cannot. */
   onTranscribe: (audio: Blob) => Promise<string>;
   /** Opens the separate voice conversation surface. */
@@ -194,6 +196,8 @@ export interface ComposerProps {
   projectPickerDisabled: boolean;
   projects: ProjectSummary[];
   queueScopeKey?: string;
+  /** Active tool capabilities granted for this workspace session. */
+  selectedTools?: string[] | undefined;
   stopping: boolean;
   /** AI-suggested next actions displayed dynamically in compact bubble cards. */
   suggestions?: PromptSuggestion[] | undefined;
@@ -964,6 +968,8 @@ export function Composer({
   onSelectSuggestion,
   onDismissSuggestions,
   onRefreshSuggestions,
+  selectedTools,
+  onToggleTool,
 }: ComposerProps) {
   const [menu, setMenu] = useState<"files" | "none" | "notes">("none");
   const [files, setFiles] = useState<string[]>([]);
@@ -1000,7 +1006,14 @@ export function Composer({
       const next = trimmed ? `${trimmed}\n\n${url}` : url;
       setDraft(next);
       setTimeout(() => {
-        document.getElementById("prompt")?.focus();
+        const el = document.getElementById(
+          "prompt"
+        ) as HTMLTextAreaElement | null;
+        if (el) {
+          el.focus();
+          el.selectionStart = el.value.length;
+          el.selectionEnd = el.value.length;
+        }
       }, 0);
     },
     [draft, setDraft]
@@ -1267,11 +1280,13 @@ export function Composer({
                     onErrorClear={clearAttachmentError}
                     onOpenFiles={openFiles}
                     onProjectSelect={onProjectSelect}
+                    onToggleTool={onToggleTool}
                     projectId={projectId}
                     projectPickerDisabled={
                       projectPickerDisabled || Boolean(queue.sendingId)
                     }
                     projects={projects}
+                    selectedTools={selectedTools}
                   />
                   {pending && projectId && (
                     <PromptQueueButton

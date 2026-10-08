@@ -39,7 +39,11 @@ describe("WORKSPACE_CONNECTORS", () => {
 describe("ConnectorsDialog component", () => {
   it("renders connector directory cards when open", () => {
     const html = renderToStaticMarkup(
-      <ConnectorsDialog onOpenChange={vi.fn()} open={true} />
+      <ConnectorsDialog
+        onOpenChange={vi.fn()}
+        onReturnFocus={vi.fn()}
+        open={true}
+      />
     );
 
     expect(html).toContain("Workspace Connectors");

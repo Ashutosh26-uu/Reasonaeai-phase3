@@ -31,6 +31,7 @@ const defaultProps: PromptAttachMenuProps = {
   onErrorClear: vi.fn(),
   onOpenFiles: vi.fn(),
   onProjectSelect: vi.fn(),
+  onToggleTool: vi.fn(),
   projectId: "p-1",
   projectPickerDisabled: false,
   projects: [
@@ -40,6 +41,7 @@ const defaultProps: PromptAttachMenuProps = {
       projectId: "p-1" as unknown as ProjectSummary["projectId"],
     },
   ],
+  selectedTools: ["execute_command", "read_file"],
 };
 
 function renderMenu(overrides: Partial<PromptAttachMenuProps> = {}) {
@@ -87,5 +89,15 @@ describe("PromptAttachMenu component", () => {
     expect(html).toContain("Sketch");
     expect(html).toContain("Connectors");
     expect(html).toContain("Tools");
+  });
+
+  it("accepts controlled tool properties", () => {
+    const onToggleTool = vi.fn();
+    const html = renderMenu({
+      onToggleTool,
+      selectedTools: ["read_file"],
+    });
+
+    expect(html).toContain('aria-label="Add to message"');
   });
 });

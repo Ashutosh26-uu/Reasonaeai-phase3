@@ -41,7 +41,12 @@ describe("CTO_RUNTIME_TOOLS", () => {
 describe("ToolsDialog component", () => {
   it("renders runtime tools with accessible switches and metadata when open", () => {
     const html = renderToStaticMarkup(
-      <ToolsDialog onOpenChange={vi.fn()} open={true} />
+      <ToolsDialog
+        onOpenChange={vi.fn()}
+        onReturnFocus={vi.fn()}
+        onToggleTool={vi.fn()}
+        open={true}
+      />
     );
 
     expect(html).toContain("CTO Runtime Tools");

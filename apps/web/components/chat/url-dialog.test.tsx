@@ -44,6 +44,34 @@ describe("normalizeAndValidateUrl", () => {
     expect(result.url).toBe("https://github.com/ReasonateAI/reasonate");
   });
 
+  it("accepts localhost with custom port and normalizes protocol", () => {
+    const withoutScheme = normalizeAndValidateUrl("localhost:3000");
+    expect(withoutScheme.valid).toBe(true);
+    expect(withoutScheme.url).toBe("http://localhost:3000/");
+
+    const withScheme = normalizeAndValidateUrl("http://localhost:3000");
+    expect(withScheme.valid).toBe(true);
+    expect(withScheme.url).toBe("http://localhost:3000/");
+
+    const localhostSub = normalizeAndValidateUrl("test.localhost:8080/api");
+    expect(localhostSub.valid).toBe(true);
+    expect(localhostSub.url).toBe("https://test.localhost:8080/api");
+  });
+
+  it("accepts IPv4 and IPv6 loopback addresses", () => {
+    const ip4NoScheme = normalizeAndValidateUrl("127.0.0.1:8080");
+    expect(ip4NoScheme.valid).toBe(true);
+    expect(ip4NoScheme.url).toBe("http://127.0.0.1:8080/");
+
+    const ip4WithScheme = normalizeAndValidateUrl("http://127.0.0.1:3000");
+    expect(ip4WithScheme.valid).toBe(true);
+    expect(ip4WithScheme.url).toBe("http://127.0.0.1:3000/");
+
+    const ip6 = normalizeAndValidateUrl("http://[::1]:3000");
+    expect(ip6.valid).toBe(true);
+    expect(ip6.url).toBe("http://[::1]:3000/");
+  });
+
   it("rejects non-http/https protocols for security", () => {
     const jsResult = normalizeAndValidateUrl("javascript:alert(1)");
     expect(jsResult.valid).toBe(false);
@@ -52,9 +80,21 @@ describe("normalizeAndValidateUrl", () => {
     const fileResult = normalizeAndValidateUrl("file:///etc/passwd");
     expect(fileResult.valid).toBe(false);
     expect(fileResult.error).toContain("HTTP or HTTPS");
+
+    const ftpResult = normalizeAndValidateUrl("ftp://files.example.com");
+    expect(ftpResult.valid).toBe(false);
+    expect(ftpResult.error).toContain("HTTP or HTTPS");
   });
 
-  it("rejects inputs without a dot in the hostname", () => {
+  it("rejects single dots, double dots, and non-domains", () => {
+    const dotResult = normalizeAndValidateUrl(".");
+    expect(dotResult.valid).toBe(false);
+    expect(dotResult.error).toContain("valid web domain");
+
+    const doubleDotResult = normalizeAndValidateUrl("..");
+    expect(doubleDotResult.valid).toBe(false);
+    expect(doubleDotResult.error).toContain("valid web domain");
+
     const invalidResult = normalizeAndValidateUrl("not-a-domain");
     expect(invalidResult.valid).toBe(false);
     expect(invalidResult.error).toContain("valid web domain");
@@ -64,7 +104,12 @@ describe("normalizeAndValidateUrl", () => {
 describe("UrlDialog component", () => {
   it("renders modal structure when open", () => {
     const html = renderToStaticMarkup(
-      <UrlDialog onAddUrl={vi.fn()} onOpenChange={vi.fn()} open={true} />
+      <UrlDialog
+        onAddUrl={vi.fn()}
+        onOpenChange={vi.fn()}
+        onReturnFocus={vi.fn()}
+        open={true}
+      />
     );
 
     expect(html).toContain("Add URL Reference");

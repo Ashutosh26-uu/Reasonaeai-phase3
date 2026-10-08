@@ -28,7 +28,14 @@ import {
   Sparkles,
 } from "lucide-react";
 import type React from "react";
-import { useCallback, useId, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 export interface WorkspaceConnector {
   author: string;
@@ -150,6 +157,7 @@ export const WORKSPACE_CONNECTORS: readonly WorkspaceConnector[] = [
 
 export interface ConnectorsDialogProps {
   onOpenChange: (open: boolean) => void;
+  onReturnFocus?: (() => void) | undefined;
   open: boolean;
 }
 
@@ -218,6 +226,7 @@ function ConnectorCard({ connector, onSelect }: ConnectorCardProps) {
 export function ConnectorsDialog({
   open,
   onOpenChange,
+  onReturnFocus,
 }: ConnectorsDialogProps) {
   const [search, setSearch] = useState("");
   const [selectedConnector, setSelectedConnector] =
@@ -231,6 +240,16 @@ export function ConnectorsDialog({
   const [requestSubmitted, setRequestSubmitted] = useState<string | null>(null);
 
   const searchId = useId();
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    },
+    []
+  );
 
   const handleSearchChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -248,7 +267,12 @@ export function ConnectorsDialog({
   }, []);
 
   const handleCloseRequestModal = useCallback(() => {
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
     setRequestModalOpen(false);
+    setRequestSubmitted(null);
   }, []);
 
   const handleRequestServiceNameChange = useCallback(
@@ -278,6 +302,10 @@ export function ConnectorsDialog({
   const handleRequestModalOpenChange = useCallback((reqOpen: boolean) => {
     setRequestModalOpen(reqOpen);
     if (!reqOpen) {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
       setRequestSubmitted(null);
     }
   }, []);
@@ -324,18 +352,47 @@ export function ConnectorsDialog({
       setRequestSubmitted(service);
       setRequestServiceName("");
       setRequestNotes("");
-      setTimeout(() => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+      timeoutRef.current = setTimeout(() => {
         setRequestModalOpen(false);
         setRequestSubmitted(null);
+        timeoutRef.current = null;
       }, 1800);
     },
     [requestServiceName]
   );
 
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen) {
+        setSearch("");
+        setSelectedConnector(null);
+        handleCloseRequestModal();
+      }
+      onOpenChange(nextOpen);
+    },
+    [handleCloseRequestModal, onOpenChange]
+  );
+
+  const handleCloseAutoFocus = useCallback(
+    (event: Event) => {
+      if (onReturnFocus) {
+        event.preventDefault();
+        onReturnFocus();
+      }
+    },
+    [onReturnFocus]
+  );
+
   return (
     <>
-      <Dialog onOpenChange={onOpenChange} open={open}>
-        <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden border-border bg-background p-0 shadow-2xl sm:max-w-3xl md:max-w-4xl">
+      <Dialog onOpenChange={handleOpenChange} open={open}>
+        <DialogContent
+          className="flex max-h-[85vh] flex-col gap-0 overflow-hidden border-border bg-background p-0 shadow-2xl sm:max-w-3xl md:max-w-4xl"
+          onCloseAutoFocus={handleCloseAutoFocus}
+        >
           <DialogHeader className="sticky top-0 z-10 space-y-4 border-border border-b bg-background/95 p-6 pb-4 text-left backdrop-blur-md">
             <div className="flex items-center justify-between">
               <div>
@@ -547,7 +604,7 @@ export function ConnectorsDialog({
           </DialogHeader>
 
           {requestSubmitted ? (
-            <div className="space-y-2 py-6 text-center" role="status">
+            <div className="space-y-3 py-6 text-center" role="status">
               <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
                 <Check className="size-5" />
               </div>
@@ -559,6 +616,15 @@ export function ConnectorsDialog({
                 <strong className="text-foreground">{requestSubmitted}</strong>.
                 Our team prioritizes integrations based on workspace demand.
               </p>
+              <div className="pt-2">
+                <Button
+                  onClick={handleCloseRequestModal}
+                  size="sm"
+                  variant="outline"
+                >
+                  Close
+                </Button>
+              </div>
             </div>
           ) : (
             <form
