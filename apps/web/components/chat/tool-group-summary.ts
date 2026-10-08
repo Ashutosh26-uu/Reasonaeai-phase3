@@ -174,9 +174,9 @@ export function toolGroupSummary(tools: ToolEntry[]): {
       state: tool.state,
     });
   }
-  const phrases = [...groups.values()].map(({ kind, state, count }) =>
-    activityLabel(kind, state, count)
-  );
+  const phrases = [...groups.values()]
+    .map(({ kind, state, count }) => activityLabel(kind, state, count))
+    .sort((a, b) => a.localeCompare(b, "en"));
   const label = phrases.join(", ") || "No tool activity";
   const representative =
     [...unique.values()].find((tool) => category(tool) === "edit") ?? tools[0];

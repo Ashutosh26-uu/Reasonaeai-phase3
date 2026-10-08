@@ -1,0 +1,34 @@
+.shimmer {
+  display: inline-block;
+  color: transparent;
+  background-image:
+    linear-gradient(
+      90deg,
+      transparent calc(50% - var(--shimmer-spread)),
+      var(--color-foreground),
+      transparent calc(50% + var(--shimmer-spread))
+    ),
+    linear-gradient(
+      var(--color-muted-foreground),
+      var(--color-muted-foreground)
+    );
+  background-repeat: no-repeat;
+  background-position: 100% center;
+  background-clip: text;
+  background-size: 250% 100%;
+  animation: shimmer var(--shimmer-duration) linear infinite;
+}
+
+@keyframes shimmer {
+  to {
+    background-position: 0% center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer {
+    color: var(--color-muted-foreground);
+    background: none;
+    animation: none;
+  }
+}

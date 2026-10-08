@@ -159,6 +159,12 @@ Mastra `AgentController` session state is process-local and therefore non-author
 
 `submit_plan` pauses a run when the agent submits a structured proposal. An authorized decision resumes that exact tool call. History uses the explicit `run.plan_decided` approval boolean and preserves feedback independently; a generic answer acknowledgement is not an approval. Cancellation is displayed separately. This is a run-level review step, not a separate user-selectable Plan mode or a blanket gate on every source edit.
 
+### Transcript presentation
+
+Consecutive thinking and tool entries share expandable activity groups, separated by assistant progress messages. During streaming, progress prose remains visible and only the current action label shimmers. Finished activity summaries alphabetize their existing action phrases while expanded entries remain chronological. No model-generated summary titles are required.
+
+Only a durable worker turn outcome collapses prior assistant progress, thinking, tools, and resolved plans into a default-closed “Worked for…” history row. Controller agent ends and errors do not trigger this collapse. The final assistant response remains visible and owns Copy/feedback/branch controls; if no response follows the last activity, earlier progress is not promoted to a final answer. User steering stays visible and navigable. Failed/cancelled outcomes remain identified. Reload uses the same ledger projection and duration, and timestamps format in the browser after hydration.
+
 ### Source, workspace, and artifact storage
 
 An active build session owns one mutable isolated workspace filesystem. It is backed by a sandbox provider or persistent project volume and is scoped by organization, project, and build session. The workspace is disposable infrastructure: it is restored from the latest accepted private Git checkpoint and durable project state after worker or sandbox failure. Authorized workers may share a workspace only under task ownership and per-file mutation locks; unconstrained concurrent writes are forbidden.

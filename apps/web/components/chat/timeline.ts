@@ -7,6 +7,7 @@ import {
   type RunEventEnvelope,
   type RunLiveEvent,
 } from "@reasonateai/contracts/execution-protocol";
+import { isTurnEnd } from "./turn-presentation";
 
 interface RunTimeline {
   events: Record<number, RunEventEnvelope>;
@@ -77,7 +78,7 @@ export function pendingQuestion(
     ) {
       pending = undefined;
     }
-    if (["run.completed", "run.failed", "run.cancelled"].includes(event.type)) {
+    if (isTurnEnd(event)) {
       pending = undefined;
     }
   }
@@ -124,7 +125,7 @@ export function pendingPlan(
     ) {
       pending = undefined;
     }
-    if (["run.completed", "run.failed", "run.cancelled"].includes(event.type)) {
+    if (isTurnEnd(event)) {
       pending = undefined;
     }
   }
@@ -214,6 +215,7 @@ export type TranscriptEntry =
       kind: "text" | "reasoning";
       text: string;
       streaming: boolean;
+      sourceMessageId?: string;
       duration?: number;
       legacy?: boolean;
     }
@@ -270,8 +272,7 @@ export function latestCompletedTurn(
 }
 const string = (value: unknown): string =>
   typeof value === "string" ? value : "";
-const terminal = (event: RunEventEnvelope) =>
-  ["run.completed", "run.failed", "run.cancelled"].includes(event.type);
+const terminal = isTurnEnd;
 
 function newTool(
   id: string,
@@ -363,6 +364,12 @@ function sealTools(
   }
   for (const tool of tools.values()) {
     for (const item of [tool, ...tool.children]) {
+      if (item.state === "approval-requested") {
+        item.state = "output-denied";
+        item.output = "The run ended before this request was resolved.";
+        item.endedAt = ended.occurredAt;
+        continue;
+      }
       if (item.state !== "input-available") {
         continue;
       }
@@ -477,6 +484,7 @@ function textPartEntry(
   return {
     id: `${runId}:${snapshot.messageId}:${part.index}`,
     kind: part.type,
+    sourceMessageId: snapshot.messageId,
     streaming: !(ended || snapshot.finished) && part.endedAt === null,
     text: part.text,
     ...(part.endedAt && !snapshot.recovery
@@ -558,8 +566,8 @@ function findPlanDecision(
   if (!decisionEvent) {
     const cancelled = events.some(
       (e) =>
-        e.type === "run.cancelled" ||
-        e.type === "run.failed" ||
+        ((e.type === "run.cancelled" || e.type === "run.failed") &&
+          isTurnEnd(e)) ||
         (e.type === "approval.resolved" &&
           e.payload.toolCallId === planToolCallId &&
           e.payload.resolution === "cancelled")
@@ -677,6 +685,7 @@ function collectEventEntries(
               id: `${runId}:${event.eventId}`,
               kind: "text",
               legacy: true,
+              sourceMessageId: string(event.payload.messageId),
               streaming: false,
               text,
             },
