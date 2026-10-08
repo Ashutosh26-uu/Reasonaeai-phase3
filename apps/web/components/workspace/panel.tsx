@@ -4,6 +4,7 @@ import type { ConversationMessage } from "@reasonateai/contracts/execution";
 import {
   ArrowLeft,
   ArrowRight,
+  Download,
   ExternalLink,
   FileCode2,
   FolderClosed,
@@ -16,7 +17,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Timeline } from "@/components/chat/timeline";
-import { request } from "@/lib/product-api";
+import { exportWorkspaceZip, request } from "@/lib/product-api";
 import type { AgentPreviewSelection } from "./agent-preview";
 import { FileContentPreview } from "./file-content";
 import styles from "./panel.module.css";
@@ -95,6 +96,7 @@ export interface PanelProps {
   organizationId: string;
   previewSelection?: AgentPreviewSelection | undefined;
   projectId: string;
+  projectName?: string | undefined;
   refreshKey?: number | undefined;
   requestedView: "new" | "preview";
   timeline: Timeline;
@@ -147,21 +149,52 @@ function FileView({ file }: { file: FileResponse | null }) {
   );
 }
 
-function FilesView({
+export function sanitizeDownloadFilename(rawName: string | undefined): string {
+  const clean = (rawName ?? "project")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${clean || "project"}-source.zip`;
+}
+
+export function triggerBlobDownload(blob: Blob, filename: string): void {
+  if (typeof window === "undefined" || !window.URL) {
+    return;
+  }
+  const objectUrl = window.URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => {
+    window.URL.revokeObjectURL(objectUrl);
+  }, 1000);
+}
+
+export function FilesView({
   buildSessionId,
+  initialTree,
   organizationId,
   projectId,
+  projectName,
   refreshKey,
 }: {
   buildSessionId: string;
+  initialTree?: TreeResponse | null;
   organizationId: string;
   projectId: string;
+  projectName?: string | undefined;
   refreshKey?: number | undefined;
 }) {
-  const [tree, setTree] = useState<TreeResponse | null>(null);
+  const [tree, setTree] = useState<TreeResponse | null>(initialTree ?? null);
   const [file, setFile] = useState<FileResponse | null>(null);
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [exportError, setExportError] = useState("");
+  const [loading, setLoading] = useState(initialTree === undefined);
+  const [exporting, setExporting] = useState(false);
+  const isMountedRef = useRef<boolean>(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -191,8 +224,13 @@ function FilesView({
   }, [buildSessionId, organizationId, projectId]);
 
   useEffect(() => {
+    if (!isMountedRef.current && initialTree !== undefined) {
+      isMountedRef.current = true;
+      return;
+    }
+    isMountedRef.current = true;
     load().catch(() => undefined);
-  }, [load, refreshKey]);
+  }, [load, refreshKey, initialTree]);
 
   const openFile = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -210,6 +248,36 @@ function FilesView({
     },
     [buildSessionId, organizationId, projectId]
   );
+
+  const handleExport = useCallback(async () => {
+    if (exporting) {
+      return;
+    }
+    setExporting(true);
+    setExportError("");
+    try {
+      const blob = await exportWorkspaceZip({
+        buildSessionId,
+        organizationId,
+        projectId,
+        projectName,
+      });
+      const filename = sanitizeDownloadFilename(projectName);
+      triggerBlobDownload(blob, filename);
+    } catch (cause) {
+      setExportError(
+        cause instanceof Error
+          ? cause.message
+          : "Could not export the workspace."
+      );
+    } finally {
+      setExporting(false);
+    }
+  }, [buildSessionId, exporting, organizationId, projectId, projectName]);
+
+  const dismissExportError = useCallback(() => {
+    setExportError("");
+  }, []);
 
   if (loading) {
     return (
@@ -252,7 +320,35 @@ function FilesView({
         >
           {file ? workspaceFilePath(file.path) : "/workspace"}
         </span>
+        <button
+          aria-label="Export ZIP"
+          className={styles.exportButton}
+          disabled={exporting}
+          onClick={handleExport}
+          title="Download Source"
+          type="button"
+        >
+          {exporting ? (
+            <Loader2 aria-hidden="true" className="spin" size={13} />
+          ) : (
+            <Download aria-hidden="true" size={13} />
+          )}
+          <span>{exporting ? "Exporting…" : "Export ZIP"}</span>
+        </button>
       </div>
+      {exportError ? (
+        <div className={styles.exportErrorNotice} role="alert">
+          <span>{exportError}</span>
+          <button
+            aria-label="Dismiss export error"
+            className={styles.dismissExportError}
+            onClick={dismissExportError}
+            type="button"
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
       <div className="files">
         <div className="files-tree">
           <div className="files-meta" title={tree.commit}>

@@ -3,7 +3,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { authorize } from "@reasonateai/auth/authorize";
+import { verifyCsrfToken } from "@reasonateai/auth/csrf";
 import type { ApiErrorCode } from "@reasonateai/contracts/api-error";
+import { CSRF_COOKIE, CSRF_HEADER } from "@reasonateai/contracts/auth";
 import {
   type BuildSessionId,
   BuildSessionIdSchema,
@@ -42,7 +44,11 @@ import {
 } from "@reasonateai/sandbox/checkpoint";
 import { z } from "zod";
 import { conversationCheckpoint } from "../conversation-checkpoint";
-import { apiErrorResponse, unauthenticatedResponse } from "../principal";
+import {
+  apiErrorResponse,
+  readCookie,
+  unauthenticatedResponse,
+} from "../principal";
 import { checkpointSandboxFor, createBuildSandbox } from "../workspace";
 import {
   restoreWorkspace,
@@ -76,6 +82,48 @@ export const WORKSPACE_CHECKPOINT_DIFF_PATH =
   "/v1/build-sessions/:buildSessionId/workspace/checkpoint-diff";
 export const WORKSPACE_RESTORE_PATH =
   "/v1/build-sessions/:buildSessionId/workspace/restore";
+export const WORKSPACE_EXPORT_PATH =
+  "/v1/build-sessions/:buildSessionId/workspace/export";
+
+/** Maximum size for an exported source archive (64 MB). */
+const MAX_EXPORT_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Standard 22-byte empty ZIP file buffer (End of Central Directory Record with 0 entries).
+ * Returned when an authorized export is requested for an empty or unpopulated workspace.
+ */
+const EMPTY_ZIP_BUFFER = Buffer.from([
+  0x50, 0x4b, 0x05, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+]);
+
+/**
+ * Git pathspec exclusions for source export.
+ * Excludes git metadata, package manager and runtime caches, dependencies,
+ * Reasonate internals, and standard compiled build artifacts.
+ */
+const EXCLUDED_EXPORT_PATHSPECS = [
+  ":!**/.git/**",
+  ":!.git",
+  ":!**/node_modules/**",
+  ":!node_modules",
+  ":!**/.cache/**",
+  ":!.cache",
+  ":!**/.npm/**",
+  ":!.npm",
+  ":!**/.reasonate/**",
+  ":!.reasonate",
+  ":!**/dist/**",
+  ":!dist",
+  ":!**/build/**",
+  ":!build",
+  ":!**/.next/**",
+  ":!.next",
+  ":!**/.turbo/**",
+  ":!.turbo",
+  ":!**/.output/**",
+  ":!.output",
+];
 
 /**
  * Most entries a listing returns, so one large project cannot turn into an
@@ -213,6 +261,11 @@ const CheckpointDiffQuerySchema = WorkspaceFileQuerySchema.extend({
   runId: RunIdSchema,
   sequence: z.coerce.number().int().positive(),
 });
+const WorkspaceExportQuerySchema = z.strictObject({
+  organizationId: OrganizationIdSchema,
+  projectId: ProjectIdSchema,
+  projectName: z.string().max(256).optional(),
+});
 
 const WorkspaceEntrySchema = z.strictObject({
   bytes: z.number().int().nonnegative(),
@@ -261,6 +314,7 @@ export interface WorkspaceRouteDeps {
    * worker writes with, so a deployment that changes one changes both.
    */
   checkpoints?: CheckpointStore;
+  csrfSecret?: () => string;
   resolvePrincipal: (input: {
     cookieHeader: string | undefined;
   }) => Promise<UserPrincipal | undefined>;
@@ -935,6 +989,121 @@ async function readCheckpointDiff({
   return answer(patch.stdout.toString("utf8"));
 }
 
+function isValidCsrf(input: {
+  cookieHeader: string | undefined;
+  csrfHeader: string | undefined;
+  csrfSecret?: (() => string) | undefined;
+  sessionId?: string | undefined;
+}): boolean {
+  const csrfCookie = readCookie(input.cookieHeader, CSRF_COOKIE);
+  if (!(csrfCookie && input.csrfHeader && input.csrfHeader === csrfCookie)) {
+    return false;
+  }
+  if (input.csrfSecret && input.sessionId) {
+    return verifyCsrfToken({
+      secret: input.csrfSecret(),
+      sessionId: input.sessionId,
+      token: input.csrfHeader,
+    });
+  }
+  return true;
+}
+
+function sanitizeExportZipFilename(rawName: string | undefined): string {
+  const clean = (rawName ?? "project")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${clean || "project"}-source.zip`;
+}
+
+function zipArchiveResponse(
+  body: Uint8Array | Buffer | string,
+  filename: string,
+  requestId: string
+): Response {
+  return new Response(body as unknown as BodyInit, {
+    headers: {
+      "cache-control": "no-store",
+      "content-disposition": `attachment; filename="${filename}"`,
+      "content-type": "application/zip",
+      "x-request-id": requestId,
+    },
+    status: 200,
+  });
+}
+
+async function executeGitArchiveZip(
+  directory: string,
+  commit?: string | null
+): Promise<
+  | { ok: true; stdout: Buffer }
+  | { emptyFallback: boolean; ok: false; oversized?: boolean; stderr: string }
+> {
+  const archive = await runGit(
+    [
+      "-C",
+      directory,
+      "archive",
+      "--format=zip",
+      commit ?? "HEAD",
+      "--",
+      ...EXCLUDED_EXPORT_PATHSPECS,
+    ],
+    MAX_EXPORT_BYTES
+  );
+  if (archive.code === 0) {
+    return { ok: true, stdout: archive.stdout };
+  }
+  const isOversized =
+    archive.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
+    (typeof archive.code === "string" && archive.code.includes("MAXBUFFER"));
+  const isPathspecEmpty =
+    archive.stderr.includes("did not match any files") ||
+    archive.stderr.includes("fatal: pathspec");
+  return {
+    emptyFallback: isPathspecEmpty,
+    ok: false,
+    oversized: isOversized,
+    stderr: archive.stderr,
+  };
+}
+
+async function buildExportArchiveResponse(input: {
+  commit?: string | null;
+  directory: string;
+  filename: string;
+  requestId: string;
+}): Promise<Response> {
+  const archiveResult = await executeGitArchiveZip(
+    input.directory,
+    input.commit
+  );
+  if (!archiveResult.ok) {
+    if (archiveResult.emptyFallback) {
+      return zipArchiveResponse(
+        EMPTY_ZIP_BUFFER,
+        input.filename,
+        input.requestId
+      );
+    }
+    if (archiveResult.oversized) {
+      return apiErrorResponse({
+        code: "invalid_request",
+        message:
+          "The exported workspace archive exceeds the maximum allowed size of 64MB.",
+        requestId: input.requestId,
+      });
+    }
+    return gitFailure(input.requestId, archiveResult.stderr);
+  }
+  return zipArchiveResponse(
+    archiveResult.stdout,
+    input.filename,
+    input.requestId
+  );
+}
+
 export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
   const checkpoints =
     deps.checkpoints ??
@@ -1022,6 +1191,92 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
         });
       }
       return await readCheckpointDiff({ c, checkpoints, ...recorded, rid });
+    },
+    /**
+     * Exports the project workspace source code from the latest Git checkpoint
+     * as a standard ZIP archive. Centralized authorization guards the read,
+     * CSRF tokens are validated, and metadata, dependencies, caches, and build
+     * artifacts are cleanly filtered out.
+     */
+    export: async (c: HandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+
+      const cookieHeader = c.req.header("cookie");
+      const principal = await deps.resolvePrincipal({
+        cookieHeader,
+      });
+      if (!principal) {
+        return unauthenticatedResponse(rid);
+      }
+
+      if (
+        !isValidCsrf({
+          cookieHeader,
+          csrfHeader: c.req.header(CSRF_HEADER),
+          csrfSecret: deps.csrfSecret,
+          sessionId: principal.sessionId,
+        })
+      ) {
+        return apiErrorResponse({
+          code: "forbidden",
+          message: "A valid CSRF token is required for this request.",
+          requestId: rid,
+        });
+      }
+
+      const buildSessionId = BuildSessionIdSchema.safeParse(
+        c.req.param("buildSessionId")
+      );
+      const query = WorkspaceExportQuerySchema.safeParse({
+        organizationId: c.req.query("organizationId"),
+        projectId: c.req.query("projectId"),
+        projectName: c.req.query("projectName"),
+      });
+      if (!(buildSessionId.success && query.success)) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message:
+            "A build session id and both scope identifiers are required.",
+          requestId: rid,
+        });
+      }
+
+      const scope = {
+        organizationId: query.data.organizationId,
+        projectId: query.data.projectId,
+      };
+
+      const refusal = await guardWorkspaceRead({
+        buildSessionId: buildSessionId.data,
+        deps,
+        principal,
+        requestId: rid,
+        scope,
+      });
+      if (refusal) {
+        return refusal;
+      }
+
+      const filename = sanitizeExportZipFilename(query.data.projectName);
+
+      const checkpoint = await conversationCheckpoint({
+        buildSessionId: buildSessionId.data,
+        checkpoints,
+        scope,
+        store: deps.store(),
+      });
+
+      if (!checkpoint || checkpoint.empty) {
+        return zipArchiveResponse(EMPTY_ZIP_BUFFER, filename, rid);
+      }
+
+      const directory = await materializeCheckout({ checkpoint, checkpoints });
+      return await buildExportArchiveResponse({
+        commit: checkpoint.commit,
+        directory,
+        filename,
+        requestId: rid,
+      });
     },
 
     /**

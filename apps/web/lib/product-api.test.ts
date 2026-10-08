@@ -1,7 +1,12 @@
 import { CSRF_COOKIE, CSRF_HEADER } from "@reasonateai/contracts/auth";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { networkManager } from "./network-state";
-import { ApiRequestError, request, synthesizeSpeech } from "./product-api";
+import {
+  ApiRequestError,
+  exportWorkspaceZip,
+  request,
+  synthesizeSpeech,
+} from "./product-api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -242,6 +247,89 @@ describe("authenticated product requests", () => {
           text: "Test synthesis network failure",
         })
       ).rejects.toThrow("The speech synthesis service could not be reached");
+    });
+  });
+
+  describe("exportWorkspaceZip", () => {
+    it("requests zip export with same-origin credentials, CSRF header, and returns Blob", async () => {
+      vi.stubGlobal("document", { cookie: `${CSRF_COOKIE}=zip-csrf-token` });
+      const mockBlob = new Blob(["PK\x03\x04zipdata"], {
+        type: "application/zip",
+      });
+      const transport = vi.fn().mockResolvedValue(
+        new Response(mockBlob, {
+          headers: {
+            "content-disposition": 'attachment; filename="my-app-source.zip"',
+            "content-type": "application/zip",
+          },
+          status: 200,
+        })
+      );
+      vi.stubGlobal("fetch", transport);
+
+      const result = await exportWorkspaceZip({
+        buildSessionId: "session-123",
+        organizationId: "org-1",
+        projectId: "proj-1",
+        projectName: "my-app",
+      });
+
+      expect(transport).toHaveBeenCalledTimes(1);
+      const [url, init] = transport.mock.calls[0] as [string, RequestInit];
+      expect(url).toContain("/v1/build-sessions/session-123/workspace/export?");
+      expect(url).toContain("organizationId=org-1");
+      expect(url).toContain("projectId=proj-1");
+      expect(url).toContain("projectName=my-app");
+      expect(init.method).toBe("GET");
+      expect(init.credentials).toBe("same-origin");
+      expect((init.headers as Record<string, string>)[CSRF_HEADER]).toBe(
+        "zip-csrf-token"
+      );
+      expect(result).toBeInstanceOf(Blob);
+    });
+
+    it("throws ApiRequestError when the export request is refused", async () => {
+      vi.stubGlobal("document", { cookie: "" });
+      const transport = vi.fn().mockResolvedValue(
+        Response.json(
+          {
+            error: {
+              code: "forbidden",
+              message: "You are not authorized to read this project.",
+            },
+          },
+          { status: 403 }
+        )
+      );
+      vi.stubGlobal("fetch", transport);
+
+      await expect(
+        exportWorkspaceZip({
+          buildSessionId: "session-123",
+          organizationId: "org-1",
+          projectId: "proj-1",
+        })
+      ).rejects.toMatchObject({
+        code: "forbidden",
+        message: "You are not authorized to read this project.",
+        status: 403,
+      });
+    });
+
+    it("throws a user-readable error on network disconnect", async () => {
+      vi.stubGlobal("document", { cookie: "" });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockRejectedValue(new TypeError("Failed to fetch"))
+      );
+
+      await expect(
+        exportWorkspaceZip({
+          buildSessionId: "session-123",
+          organizationId: "org-1",
+          projectId: "proj-1",
+        })
+      ).rejects.toThrow("The workspace export service could not be reached");
     });
   });
 });

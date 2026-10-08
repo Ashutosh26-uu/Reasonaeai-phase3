@@ -294,6 +294,7 @@ function ResizableWorkspacePanel({
   organizationId,
   panelWidth,
   projectId,
+  projectName,
   refreshKey,
   workAreaRef,
 }: {
@@ -308,6 +309,7 @@ function ResizableWorkspacePanel({
   organizationId: string;
   panelWidth: number;
   projectId: string;
+  projectName?: string | undefined;
   refreshKey?: number;
   workAreaRef: { current: HTMLDivElement | null };
   messages: ConversationMessage[];
@@ -353,6 +355,7 @@ function ResizableWorkspacePanel({
         organizationId={organizationId}
         previewSelection={previewSelection}
         projectId={projectId}
+        projectName={projectName}
         refreshKey={refreshKey}
         requestedView={requestedView}
         timeline={timeline}
@@ -2039,6 +2042,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
           panelWidth={panelWidth}
           previewSelection={agentPreview}
           projectId={projectId}
+          projectName={project?.name}
           refreshKey={workspaceRefreshKey}
           requestedView={requestedView}
           timeline={timeline}
