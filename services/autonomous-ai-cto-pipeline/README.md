@@ -21,7 +21,6 @@ The main rule of our project: **no paid AI services**. Everything (speech recogn
 - **Backend generation.** A FastAPI + SQLAlchemy backend is written piece by piece (models, schemas, routes, authentication) and then validated and repaired automatically.
 - **Frontend generation.** A React + Vite frontend is created. Business ideas (café, bakery, yoga studio, etc.) become a real one-page website; app ideas (employee system, to-do list) become a dashboard.
 - **One-click run.** The finished app is built and started with Docker Compose.
-- **Control panel with accounts and history.** A web page (`localhost:9000`) where users sign up, log in, build apps and see every past build.
 
 ## 3. How it works
 
@@ -109,21 +108,6 @@ On macOS/Linux, activate with `source .venv/bin/activate`.
 
 ## 7. Running it
 
-### Option A: Control panel (recommended)
-
-```powershell
-python control_panel_server.py
-```
-
-1. Open **http://localhost:9000**.
-2. **Sign up** (name, email, password) and log in.
-3. Press the microphone and speak, or click one of the example ideas, or type your own.
-4. Check the transcript and press **Build app**.
-5. Watch the live progress. When it finishes, use **Open the app** and **API docs**.
-
-The **My builds** section lists every past build with its status, features and time. For each build you can **Open again** (restart that app without regenerating it), **Retry**, **Use idea** (copy it back into the editor) or **Delete**.
-
-### Option B: Command line
 
 ```powershell
 python run_pipeline.py --idea "An app where users sign up, log in, and keep a list of books."
@@ -137,7 +121,6 @@ python run_pipeline.py --resume <folder-in-pipeline_runs> --backend-port 9100 --
 
 | What | Address |
 |---|---|
-| Control panel | http://localhost:9000 |
 | Generated backend (API docs) | http://localhost:9100/docs |
 | Generated frontend | http://localhost:9200 |
 
@@ -162,21 +145,14 @@ PowerShell example:
 
 ```powershell
 $env:CTO_MODEL = "qwen2.5-coder:3b"
-python control_panel_server.py
+python run_pipeline.py --idea "An app where users sign up, log in, and keep a list of books."
 ```
 
-## 9. Accounts and history
-
-The control panel stores users and build history in a local SQLite file, `panel_data.db` (created automatically). Passwords are salted and hashed with scrypt, login tokens are stored only as SHA-256 hashes and expire after 7 days. Each user can only see and delete their own builds. Do not share this file.
-
-## 10. Project structure
+## 9. Project structure
 
 ```
 autonomous-ai-cto/
-  control_panel.html        Web UI of the control panel
-  control_panel_server.py   Local server: build API, login, history
-  panel_store.py            SQLite store for users, sessions and history
-  run_pipeline.py           The whole pipeline (CLI + function used by the panel)
+  run_pipeline.py           The whole pipeline (CLI entry point)
   site_builder.py           Website-style frontend builder (AI design brief)
   modules/
     m01_sensory/            Whisper + text normalization
@@ -202,7 +178,6 @@ Test scripts are included for the individual modules (for example `m02_requireme
 - **Gallery images.** Website galleries use coloured tiles with icons, not real photographs.
 - **No third-party services.** Payments, Google login, e-mail sending and similar integrations are not generated.
 - **One app at a time.** The backend and frontend use fixed ports.
-- **Accounts** exist only in the control panel, not inside the generated apps' own website layouts.
 
 ## 13. Future work
 

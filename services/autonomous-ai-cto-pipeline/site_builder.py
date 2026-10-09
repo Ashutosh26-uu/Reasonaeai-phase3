@@ -238,7 +238,7 @@ def write_site(project_dir: Path, idea: str, requirements: dict, spec: dict) -> 
             "sections": _sections(requirements), "contact": _contact_cfg(spec),
             "feature_titles": [f["name"] for f in requirements.get("features", [])]}
     src = project_dir / "frontend" / "src"
-    (src / "App.jsx").write_text(_APP.replace("__DATA__", json.dumps(data, ensure_ascii=False)), encoding="utf-8")
+    (src / "app.jsx").write_text(_APP.replace("__DATA__", json.dumps(data, ensure_ascii=False)), encoding="utf-8")
     (src / "Site.css").write_text(":root{" + ";".join(f"--{k}:{v}" for k, v in pal.items()) + "}\n" + _CSS, encoding="utf-8")
     idx = project_dir / "frontend" / "index.html"
     if idx.exists():

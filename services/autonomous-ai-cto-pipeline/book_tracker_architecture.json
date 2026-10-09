@@ -4,20 +4,20 @@
     {
       "table_name": "users",
       "columns": [
-        {"name": "id", "type": "uuid"},
-        {"name": "email", "type": "string"},
-        {"name": "hashed_password", "type": "string"}
+        { "name": "id", "type": "uuid" },
+        { "name": "email", "type": "string" },
+        { "name": "hashed_password", "type": "string" }
       ],
       "is_auth_table": true
     },
     {
       "table_name": "books",
       "columns": [
-        {"name": "id", "type": "uuid"},
-        {"name": "owner_id", "type": "string", "foreign_key": "users.id"},
-        {"name": "title", "type": "string"},
-        {"name": "author", "type": "string"},
-        {"name": "read", "type": "boolean"}
+        { "name": "id", "type": "uuid" },
+        { "name": "owner_id", "type": "string", "foreign_key": "users.id" },
+        { "name": "title", "type": "string" },
+        { "name": "author", "type": "string" },
+        { "name": "read", "type": "boolean" }
       ]
     }
   ],
@@ -53,7 +53,7 @@
       "method": "GET",
       "path": "/books",
       "table": "books",
-      "query_params": {"read": "boolean", "limit": "int", "offset": "int"},
+      "query_params": { "read": "boolean", "limit": "int", "offset": "int" },
       "description": "Lists books with an optional read filter and pagination"
     },
     {

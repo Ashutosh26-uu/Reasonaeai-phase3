@@ -239,7 +239,7 @@ function App() {{
 
 export default App;
 """
-    (project_dir / "frontend" / "src" / "App.jsx").write_text(content, encoding="utf-8")
+    (project_dir / "frontend" / "src" / "app.jsx").write_text(content, encoding="utf-8")
 
 
 def write_docker_compose(project_dir: Path, backend_port: int, frontend_port: int) -> None:
