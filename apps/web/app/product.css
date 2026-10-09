@@ -33,6 +33,21 @@
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
+.settings-session-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 0;
+  font-size: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.settings-session-row p {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
 :root[data-theme="light"] {
   --shell: #f2f3f5;
   --surface: #ffffff;
@@ -4873,4 +4888,23 @@
 
 .workspace-preview-address :where(span) {
   flex-shrink: 0;
+}
+.rail-workspace-switch {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  width: 100%;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.rail-workspace-switch > :where(span) {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+  white-space: nowrap;
 }

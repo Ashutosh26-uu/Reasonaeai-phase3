@@ -1,6 +1,6 @@
 # `@reasonateai/auth`
 
-**Status:** ✅ policy implemented and verified · 🟡 not yet wired to HTTP routes
+**Status:** ✅ policy implemented, wired to product HTTP routes, and verified
 **Owns:** `packages/auth`
 **Owner role:** Identity & Access
 
@@ -17,6 +17,8 @@ principal + action + organization scope + project/resource scope + context
 ```
 
 Scattering permission checks across handlers is explicitly prohibited, because a handler that forgets one is a silent privilege escalation.
+
+The API owns email/Google identity provider adapters and resolves opaque browser sessions before this package authorizes tenant actions. [Launch authentication operations](../operations/authentication.md) records provider activation prerequisites and verified local boundaries; live provider acceptance remains tracked in `.context/PHASE.md`.
 
 ---
 

@@ -508,7 +508,8 @@ describeWithDatabase("run execution", () => {
       () => {
         expect(resumeSession.lastResumeData).toBe("us-east-1");
       },
-      { timeout: 3000 }
+      // Session allocation precedes real Docker startup and checkpoint restore.
+      { timeout: 30_000 }
     );
     expect(resumeSession.lastResumedToolCallId).toBe("ask-park-1");
     resumeSession.complete([{ reason: "complete", type: "agent_end" }]);
@@ -624,7 +625,8 @@ describeWithDatabase("run execution", () => {
       () => {
         expect(resumeSession.lastResumeData).toBe("Choice-B");
       },
-      { timeout: 3000 }
+      // Session allocation precedes real Docker startup and checkpoint restore.
+      { timeout: 30_000 }
     );
     expect(resumeSession.lastResumedToolCallId).toBe("ask-q2");
     resumeSession.complete([{ reason: "complete", type: "agent_end" }]);

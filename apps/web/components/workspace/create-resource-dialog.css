@@ -1,0 +1,126 @@
+.creation-dialog {
+  position: fixed;
+  inset: 0;
+  width: min(480px, calc(100vw - 32px));
+  max-height: calc(100dvh - 40px);
+  padding: 32px;
+  margin: auto;
+  overflow: auto;
+  color: var(--ink, #202830);
+  background: var(--surface, #fff);
+  border: 1px solid var(--line, #d8dfe3);
+  border-radius: 18px;
+  box-shadow: 0 28px 100px #0003;
+}
+.creation-dialog::backdrop {
+  background: #15222b66;
+  backdrop-filter: blur(4px);
+}
+.creation-close {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  padding: 6px;
+  color: inherit;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+.creation-icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  margin-bottom: 22px;
+  color: #7799aa;
+  border: 1px solid var(--line, #d8dfe3);
+  border-radius: 13px;
+}
+.creation-eyebrow {
+  font-size: 10px;
+  color: var(--ink-2, #687680);
+  letter-spacing: 1.5px;
+}
+.creation-dialog h2 {
+  margin: 8px 0 10px;
+  font-size: 25px;
+  font-weight: 500;
+  letter-spacing: -0.7px;
+}
+.creation-dialog > p {
+  margin-bottom: 24px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink-2, #687680);
+}
+.creation-dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.creation-dialog label {
+  font-size: 12px;
+  font-weight: 500;
+}
+.creation-dialog input,
+.creation-dialog select {
+  min-height: 44px;
+  padding: 12px;
+  margin-bottom: 10px;
+  font-size: 14px;
+  color: inherit;
+  background: var(--surface, #fff);
+  border: 1px solid var(--line, #d8dfe3);
+  border-radius: 8px;
+}
+.creation-dialog input:focus-visible,
+.creation-dialog select:focus-visible,
+.creation-dialog button:focus-visible {
+  outline: 2px solid #789dad;
+  outline-offset: 3px;
+}
+.creation-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ink-2, #687680);
+}
+.creation-dialog footer {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  padding-top: 20px;
+  margin-top: 25px;
+  border-top: 1px solid var(--line, #d8dfe3);
+}
+.creation-dialog footer button {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  padding: 11px 16px;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 8px;
+}
+.creation-cancel {
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--line, #d8dfe3);
+}
+.creation-submit {
+  color: #fff;
+  background: #315c72;
+  border: 1px solid #315c72;
+}
+.creation-dialog button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.creation-error {
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #bc6556;
+  background: #9a392a12;
+  border-radius: 8px;
+}

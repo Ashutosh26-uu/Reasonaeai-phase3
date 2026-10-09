@@ -27,6 +27,8 @@ PostgreSQL is authoritative. Redis Streams is transport. A Redis outage delays p
 
 Schema for sessions lives in `src/session-schema.ts` and is applied by `migrate()` alongside the main migration.
 
+Schema version 9 also applies `src/identity-schema.ts`. `store.identity` owns expiring single-use OIDC state and stable Google subject links; `completeOnboarding` atomically completes account/workspace setup with audit. `sessions` supports caller-owned listing and individual/global revocation. See [identity migration and recovery](../operations/authentication.md).
+
 ---
 
 ## `ProjectStateStore`
@@ -44,7 +46,7 @@ Schema for sessions lives in `src/session-schema.ts` and is applied by `migrate(
 | `recordArtifact` / `listArtifacts` | Tenant-scoped artifact metadata |
 | `recordDeployment` | Release record with checkpoint and rollback reference |
 | `sessions` | Session repository (see below) |
-| `migrate` | Applies both migrations under an advisory lock |
+| `migrate` | Applies additive migrations under an advisory lock |
 | `close` | Closes the pool |
 
 Every method takes a `TenantScope` of `{ organizationId, projectId }`, and every query carries both values.

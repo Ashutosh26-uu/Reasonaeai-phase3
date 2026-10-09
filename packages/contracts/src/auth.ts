@@ -34,6 +34,7 @@ export const MagicLinkRequestSchema = z.strictObject({
 export type MagicLinkRequest = z.infer<typeof MagicLinkRequestSchema>;
 
 export const MagicLinkAcceptedSchema = z.strictObject({
+  delivery: z.enum(["email", "local"]).default("email"),
   expiresAt: IsoDateTimeSchema,
 });
 export type MagicLinkAccepted = z.infer<typeof MagicLinkAcceptedSchema>;
@@ -53,6 +54,7 @@ export type OrganizationSummary = z.infer<typeof OrganizationSummarySchema>;
 export const SessionViewSchema = z.strictObject({
   absoluteExpiresAt: IsoDateTimeSchema,
   idleExpiresAt: IsoDateTimeSchema,
+  onboardingComplete: z.boolean().default(true),
   organizations: z.array(OrganizationSummarySchema),
   sessionId: SessionIdSchema,
   userId: UserIdSchema,
@@ -132,3 +134,30 @@ export const SignedOutSchema = z.strictObject({
   revoked: z.boolean(),
 });
 export type SignedOut = z.infer<typeof SignedOutSchema>;
+
+export const AuthOptionsSchema = z.strictObject({
+  email: z.enum(["email", "local", "unavailable"]),
+  google: z.boolean(),
+});
+export type AuthOptions = z.infer<typeof AuthOptionsSchema>;
+
+export const RedeemMagicLinkSchema = z.strictObject({
+  token: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+});
+export const CompleteOnboardingSchema = z.strictObject({
+  displayName: z.string().trim().min(1).max(80),
+  organizationId: OrganizationIdSchema,
+  workspaceName: z.string().trim().min(1).max(120),
+});
+export const DeviceSessionSchema = z.strictObject({
+  absoluteExpiresAt: IsoDateTimeSchema,
+  createdAt: IsoDateTimeSchema,
+  current: z.boolean(),
+  idleExpiresAt: IsoDateTimeSchema,
+  lastSeenAt: IsoDateTimeSchema,
+  sessionId: SessionIdSchema,
+});
+export const DeviceSessionsSchema = z.strictObject({
+  sessions: z.array(DeviceSessionSchema).max(100),
+});
+export type DeviceSession = z.infer<typeof DeviceSessionSchema>;

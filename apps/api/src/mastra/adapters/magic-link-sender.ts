@@ -1,80 +1,114 @@
-/**
- * Magic-link delivery boundary.
- *
- * A sign-in link reaches the user through an email provider, which is an
- * external integration this environment does not have. Until one is configured
- * the product ships a development sender that writes the link to this
- * process's own stdout, so a developer can finish a sign-in locally.
- *
- * Two properties make that sender honest rather than a disguised integration:
- *
- * - It announces itself in the output. A mock delivery must never read like a
- *   delivered email, so the line names the sender as the development one and
- *   says plainly that nothing was sent.
- * - It refuses to run outside development. In production, printing a sign-in
- *   link would hand the account to anyone who can read the process output, so
- *   the sender fails loudly instead. Nothing is delivered, which is what the
- *   caller is told.
- *
- * The real provider adapter replaces this one behind the same contract: the
- * route hands it an address and a URL and never learns how the message travelled.
- */
+import { z } from "zod";
 
-/** Why a link was not delivered, as a stable value rather than prose. */
 export const MAGIC_LINK_SENDER_UNCONFIGURED = "magic_link_sender_unconfigured";
-
-/**
- * Raised when sign-in cannot be completed because no real sender is wired.
- * Typed so a caller can distinguish "this deployment cannot send mail" from a
- * provider failure, and actionable so an operator knows exactly what is missing.
- */
 export class MagicLinkSenderUnconfiguredError extends Error {
   readonly code = MAGIC_LINK_SENDER_UNCONFIGURED;
-
   constructor() {
     super(
-      "No magic-link sender is configured for this environment, so the sign-in link was not delivered. Configure an email provider behind the MagicLinkSender contract."
+      "Email sign-in is unavailable. Ask the administrator to configure the email provider."
     );
     this.name = "MagicLinkSenderUnconfiguredError";
   }
 }
-
+export class MagicLinkDeliveryError extends Error {
+  constructor(
+    message = "We could not send your sign-in email. Please try again shortly.",
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+    this.name = "MagicLinkDeliveryError";
+  }
+}
 export interface MagicLinkSender {
+  delivery?: "email" | "local" | "unavailable";
   send: (input: { email: string; url: string }) => Promise<void>;
 }
 
-/**
- * The sender this deployment ships with. It delivers by printing, which is
- * only ever a development behavior: outside development there is no sender at
- * all, and asking for a link fails as `MagicLinkSenderUnconfiguredError`
- * rather than succeeding without sending anything.
- */
+/** Real provider delivery; local capture is explicit and never prints credentials. */
 export function createMagicLinkSender(
-  config: { environment?: string } = {}
+  config: {
+    environment?: string;
+    apiKey?: string;
+    from?: string;
+    mailpitUrl?: string;
+    fetch?: typeof fetch;
+  } = {}
 ): MagicLinkSender {
-  const environment = config.environment ?? process.env.NODE_ENV ?? "";
-  const development = environment !== "production";
-
+  const environment = config.environment ?? process.env.NODE_ENV;
+  const apiKey = config.apiKey ?? process.env.RESEND_API_KEY;
+  const from = config.from ?? process.env.REASONATE_EMAIL_FROM;
+  const mailpitUrl = config.mailpitUrl ?? process.env.REASONATE_MAILPIT_URL;
+  const local = environment === "development" && Boolean(mailpitUrl);
+  const configured = Boolean(apiKey && from);
+  let delivery: "local" | "email" | "unavailable" = "unavailable";
+  if (configured) {
+    delivery = "email";
+  }
+  if (local) {
+    delivery = "local";
+  }
+  if (local) {
+    const url = new URL(mailpitUrl ?? "");
+    if (
+      !(
+        ["http:", "https:"].includes(url.protocol) &&
+        ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
+      ) ||
+      url.username ||
+      url.password
+    ) {
+      throw new Error("The development mailbox must be a loopback URL.");
+    }
+  }
   return {
+    delivery,
     send: async ({ email, url }) => {
-      if (!development) {
+      if (delivery === "unavailable") {
         throw new MagicLinkSenderUnconfiguredError();
       }
-
-      // The token is in the URL, and printing it is the entire point of this
-      // sender: the link exists only here and in the recipient's mailbox, and
-      // this deployment has neither. It never reaches a log, a database, or a
-      // response body.
-      //
-      // The write is awaited to its callback rather than fired and forgotten,
-      // so "delivered" means the link reached the stream instead of merely
-      // being handed to a buffer the process may exit before flushing.
-      await new Promise<void>((resolve) => {
-        process.stdout.write(
-          `[magic-link:development-only] no email was sent to ${email}; open this sign-in link yourself:\n${url}\n`,
-          () => resolve()
+      const text = `Continue to ReasonateAI using this single-use link:\n\n${url}\n\nIt expires in 15 minutes. If you did not request this email, you can ignore it.`;
+      try {
+        const response = await (config.fetch ?? fetch)(
+          local
+            ? new URL("/api/v1/send", mailpitUrl).href
+            : "https://api.resend.com/emails",
+          {
+            body: JSON.stringify(
+              local
+                ? {
+                    From: {
+                      Email: "signin@reasonate.test",
+                      Name: "ReasonateAI",
+                    },
+                    Subject: "Your ReasonateAI sign-in link",
+                    Text: text,
+                    To: [{ Email: email }],
+                  }
+                : {
+                    from,
+                    subject: "Your ReasonateAI sign-in link",
+                    text,
+                    to: [email],
+                  }
+            ),
+            headers: {
+              "Content-Type": "application/json",
+              ...(local ? {} : { Authorization: `Bearer ${apiKey}` }),
+            },
+            method: "POST",
+            signal: AbortSignal.timeout(10_000),
+          }
         );
-      });
+        if (!response.ok) {
+          throw new MagicLinkDeliveryError();
+        }
+        const accepted = z.object(
+          local ? { ID: z.string().min(1) } : { id: z.string().min(1) }
+        );
+        accepted.parse(await response.json());
+      } catch (cause) {
+        throw new MagicLinkDeliveryError(undefined, { cause });
+      }
     },
   };
 }

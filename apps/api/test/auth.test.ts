@@ -48,6 +48,7 @@ interface StubRequest {
   body?: unknown;
   cookies?: Record<string, string>;
   headers?: Record<string, string>;
+  params?: Record<string, string>;
   query?: Record<string, string>;
   requestId?: string;
 }
@@ -86,7 +87,7 @@ function context(input: StubRequest): HandlerContext {
         return headers[key];
       },
       json: async () => input.body,
-      param: () => undefined,
+      param: (name) => input.params?.[name],
       query: (name) => input.query?.[name],
     },
   };
@@ -104,24 +105,19 @@ function cookiesFrom(response: Response): Record<string, string> {
 }
 
 describe("magic-link sender", () => {
-  it("announces a development delivery instead of pretending to send mail", async () => {
-    // The spy runs the real write, so the awaited delivery completes as it
-    // would in the process; only the recorded calls are asserted.
+  it("refuses unconfigured development delivery without printing credentials", async () => {
     const write = vi.spyOn(process.stdout, "write");
-    let printed = "";
     try {
-      await createMagicLinkSender({ environment: "development" }).send({
-        email: "developer@example.test",
-        url: "http://localhost:4111/v1/auth/callback?token=abc",
-      });
+      await expect(
+        createMagicLinkSender({ environment: "development" }).send({
+          email: "developer@example.test",
+          url: "http://localhost/auth/verify#token=abc",
+        })
+      ).rejects.toBeInstanceOf(MagicLinkSenderUnconfiguredError);
+      expect(write).not.toHaveBeenCalled();
     } finally {
-      // Read the calls before restoring: restoring resets the mock's state.
-      printed = write.mock.calls.map(([chunk]) => String(chunk)).join("");
       write.mockRestore();
     }
-
-    expect(printed).toContain("no email was sent");
-    expect(printed).toContain("token=abc");
   });
 
   it("refuses to deliver outside development rather than printing a sign-in link", async () => {
@@ -148,6 +144,15 @@ describeWithDatabase("identity routes", () => {
   const csrfSecret = () => "test-csrf-secret";
   const publicOrigin = "http://api.reasonate.test";
   const delivered: DeliveredLink[] = [];
+  const bindings = new Map<string, Record<string, string>>();
+  const redeemContext = (input: StubRequest): HandlerContext => {
+    const token = input.query?.token ?? "";
+    return context({
+      ...input,
+      body: { token },
+      cookies: { ...input.cookies, ...bindings.get(token) },
+    });
+  };
   const sender: MagicLinkSender = {
     send: (input) => {
       delivered.push(input);
@@ -225,10 +230,13 @@ describeWithDatabase("identity routes", () => {
     if (!link) {
       throw new Error("The request did not deliver a sign-in link.");
     }
-    const token = new URL(link.url).searchParams.get("token");
+    const token = new URLSearchParams(new URL(link.url).hash.slice(1)).get(
+      "token"
+    );
     if (!token) {
       throw new Error("The delivered sign-in link carried no token.");
     }
+    bindings.set(token, cookiesFrom(response));
     return { token, url: link.url };
   }
 
@@ -243,7 +251,7 @@ describeWithDatabase("identity routes", () => {
   }> {
     const { token } = await issueLink(email);
     const response = await handlers.callback(
-      context({ query: { token }, requestId: `callback-${randomUUID()}` })
+      redeemContext({ query: { token }, requestId: `callback-${randomUUID()}` })
     );
     expect(response.status).toBe(303);
 
@@ -362,7 +370,9 @@ describeWithDatabase("identity routes", () => {
 
     // The token reached the sender and never the caller.
     const deliveredTokens = delivered
-      .map(({ url }) => new URL(url).searchParams.get("token"))
+      .map(({ url }) =>
+        new URLSearchParams(new URL(url).hash.slice(1)).get("token")
+      )
       .filter((token): token is string => token !== null);
     expect(deliveredTokens.length).toBeGreaterThan(0);
     for (const token of deliveredTokens) {
@@ -373,9 +383,124 @@ describeWithDatabase("identity routes", () => {
 
   it("builds the sign-in link from configuration rather than from the request", async () => {
     const { url } = await issueLink(emailFor("origin"));
-    expect(url.startsWith(`${publicOrigin}/v1/auth/callback?token=`)).toBe(
-      true
+    expect(url.startsWith(`${publicOrigin}/auth/verify#token=`)).toBe(true);
+  });
+
+  it("does not consume links on GET, and binds redemption to the requesting browser", async () => {
+    const { token } = await issueLink(emailFor("browser-binding"));
+    expect((await handlers.landing(context({ query: { token } }))).status).toBe(
+      303
     );
+    expect((await handlers.redeem(context({ body: { token } }))).status).toBe(
+      401
+    );
+    const response = await handlers.redeem(redeemContext({ query: { token } }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ authenticated: true });
+    expect(
+      (await handlers.redeem(redeemContext({ query: { token } }))).status
+    ).toBe(401);
+  });
+
+  it("completes setup once and refuses a foreign workspace", async () => {
+    const owner = await signIn(emailFor("setup-owner"));
+    const outsider = await signIn(emailFor("setup-outsider"));
+    expect(
+      SessionViewSchema.parse(
+        await (
+          await handlers.readSession(context({ cookies: owner.cookies }))
+        ).json()
+      ).onboardingComplete
+    ).toBe(false);
+    const body = {
+      displayName: "Launch Owner",
+      organizationId: owner.organizationId,
+      workspaceName: "Launch Studio",
+    };
+    expect(
+      (
+        await handlers.completeOnboarding(
+          context({ body, cookies: outsider.cookies })
+        )
+      ).status
+    ).toBe(403);
+    expect(
+      (
+        await handlers.completeOnboarding(
+          context({ body, cookies: owner.cookies })
+        )
+      ).status
+    ).toBe(200);
+    const view = SessionViewSchema.parse(
+      await (
+        await handlers.readSession(context({ cookies: owner.cookies }))
+      ).json()
+    );
+    expect(view.onboardingComplete).toBe(true);
+    expect(view.organizations[0]?.name).toBe("Launch Studio");
+    await handlers.completeOnboarding(
+      context({
+        body: { ...body, workspaceName: "Replay rename" },
+        cookies: owner.cookies,
+      })
+    );
+    expect(
+      SessionViewSchema.parse(
+        await (
+          await handlers.readSession(context({ cookies: owner.cookies }))
+        ).json()
+      ).organizations[0]?.name
+    ).toBe("Launch Studio");
+    expect(
+      (
+        await store.audit.listForOrganization({
+          limit: 20,
+          organizationId: owner.organizationId,
+        })
+      ).filter((event) => event.action === "identity.onboarding_completed")
+    ).toHaveLength(1);
+  }, 20_000);
+
+  it("lists and revokes only the caller's sessions, including global logout", async () => {
+    const owner = await signIn(emailFor("devices-owner"));
+    const another = await signIn(emailFor("devices-owner"));
+    const outsider = await signIn(emailFor("devices-outsider"));
+    const view = SessionViewSchema.parse(
+      await (
+        await handlers.readSession(context({ cookies: owner.cookies }))
+      ).json()
+    );
+    const denied = await handlers.revokeSessions(
+      context({
+        cookies: outsider.cookies,
+        params: { sessionId: view.sessionId },
+      })
+    );
+    expect(await denied.json()).toEqual({ revoked: false });
+    expect(
+      (await handlers.readSession(context({ cookies: owner.cookies }))).status
+    ).toBe(200);
+    const sessions = await (
+      await handlers.listSessions(context({ cookies: owner.cookies }))
+    ).json();
+    expect(sessions.sessions).toHaveLength(2);
+    expect(
+      sessions.sessions.filter((item: { current: boolean }) => item.current)
+    ).toHaveLength(1);
+    expect(
+      (
+        await handlers.revokeSessions(
+          context({ cookies: owner.cookies, params: { sessionId: "all" } })
+        )
+      ).status
+    ).toBe(200);
+    expect(
+      (await handlers.readSession(context({ cookies: another.cookies }))).status
+    ).toBe(401);
+    expect(
+      (await handlers.readSession(context({ cookies: outsider.cookies })))
+        .status
+    ).toBe(200);
   });
 
   it("redeems a link once and establishes a session the principal resolver accepts", async () => {
@@ -383,7 +508,7 @@ describeWithDatabase("identity routes", () => {
     const { token } = await issueLink(email);
 
     const first = await handlers.callback(
-      context({ query: { token }, requestId: "req-first-callback" })
+      redeemContext({ query: { token }, requestId: "req-first-callback" })
     );
     expect(first.status).toBe(303);
 
@@ -417,7 +542,7 @@ describeWithDatabase("identity routes", () => {
     // The token is spent: the same bytes are refused, and the refusal says
     // nothing about whether the link existed.
     const second = await handlers.callback(
-      context({ query: { token }, requestId: "req-second-callback" })
+      redeemContext({ query: { token }, requestId: "req-second-callback" })
     );
     expect(second.status).toBe(401);
     expect((await second.json()).error.code).toBe("unauthenticated");
@@ -535,7 +660,7 @@ describeWithDatabase("identity routes", () => {
       // biome-ignore lint/performance/noAwaitInLoops: one single-use link per target, by design
       const { token } = await issueLink(emailFor(`redirect-${randomUUID()}`));
       const response = await handlers.callback(
-        context({
+        redeemContext({
           cookies,
           query: { redirectTo, token },
           requestId: "req-redirect",
@@ -552,7 +677,7 @@ describeWithDatabase("identity routes", () => {
       emailFor(`redirect-safe-${randomUUID()}`)
     );
     const safe = await handlers.callback(
-      context({
+      redeemContext({
         cookies,
         query: { redirectTo: "/safe/path", token },
         requestId: "req-redirect-safe",
@@ -640,7 +765,7 @@ describeWithDatabase("identity routes", () => {
       context({
         body: { name: "Intrusion", organizationId: owner.organizationId },
         cookies: outsider.cookies,
-        requestId: "req-foreign-project",
+        requestId: `req-foreign-project-${suffix}`,
       })
     );
 
@@ -653,13 +778,55 @@ describeWithDatabase("identity routes", () => {
     );
     expect(projectsInTenant.rows[0]?.count).toBe(0);
 
-    const trail = await store.audit.listForOrganization({
-      limit: 20,
-      organizationId: owner.organizationId,
-    });
-    expect(trail.some(({ action }) => action === "authorization.denied")).toBe(
-      true
+    const denied = await pool.query<{ action: string; organization_id: null }>(
+      "select action, organization_id from audit_events where request_id = $1",
+      [`req-foreign-project-${suffix}`]
     );
+    expect(denied.rows).toEqual([
+      { action: "authorization.denied", organization_id: null },
+    ]);
+  });
+
+  it("denies nonexistent organizations without breaking denial audit persistence", async () => {
+    const caller = await signIn(emailFor("nonexistent-scope"));
+    const organizationId = crypto.randomUUID();
+    const created = await projects.create(
+      context({
+        body: { name: "Denied", organizationId },
+        cookies: caller.cookies,
+        requestId: `req-nonexistent-project-${suffix}`,
+      })
+    );
+    const setup = await handlers.completeOnboarding(
+      context({
+        body: {
+          displayName: "Denied",
+          organizationId,
+          workspaceName: "Denied",
+        },
+        cookies: caller.cookies,
+        requestId: `req-nonexistent-onboarding-${suffix}`,
+      })
+    );
+    expect(created.status).toBe(403);
+    expect(setup.status).toBe(403);
+    const denied = await pool.query<{ action: string; organization_id: null }>(
+      "select action, organization_id from audit_events where request_id = any($1::text[])",
+      [
+        [
+          `req-nonexistent-project-${suffix}`,
+          `req-nonexistent-onboarding-${suffix}`,
+        ],
+      ]
+    );
+    expect(denied.rows).toHaveLength(2);
+    expect(
+      denied.rows.every(
+        (event) =>
+          event.action === "authorization.denied" &&
+          event.organization_id === null
+      )
+    ).toBe(true);
   });
 
   it("ends a session so the next read is unauthenticated", async () => {

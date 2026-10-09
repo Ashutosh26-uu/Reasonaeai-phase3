@@ -15,7 +15,12 @@
     },
     "test": {
       "dependsOn": ["^build"],
-      "env": ["DATABASE_URL", "REDIS_URL"],
+      "env": [
+        "DATABASE_URL",
+        "REDIS_URL",
+        "REASONATE_BUILD_SANDBOX_IMAGE",
+        "REASONATE_TEST_BUILD_SANDBOX_IMAGE"
+      ],
       "outputs": []
     },
     "//#check": {},

@@ -44,16 +44,15 @@ export interface RailProps {
   accountName: string;
   conversationId: string;
   conversationsByProject: Record<string, ConversationSummary[] | undefined>;
-  draftProjectName: string;
   errorMessage: string;
   failedConversationProjects: string[];
   onConversationSelect: (projectId: string, buildSessionId: string) => void;
+  onCreateProject: () => void;
+  onCreateWorkspace: () => void;
   onNewConversation: () => void;
   onNewConversationForProject: (projectId: string) => void;
   onOrganizationSelect: (organizationId: string) => void;
-  onProjectNameChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   onProjectSelect: (projectId: string) => void;
-  onProjectSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   onSettings: () => void;
   onSignOut: () => void;
   onTogglePin: (id: string) => void;
@@ -62,7 +61,6 @@ export interface RailProps {
   pinnedConversationIds: string[];
   projectId: string;
   projects: ProjectSummary[];
-  submitting: boolean;
 }
 
 const COLLAPSED_KEY = "reasonate.rail.collapsed";
@@ -227,29 +225,23 @@ function ChatPicker({
 }
 
 interface ProjectPickerProps {
-  draftProjectName: string;
   errorMessage: string;
+  onCreateProject: () => void;
   onOpenChange: (open: boolean) => void;
-  onProjectNameChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   onProjectSelect: (projectId: string) => void;
-  onProjectSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   open: boolean;
   projectId: string;
   projects: ProjectSummary[];
-  submitting: boolean;
 }
 
 function ProjectPicker({
-  draftProjectName,
+  onCreateProject,
   errorMessage,
   onOpenChange,
-  onProjectNameChange,
   onProjectSelect,
-  onProjectSubmit,
   open,
   projectId,
   projects,
-  submitting,
 }: ProjectPickerProps) {
   const [query, setQuery] = useState("");
   const dialog = useRef<HTMLDialogElement>(null);
@@ -298,6 +290,10 @@ function ProjectPicker({
     },
     [close]
   );
+  const createProjectFromPicker = useCallback(() => {
+    close();
+    onCreateProject();
+  }, [close, onCreateProject]);
   const chooseProject = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       onProjectSelect(event.currentTarget.value);
@@ -373,23 +369,11 @@ function ProjectPicker({
           ))
         )}
       </section>
-      <form className="rail-project-create" onSubmit={onProjectSubmit}>
-        <label className="sr-only" htmlFor="project-picker-new-name">
-          New project name
-        </label>
-        <input
-          id="project-picker-new-name"
-          maxLength={120}
-          onChange={onProjectNameChange}
-          placeholder="New project name"
-          required
-          value={draftProjectName}
-        />
-        <button aria-label="Create project" disabled={submitting} type="submit">
-          <CirclePlus aria-hidden="true" size={17} />
-          Create
+      <div className="rail-project-create">
+        <button onClick={createProjectFromPicker} type="button">
+          <CirclePlus size={17} /> Create a project
         </button>
-      </form>
+      </div>
     </dialog>
   );
 }
@@ -738,29 +722,26 @@ export function Rail({
   conversationId,
   conversationsByProject,
   failedConversationProjects,
-  draftProjectName,
   errorMessage,
   onConversationSelect,
   onNewConversation,
   onNewConversationForProject,
   onOrganizationSelect,
-  onProjectNameChange,
+  onCreateProject,
+  onCreateWorkspace,
   onProjectSelect,
-  onProjectSubmit,
   onSettings,
   onSignOut,
   organizationId,
   organizations,
   projectId,
   projects,
-  submitting,
   pinnedConversationIds,
   onTogglePin: togglePinnedConversation,
 }: RailProps) {
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [chatPickerOpen, setChatPickerOpen] = useState(false);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
-  const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [expandedProjects, setExpandedProjects] = useState<string[]>([]);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 900px)");
@@ -967,10 +948,6 @@ export function Rail({
   );
   const openChatPicker = useCallback(() => setChatPickerOpen(true), []);
   const openProjectPicker = useCallback(() => setProjectPickerOpen(true), []);
-  const toggleProjectCreation = useCallback(
-    () => setCreateProjectOpen((current) => !current),
-    []
-  );
   const startNewConversation = useCallback(() => {
     onNewConversation();
     closeNavigation();
@@ -1048,6 +1025,45 @@ export function Rail({
       </button>
 
       <div className="rail-body">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              aria-label={`Switch workspace: ${organizationName}`}
+              className="rail-workspace-switch"
+              title={organizationName}
+              type="button"
+            >
+              <FolderOpen aria-hidden="true" size={17} />
+              <span className="rail-text">{organizationName}</span>
+              <ChevronDown aria-hidden="true" className="rail-text" size={14} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="start"
+            className="rail-profile-menu"
+            sideOffset={6}
+          >
+            <DropdownMenuLabel>Workspaces</DropdownMenuLabel>
+            {organizations.map((item) => (
+              <DropdownMenuItem
+                data-organization-id={item.organizationId}
+                key={item.organizationId}
+                onSelect={selectOrganizationFromMenu}
+              >
+                <FolderOpen aria-hidden="true" />
+                {item.name}
+                {item.organizationId === organizationId && (
+                  <Check aria-hidden="true" />
+                )}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onCreateWorkspace}>
+              <Plus aria-hidden="true" />
+              Create workspace
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <button
           className="rail-new"
           disabled={!projectId}
@@ -1089,7 +1105,7 @@ export function Rail({
             <button
               aria-label="Create a project"
               className="rail-label-action"
-              onClick={toggleProjectCreation}
+              onClick={onCreateProject}
               title="Create a project"
               type="button"
             >
@@ -1127,32 +1143,6 @@ export function Rail({
               />
             ))}
           </ul>
-
-          {createProjectOpen && (
-            <form className="rail-form" onSubmit={onProjectSubmit}>
-              <label className="sr-only" htmlFor="project-name">
-                New project
-              </label>
-              <input
-                autoFocus
-                className="rail-input"
-                id="project-name"
-                maxLength={120}
-                onChange={onProjectNameChange}
-                placeholder="New project"
-                required
-                value={draftProjectName}
-              />
-              <button
-                aria-label="Create project"
-                className="rail-submit"
-                disabled={submitting}
-                type="submit"
-              >
-                <CirclePlus aria-hidden="true" size={16} />
-              </button>
-            </form>
-          )}
         </div>
       </div>
 
@@ -1190,7 +1180,7 @@ export function Rail({
               <span className="rail-menu-eyebrow">Workspace</span>
               <span className="rail-menu-org-name">{organizationName}</span>
             </DropdownMenuLabel>
-            {organizations.length > 1 && (
+            {organizations.length > 0 && (
               <>
                 <DropdownMenuSeparator />
                 {organizations.map((organization) => (
@@ -1217,6 +1207,10 @@ export function Rail({
               </>
             )}
             <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onCreateWorkspace}>
+              <Plus aria-hidden="true" />
+              Create workspace
+            </DropdownMenuItem>
             <DropdownMenuItem onSelect={onSettings}>
               <SettingsIcon aria-hidden="true" />
               Settings
@@ -1237,16 +1231,13 @@ export function Rail({
         open={chatPickerOpen}
       />
       <ProjectPicker
-        draftProjectName={draftProjectName}
         errorMessage={errorMessage}
+        onCreateProject={onCreateProject}
         onOpenChange={setProjectPickerOpen}
-        onProjectNameChange={onProjectNameChange}
         onProjectSelect={selectProjectFromPicker}
-        onProjectSubmit={onProjectSubmit}
         open={projectPickerOpen}
         projectId={projectId}
         projects={projects}
-        submitting={submitting}
       />
     </aside>
   );

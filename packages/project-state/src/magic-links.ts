@@ -25,7 +25,10 @@ export interface MagicLinkRepository {
    * unknown, expired, or already used. The three are deliberately
    * indistinguishable to the caller.
    */
-  consume: (input: { token: string }) => Promise<ConsumedMagicLink | undefined>;
+  consume: (input: {
+    token: string;
+    browserBinding?: string;
+  }) => Promise<ConsumedMagicLink | undefined>;
   /**
    * Issues one single-use link for an address.
    *
@@ -34,6 +37,7 @@ export interface MagicLinkRepository {
    * users and costs one round trip.
    */
   issue: (input: {
+    browserBinding?: string;
     email: string;
     ip?: string;
     ttlMs: number;
@@ -57,9 +61,9 @@ const digest = (token: string): string =>
  * one round trip and cannot disagree with the account table.
  */
 const INSERT_MAGIC_LINK_SQL = `
-insert into magic_link_tokens (token_hash, email, user_id, ip, expires_at)
+insert into magic_link_tokens (token_hash, email, user_id, ip, expires_at, browser_hash)
 values ($1, $2, (select user_id from users where lower(primary_email) = lower($2)),
-        $3, now() + make_interval(secs => $4::double precision))
+        $3, now() + make_interval(secs => $4::double precision), $5)
 returning expires_at
 `;
 
@@ -77,17 +81,21 @@ update magic_link_tokens
  where token_hash = $1
    and consumed_at is null
    and expires_at > now()
+   and (browser_hash is null or browser_hash = $2)
 returning email, expires_at, user_id
 `;
 
 export function createMagicLinkRepository(pool: Pool): MagicLinkRepository {
   return {
-    consume: async ({ token }) => {
+    consume: async ({ token, browserBinding }) => {
       const result = await pool.query<{
         email: string;
         expires_at: Date;
         user_id: string | null;
-      }>(CONSUME_MAGIC_LINK_SQL, [digest(token)]);
+      }>(CONSUME_MAGIC_LINK_SQL, [
+        digest(token),
+        browserBinding ? digest(browserBinding) : null,
+      ]);
 
       const [row] = result.rows;
       return row
@@ -104,7 +112,13 @@ export function createMagicLinkRepository(pool: Pool): MagicLinkRepository {
       const token = randomBytes(TOKEN_BYTES).toString("base64url");
       const result = await pool.query<{ expires_at: Date }>(
         INSERT_MAGIC_LINK_SQL,
-        [digest(token), input.email, input.ip ?? null, input.ttlMs / 1000]
+        [
+          digest(token),
+          input.email,
+          input.ip ? digest(input.ip) : null,
+          input.ttlMs / 1000,
+          input.browserBinding ? digest(input.browserBinding) : null,
+        ]
       );
 
       const [row] = result.rows;

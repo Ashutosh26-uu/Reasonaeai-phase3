@@ -52,7 +52,15 @@ Every route lives outside `/api`, resolves a session principal, authorizes throu
 
 ```text
 POST   /v1/auth/magic-links                                  request a sign-in link
-GET    /v1/auth/callback                                     redeem it, establish the session
+GET    /v1/auth/options                                      report configured identity providers
+GET    /v1/auth/readiness                                    check identity configuration (503 if unavailable)
+GET    /v1/auth/callback                                     legacy link landing; never consumes a token
+POST   /v1/auth/callback                                     redeem browser-bound link, establish session
+GET    /v1/auth/google                                       begin Google authorization code with PKCE
+GET    /v1/auth/google/callback                              verify Google identity, establish session
+POST   /v1/auth/onboarding                                   atomically complete first-account setup
+GET    /v1/auth/sessions                                     list caller's active sessions
+DELETE /v1/auth/sessions/:sessionId                          revoke caller-owned session (or all)
 GET    /v1/auth/session                                      read the caller's session
 DELETE /v1/auth/session                                      revoke it
 POST   /v1/organizations                                     create an organization (owner membership)
@@ -72,6 +80,8 @@ GET    /v1/build-sessions/:buildSessionId/events               follow the run's 
 POST   /v1/artifacts  · GET /v1/artifacts                        record and list artifact metadata
 POST   /v1/artifacts/:artifactId/access · GET .../download       signed access and byte delivery
 ```
+
+Identity configuration, schema version 9 migration, production activation prerequisites, and local browser evidence are documented in [authentication operations](../operations/authentication.md). The readiness route checks configuration and provider availability, not vendor delivery health; staging must verify both launch providers.
 
 ---
 

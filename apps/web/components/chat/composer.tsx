@@ -167,7 +167,7 @@ export interface ComposerProps {
   /** The model this workspace runs on, shown so the choice is visible. */
   model: string;
   onChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => void;
-  onCreateProject: (name: string) => Promise<boolean>;
+  onCreateProject: () => void;
   /** Callback to dismiss suggestions for the current turn. */
   onDismissSuggestions?: (() => void) | undefined;
   onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -211,15 +211,13 @@ function ProjectPicker({
   projects,
 }: {
   disabled: boolean;
-  onCreateProject: (name: string) => Promise<boolean>;
+  onCreateProject: () => void;
   onSelect: (projectId: string) => void;
   projectId: string;
   projects: ProjectSummary[];
 }) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [name, setName] = useState("");
   const [position, setPosition] = useState({ bottom: 0, left: 0 });
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -266,48 +264,22 @@ function ProjectPicker({
     (event: React.MouseEvent<HTMLButtonElement>) => {
       onSelect(event.currentTarget.value);
       setOpen(false);
-      setCreating(false);
       setFilter("");
     },
     [onSelect]
   );
 
-  const create = useCallback(
-    async (event: React.FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
-      const trimmed = name.trim();
-      if (!trimmed || disabled) {
-        return;
-      }
-      if (await onCreateProject(trimmed)) {
-        setName("");
-        setCreating(false);
-        setOpen(false);
-      }
-    },
-    [disabled, name, onCreateProject]
-  );
   const toggleOpen = useCallback(() => setOpen((value) => !value), []);
   const changeFilter = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) =>
       setFilter(event.currentTarget.value),
     []
   );
-  const changeName = useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) =>
-      setName(event.currentTarget.value),
-    []
-  );
-  const beginCreate = useCallback(() => setCreating(true), []);
-  const cancelCreate = useCallback(() => {
-    setName("");
-    setCreating(false);
-  }, []);
-  const closePicker = useCallback(() => {
+  const beginCreate = useCallback(() => {
     setOpen(false);
-    setCreating(false);
-    setName("");
-  }, []);
+    onCreateProject();
+  }, [onCreateProject]);
+  const closePicker = useCallback(() => setOpen(false), []);
 
   return (
     <div className="project-picker" ref={root}>
@@ -351,42 +323,15 @@ function ProjectPicker({
                 <X aria-hidden="true" size={17} />
               </button>
             </div>
-            {creating ? (
-              <form className="project-picker-create" onSubmit={create}>
-                <input
-                  aria-label="New project name"
-                  autoFocus
-                  maxLength={120}
-                  onChange={changeName}
-                  placeholder="Project name"
-                  value={name}
-                />
-                <button
-                  aria-label="Create project"
-                  disabled={!name.trim() || disabled}
-                  type="submit"
-                >
-                  <Check aria-hidden="true" size={16} />
-                </button>
-                <button
-                  aria-label="Cancel project creation"
-                  onClick={cancelCreate}
-                  type="button"
-                >
-                  <X aria-hidden="true" size={16} />
-                </button>
-              </form>
-            ) : (
-              <button
-                className="project-picker-option"
-                disabled={disabled}
-                onClick={beginCreate}
-                type="button"
-              >
-                <FolderPlus aria-hidden="true" size={16} />
-                <span>New project</span>
-              </button>
-            )}
+            <button
+              className="project-picker-option"
+              disabled={disabled}
+              onClick={beginCreate}
+              type="button"
+            >
+              <FolderPlus aria-hidden="true" size={16} />
+              <span>New project</span>
+            </button>
             <div
               aria-label="Projects"
               className="project-picker-list"
