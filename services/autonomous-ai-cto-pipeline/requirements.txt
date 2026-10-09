@@ -1,0 +1,5 @@
+pydantic
+openai-whisper
+pydantic
+openai-whisper
+ollama
