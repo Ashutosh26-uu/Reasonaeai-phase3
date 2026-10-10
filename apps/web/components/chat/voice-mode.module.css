@@ -10,7 +10,7 @@
   background:
     radial-gradient(
       ellipse at 50% 38%,
-      color-mix(in srgb, #a795ee 5%, transparent),
+      color-mix(in srgb, var(--lime) 5%, transparent),
       transparent 65%
     ),
     var(--surface);
@@ -88,21 +88,17 @@
   overflow: hidden;
   background: radial-gradient(
     circle at 28% 23%,
-    #f5efff 0%,
-    #c6b9ff 18%,
-    #9d87e9 35%,
-    #797ed6 54%,
-    #4e6590 80%,
-    #303345 100%
+    #ffffff 0%,
+    #d6ff57 25%,
+    #00fff0 60%,
+    #050507 100%
   );
+  border: 1px solid var(--border);
   border-radius: 50%;
-  box-shadow:
-    inset -10px -12px 28px #26214c55,
-    inset 8px 8px 24px #fff4,
-    0 0 54px #a399d923;
+  box-shadow: none;
   transition:
     transform 400ms ease,
-    box-shadow 400ms ease;
+    border-color 400ms ease;
 }
 
 .orbCore::after {
@@ -112,9 +108,9 @@
   background: conic-gradient(
     from 20deg,
     transparent,
-    #e8f2fc66,
+    rgba(214, 255, 87, 0.2),
     transparent 38%,
-    #debdfc77,
+    rgba(0, 255, 240, 0.25),
     transparent 76%
   );
   filter: blur(14px);
@@ -124,17 +120,15 @@
   position: absolute;
   inset: 2%;
   z-index: -1;
-  border: 1px solid #af9ddc;
+  border: 1px solid var(--cyan);
   border-radius: 50%;
   opacity: 0.3;
 }
 
 .surface[data-state="listening"] .orbCore,
 .surface[data-state="speaking"] .orbCore {
-  box-shadow:
-    inset -10px -12px 28px #26214c55,
-    inset 8px 8px 24px #fff4,
-    0 0 66px #a399d950;
+  border-color: var(--lime);
+  box-shadow: none;
   animation: breathe 1500ms ease-in-out infinite;
 }
 

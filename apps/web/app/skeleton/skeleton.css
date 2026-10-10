@@ -826,7 +826,7 @@ body {
   background: var(--raised);
   border: 1px solid var(--line-strong);
   border-radius: 50%;
-  box-shadow: 0 6px 20px #00000066;
+  box-shadow: none;
 }
 
 .sk-thinking-head canvas {
