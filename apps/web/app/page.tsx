@@ -8,7 +8,6 @@ import { Onboarding } from "@/components/onboarding/onboarding";
 import { AuthGate } from "@/components/workspace/auth-gate";
 import { Workspace } from "@/components/workspace/workspace";
 import { ApiRequestError, describeError, request } from "@/lib/product-api";
-import { initializeThemePreference } from "@/lib/theme";
 import "./product.css";
 
 /**
@@ -41,9 +40,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const disposeTheme = initializeThemePreference();
     loadSession();
-    return disposeTheme;
   }, [loadSession]);
 
   const forgetSession = useCallback(() => setSession(null), []);

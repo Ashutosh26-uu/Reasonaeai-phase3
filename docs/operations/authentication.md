@@ -54,7 +54,7 @@ Seven public sources informed the original implementation; no third-party artwor
 - [Supabase signup](https://supabase.com/dashboard/sign-up): provider/form separation and readable labels.
 - [Nielsen Norman Group onboarding guidance](https://www.nngroup.com/articles/onboarding-tutorials/): brief contextual steps rather than a lengthy tutorial.
 
-The resulting design uses the existing ReasonateAI brand, an original CSS illustration, a responsive split shell, visible progress, accessible labels/focus, and intentional loading/error/retry states.
+The resulting design uses the existing ReasonateAI brand, an original CSS illustration, a responsive split shell, visible progress, accessible labels/focus, and intentional loading/error/retry states. The subsequent appearance update applies the exact live Bklit light/dark palette across authentication and the workspace; [palette documentation and current screenshots](../design/palette.md) supersede the earlier screenshots' colors. Direct authentication routes honor the saved appearance preference.
 
 ### Centered progress refinement
 

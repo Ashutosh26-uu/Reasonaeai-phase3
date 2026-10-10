@@ -124,6 +124,7 @@ Passkeys, MFA, recovery codes, enterprise SSO, domain verification, and SCIM are
 
 - Users can edit their account display name; the verified sign-in email remains managed by the identity flow.
 - Appearance offers System, Light, and Dark themes, saved as a browser-local preference.
+- Both appearance themes use the exact Bklit Components neutral palette captured in `docs/design/bklit-palette.json`; `docs/design/palette.md` defines the shared surface/control mapping. Authentication and workspace routes honor the same saved preference.
 - Workspace settings show the member's role, project count, current enforced plan, and metered usage against that plan's entitlements. Until billing assigns plans, the documented default plan is authoritative and the interface must identify billing and plan changes as unavailable.
 - Workspace renaming is available only to owners and admins and is authorized centrally and audited. Other workspace settings are read-only unless a corresponding authorized save operation exists.
 - Security settings list the user's active browser sessions, identify the current session, show idle and absolute expiry, and allow individual or global revocation. Stronger authentication controls remain deferred.

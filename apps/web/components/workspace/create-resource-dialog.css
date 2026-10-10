@@ -6,14 +6,14 @@
   padding: 32px;
   margin: auto;
   overflow: auto;
-  color: var(--ink, #202830);
-  background: var(--surface, #fff);
-  border: 1px solid var(--line, #d8dfe3);
+  color: var(--ink);
+  background: var(--popover);
+  border: 1px solid var(--line);
   border-radius: 18px;
   box-shadow: 0 28px 100px #0003;
 }
 .creation-dialog::backdrop {
-  background: #15222b66;
+  background: #00000066;
   backdrop-filter: blur(4px);
 }
 .creation-close {
@@ -32,13 +32,13 @@
   width: 46px;
   height: 46px;
   margin-bottom: 22px;
-  color: #7799aa;
-  border: 1px solid var(--line, #d8dfe3);
+  color: var(--muted-foreground);
+  border: 1px solid var(--line);
   border-radius: 13px;
 }
 .creation-eyebrow {
   font-size: 10px;
-  color: var(--ink-2, #687680);
+  color: var(--ink-3);
   letter-spacing: 1.5px;
 }
 .creation-dialog h2 {
@@ -51,7 +51,7 @@
   margin-bottom: 24px;
   font-size: 13px;
   line-height: 1.7;
-  color: var(--ink-2, #687680);
+  color: var(--ink-3);
 }
 .creation-dialog form {
   display: flex;
@@ -69,21 +69,21 @@
   margin-bottom: 10px;
   font-size: 14px;
   color: inherit;
-  background: var(--surface, #fff);
-  border: 1px solid var(--line, #d8dfe3);
+  background: var(--popover);
+  border: 1px solid var(--line);
   border-radius: 8px;
 }
 .creation-dialog input:focus-visible,
 .creation-dialog select:focus-visible,
 .creation-dialog button:focus-visible {
-  outline: 2px solid #789dad;
+  outline: 2px solid var(--ring);
   outline-offset: 3px;
 }
 .creation-hint {
   margin: 0;
   font-size: 11px;
   line-height: 1.6;
-  color: var(--ink-2, #687680);
+  color: var(--ink-3);
 }
 .creation-dialog footer {
   display: flex;
@@ -91,7 +91,7 @@
   justify-content: flex-end;
   padding-top: 20px;
   margin-top: 25px;
-  border-top: 1px solid var(--line, #d8dfe3);
+  border-top: 1px solid var(--line);
 }
 .creation-dialog footer button {
   display: flex;
@@ -105,12 +105,12 @@
 .creation-cancel {
   color: inherit;
   background: transparent;
-  border: 1px solid var(--line, #d8dfe3);
+  border: 1px solid var(--line);
 }
 .creation-submit {
-  color: #fff;
-  background: #315c72;
-  border: 1px solid #315c72;
+  color: var(--primary-foreground);
+  background: var(--primary);
+  border: 1px solid var(--primary);
 }
 .creation-dialog button:disabled {
   cursor: default;
@@ -120,7 +120,8 @@
   padding: 12px;
   font-size: 12px;
   line-height: 1.6;
-  color: #bc6556;
-  background: #9a392a12;
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--destructive) 8%, var(--card));
+  border: 1px solid color-mix(in srgb, var(--destructive) 30%, var(--border));
   border-radius: 8px;
 }

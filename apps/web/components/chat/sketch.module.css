@@ -1,10 +1,4 @@
 .editor[data-slot="dialog-content"] {
-  --ink: #f2f2f2;
-  --ink-2: #c6c6c6;
-  --ink-3: #a0a0a0;
-  --line: #ffffff12;
-  --line-strong: #ffffff24;
-  --composer-tray: #333333;
   width: min(1100px, calc(100vw - 40px));
   max-width: none;
   height: min(900px, calc(100dvh - 40px));
@@ -12,9 +6,8 @@
   overflow: hidden;
   font-family: inherit;
   color: var(--ink);
-  color-scheme: dark;
-  background: #212121;
-  border: 1px solid #ffffff14;
+  background: var(--background);
+  border: 1px solid var(--border);
   border-radius: 28px;
   box-shadow: 0 32px 100px #0009;
 }
@@ -41,7 +34,7 @@
 .editor button[aria-pressed="true"],
 .editor button[aria-expanded="true"] {
   color: var(--ink);
-  background: #ffffff13;
+  background: var(--accent);
 }
 .editor button:disabled {
   cursor: default;
@@ -49,7 +42,7 @@
 }
 .editor :is(button, input, textarea, select):focus-visible,
 .board:focus-visible {
-  outline: 2px solid #6b9dff;
+  outline: 2px solid var(--ring);
   outline-offset: 3px;
 }
 .accessibleDescription {
@@ -72,8 +65,8 @@
   gap: 3px;
   align-items: center;
   padding: 5px;
-  background: #333333ed;
-  border: 1px solid #ffffff14;
+  background: var(--popover);
+  border: 1px solid var(--border);
   border-radius: 999px;
   box-shadow: 0 6px 24px #0003;
   backdrop-filter: blur(18px);
@@ -142,7 +135,7 @@
   opacity: 0;
 }
 .customColor:focus-within {
-  outline: 2px solid #83adff;
+  outline: 2px solid var(--ring);
   outline-offset: 3px;
 }
 .stage {
@@ -152,7 +145,7 @@
   align-items: center;
   container-type: size;
   overflow: auto;
-  scrollbar-color: #ffffff24 transparent;
+  scrollbar-color: var(--input) transparent;
   scrollbar-width: thin;
 }
 .board {
@@ -161,7 +154,7 @@
   overflow: hidden;
   touch-action: none;
   cursor: default;
-  background: #212121;
+  background: var(--background);
 }
 .board[data-tool="pen"],
 .board[data-tool="rectangle"],
@@ -189,10 +182,10 @@
   max-height: calc(100% - 226px);
   padding: 16px;
   overflow-y: auto;
-  scrollbar-color: #ffffff24 transparent;
+  scrollbar-color: var(--input) transparent;
   scrollbar-width: thin;
-  background: #2c2c2cf5;
-  border: 1px solid #ffffff1c;
+  background: var(--popover);
+  border: 1px solid var(--border);
   border-radius: 20px;
   box-shadow: 0 12px 40px #0005;
   backdrop-filter: blur(18px);
@@ -226,7 +219,7 @@
   flex-direction: column;
   min-height: 66px;
   font-size: 12px;
-  background: #ffffff06;
+  background: var(--secondary);
   border-color: var(--line);
   border-radius: 12px;
 }
@@ -289,7 +282,7 @@
 }
 .gridOptions input,
 .check input {
-  accent-color: #3478f6;
+  accent-color: var(--primary);
 }
 .dimensions,
 .colors,
@@ -311,10 +304,10 @@
   min-height: 23px;
   padding: 0;
   background: var(--swatch);
-  border: 1px solid #ffffff33;
+  border: 1px solid var(--border);
 }
 .editor .swatches button[aria-pressed="true"] {
-  outline: 2px solid #83adff;
+  outline: 2px solid var(--ring);
   outline-offset: 3px;
 }
 .editor .attach {
@@ -324,16 +317,17 @@
   z-index: 2;
   width: 46px;
   height: 46px;
-  color: white;
-  background: #3478f6;
-  box-shadow: 0 4px 18px #3478f622;
+  color: var(--primary-foreground);
+  background: var(--primary);
+  box-shadow: 0 4px 18px color-mix(in srgb, var(--primary) 13%, transparent);
 }
 .editor .attach:hover {
-  background: #4a89ff;
+  color: var(--primary-foreground);
+  background: color-mix(in srgb, var(--primary) 90%, var(--background));
 }
 .editor .attach:disabled {
-  color: #dce8ff;
-  background: #355991;
+  color: var(--muted-foreground);
+  background: var(--muted);
   opacity: 1;
 }
 .error {
@@ -345,9 +339,9 @@
   padding: 12px 16px;
   margin: 0;
   font-size: 13px;
-  color: #fecaca;
-  background: #472929;
-  border: 1px solid #f8717144;
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--destructive) 8%, var(--card));
+  border: 1px solid var(--destructive);
   border-radius: 14px;
 }
 .spinning {
