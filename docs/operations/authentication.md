@@ -32,7 +32,7 @@ Mailpit is a real local mail inbox, explicitly labelled in the UI. Set `REASONAT
 docker run -d --name reasonate-mailpit -p 127.0.0.1:58027:8025 axllent/mailpit:latest
 ```
 
-Use the standard [local development setup](local-development.md) for PostgreSQL and Redis. Set the public/allowed origin to the actual browser origin and `REASONATE_API_ORIGIN` in the web application's local environment to the API address. This isolated acceptance environment uses browser port 3221, API port 4113, PostgreSQL port 55434, and Redis port 56381. Configuration and transient links remain in ignored local files.
+Use the standard [local development setup](local-development.md) for PostgreSQL and Redis. Set the public/allowed origin to the actual browser origin and `REASONATE_API_ORIGIN` in the web application's local environment to the API address. This isolated acceptance environment uses browser port 3221, API port 4113, and PostgreSQL port 55434. The initial acceptance used Redis port 56381; the centered-progress preview uses port 6381 because Windows now reserves 56381. Configuration and transient links remain in ignored local files.
 
 Full integration gates must use a fresh dedicated test database, separate from a concurrently running API: its outbox relay legitimately consumes pending rows, while accumulated outbox rows from prior suites can exceed bounded claim fixtures. Neither shared delivery nor stale fixture state is valid acceptance evidence. Export both `DATABASE_URL` and `REDIS_URL` before the root gates. Missing service prerequisites are skips, not passing coverage. For the full Docker acceptance gate, export `REASONATE_BUILD_SANDBOX_IMAGE` to the locally built approved image and `REASONATE_TEST_BUILD_SANDBOX_IMAGE=1`; Turborepo forwards and hashes both values. On Windows, the existing sandbox archive/export fixtures require Git for Windows `usr/bin` on `PATH` for their external `mkdir` and `unzip` commands.
 
@@ -55,6 +55,16 @@ Seven public sources informed the original implementation; no third-party artwor
 - [Nielsen Norman Group onboarding guidance](https://www.nngroup.com/articles/onboarding-tutorials/): brief contextual steps rather than a lengthy tutorial.
 
 The resulting design uses the existing ReasonateAI brand, an original CSS illustration, a responsive split shell, visible progress, accessible labels/focus, and intentional loading/error/retry states.
+
+### Centered progress refinement
+
+The October 10 follow-up researched individual designers before changing the progress header:
+
+- [Nancy Liu's Amplitude onboarding case study](https://www.nancyliu.co/projects/amplitude-onboarding): clear hierarchy, consistent containers, and visible progress.
+- [Lilianka Julian's Memo'd onboarding case study](https://www.l-julian.com/case-studies/memo-d-onboarding-case-study): signup clarity, navigation, and primary-action hierarchy.
+- [Chris Daniels's stepper/wizard article](https://uxbyexample.co.uk/entries/stepper-wizard/): concise step labels and recognizable current/completed states.
+
+Account, Verify, and Workspace now occupy equal columns across the form. Each label sits centered below its circle; a thin line connects the outer circle centers. The current and completed states retain their existing accessible semantics. This is original CSS with no copied artwork or new dependencies.
 
 ## Verification evidence
 
@@ -81,3 +91,9 @@ A separate real HTTP acceptance run passed 18 assertions across 19 requests agai
 | `pnpm audit --prod --audit-level high` | Passed; baseline two low and two moderate advisories, no high/critical findings |
 
 Dependencies: `jose` 6.2.12 (MIT, Node 22 compatible) implements standards-based token verification/encryption; no custom JWT cryptography was introduced. The application uses patched Next.js 16.3.8. Production dependency audit blocks high/critical findings; existing lower-severity advisories remain visible in its output.
+
+### Centered progress follow-up evidence
+
+The built web application was checked against the running API and local services at 1280, 390, and 320 pixels wide. Browser measurements confirmed equal circle spacing, labels centered beneath their circles (maximum observed deviation below 0.01 pixels), the middle step aligned to the progress container center, and no horizontal overflow. The verification page also retained centered completed/current states. Screenshots: [centered desktop signup](evidence/authentication/signup-centered-desktop.jpg) and [centered mobile signup](evidence/authentication/signup-centered-mobile.jpg).
+
+The frozen install, 477-file lint/format check, 10-task type check, and 10-task build passed again. The default root test gate passed all 17 tasks (16 cached); its API suite passed 79 tests and skipped 106 conditional tests because integration environment variables were absent. This follow-up does not claim a new full integration run; the earlier 1,153-test identity acceptance above remains the backend evidence. Initial local attempts encountered a stopped Docker daemon and missing Windows fixture commands; restarting Docker and using the documented Git for Windows path resolved those prerequisites. The staged patch secret scan passed. An independent reviewer found no actionable issues in the CSS change. Rollback of this refinement restores the earlier progress styles without a database migration.
