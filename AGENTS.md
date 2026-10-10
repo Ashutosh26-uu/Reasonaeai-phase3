@@ -206,6 +206,7 @@ The root commands may initially have no package work to run; each new package mu
 - Before adding a dependency, verify that the standard library or an existing dependency cannot meet the need.
 - Review direct dependencies for known vulnerabilities, provenance, license compatibility, maintenance health, and transitive cost.
 - Run dependency and secret scanning in CI. Critical or high exploitable findings block release until fixed or explicitly risk-accepted with owner and expiry.
+- A main/PR secret scan covers the checked-out commit's full Git ancestry, including merged parents. Unmerged sibling refs fetched by checkout do not belong to that gate; each branch is scanned when it is the checked-out candidate. Never limit the scan to only the newest diff or suppress a finding to repair unrelated branch failures.
 - Never weaken a security control to satisfy a test or deadline.
 - Never commit secrets, production data, private keys, access tokens, or usable example credentials.
 
