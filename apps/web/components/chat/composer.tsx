@@ -916,12 +916,26 @@ export function Composer({
   selectedTools,
   onToggleTool,
 }: ComposerProps) {
+  const [beamTheme, setBeamTheme] = useState<"dark" | "light">("dark");
   const [menu, setMenu] = useState<"files" | "none" | "notes">("none");
   const [files, setFiles] = useState<string[]>([]);
   const [fileStatus, setFileStatus] = useState<"idle" | "loading" | "error">(
     "idle"
   );
   const [attachmentError, setAttachmentError] = useState("");
+  useEffect(() => {
+    const syncTheme = () =>
+      setBeamTheme(
+        document.documentElement.dataset.theme === "light" ? "light" : "dark"
+      );
+    syncTheme();
+    const observer = new MutationObserver(syncTheme);
+    observer.observe(document.documentElement, {
+      attributeFilter: ["data-theme"],
+      attributes: true,
+    });
+    return () => observer.disconnect();
+  }, []);
   const queue = useMessageQueue({
     busy,
     onOpenSideChat,
@@ -1185,6 +1199,7 @@ export function Composer({
           colorVariant="mono"
           processing={voice.transcribing}
           strength={0.9}
+          theme={beamTheme}
           type="default"
         >
           <BorderBeam
@@ -1192,8 +1207,9 @@ export function Composer({
             className={styles.beam ?? ""}
             colorVariant="mono"
             saturation={0}
-            size="md"
+            size="line"
             strength={1}
+            theme={beamTheme}
           >
             <div className={`prompt ${styles.surface}`}>
               <PromptAttachmentPreview />

@@ -15,7 +15,7 @@
   --raised: var(--popover);
   --raised-hover: var(--accent);
   --composer-surface: var(--secondary);
-  --composer-tray: var(--card);
+  --composer-tray: var(--muted);
   --composer-line: var(--border);
   --bubble: var(--muted);
   --line: var(--border);
