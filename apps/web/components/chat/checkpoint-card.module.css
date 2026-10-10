@@ -209,7 +209,7 @@
 
 .restoreError {
   font-size: 12px;
-  color: #ef4444;
+  color: var(--foreground);
 }
 
 .confirmActions {
@@ -233,10 +233,10 @@
   padding: 6px 14px;
   font-size: 12px;
   font-weight: 550;
-  color: #ffffff;
+  color: var(--foreground);
   cursor: pointer;
-  background: #dc2626;
-  border: 1px solid #ef4444;
+  background: color-mix(in srgb, var(--destructive) 8%, var(--card));
+  border: 1px solid var(--destructive);
   border-radius: 6px;
 }
 

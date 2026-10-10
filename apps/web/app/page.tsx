@@ -3,11 +3,11 @@
 import type { SessionView } from "@reasonateai/contracts/auth";
 import { SessionViewSchema } from "@reasonateai/contracts/auth";
 import { useCallback, useEffect, useState } from "react";
+import { AccountSetup } from "@/components/auth/account-setup";
 import { Onboarding } from "@/components/onboarding/onboarding";
 import { AuthGate } from "@/components/workspace/auth-gate";
 import { Workspace } from "@/components/workspace/workspace";
 import { ApiRequestError, describeError, request } from "@/lib/product-api";
-import { initializeThemePreference } from "@/lib/theme";
 import "./product.css";
 
 /**
@@ -40,12 +40,15 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const disposeTheme = initializeThemePreference();
     loadSession();
-    return disposeTheme;
   }, [loadSession]);
 
   const forgetSession = useCallback(() => setSession(null), []);
+  useEffect(() => {
+    window.addEventListener("reasonate:session-ended", forgetSession);
+    return () =>
+      window.removeEventListener("reasonate:session-ended", forgetSession);
+  }, [forgetSession]);
   const finishOnboarding = useCallback(() => {
     loadSession().catch(() => undefined);
   }, [loadSession]);
@@ -62,6 +65,9 @@ export default function Home() {
     return (
       <div className="gate">
         <p className="gate-note">{error}</p>
+        <button className="gate-submit" onClick={loadSession} type="button">
+          Retry connection
+        </button>
       </div>
     );
   }
@@ -72,6 +78,16 @@ export default function Home() {
 
   if (session.organizations.length === 0) {
     return <Onboarding onComplete={finishOnboarding} session={session} />;
+  }
+
+  if (!session.onboardingComplete) {
+    return (
+      <AccountSetup
+        onComplete={finishOnboarding}
+        onSignedOut={forgetSession}
+        session={session}
+      />
+    );
   }
 
   return <Workspace onSignedOut={forgetSession} session={session} />;

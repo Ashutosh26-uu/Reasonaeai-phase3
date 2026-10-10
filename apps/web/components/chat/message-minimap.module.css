@@ -22,17 +22,17 @@
     background 160ms ease;
 }
 .rail:hover {
-  background: rgb(255 255 255 / 3%);
+  background: var(--accent);
 }
 .rail:focus-visible {
-  outline: 2px solid #75a7ff;
+  outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
 .mark {
   width: 20px;
   height: 2px;
   min-height: 1px;
-  background: #626262;
+  background: var(--muted-foreground);
   border-radius: 4px;
   transition:
     background 160ms ease,
@@ -40,7 +40,7 @@
 }
 .mark[data-active="true"] {
   width: 26px;
-  background: #ededed;
+  background: var(--foreground);
 }
 .rail[data-open="true"] {
   opacity: 0.35;
@@ -51,8 +51,8 @@
   right: 38px;
   width: min(300px, calc(100vw - 64px));
   overflow: hidden;
-  background: rgb(35 35 35 / 96%);
-  border: 1px solid rgb(255 255 255 / 9%);
+  background: var(--popover);
+  border: 1px solid var(--border);
   border-radius: 20px;
   box-shadow: 0 16px 50px rgb(0 0 0 / 28%);
   backdrop-filter: blur(18px);
@@ -64,10 +64,10 @@
   padding: 16px 18px 10px;
   font-size: 12px;
   font-weight: 500;
-  color: #b1b1b1;
+  color: var(--foreground);
 }
 .heading span {
-  color: #858585;
+  color: var(--muted-foreground);
 }
 .list {
   max-height: min(44vh, 420px);
@@ -86,7 +86,7 @@
   font: inherit;
   font-size: 13px;
   line-height: 1.5;
-  color: #a3a3a3;
+  color: var(--foreground);
   text-align: left;
   cursor: pointer;
   background: transparent;
@@ -95,23 +95,23 @@
 }
 .item:hover,
 .item:focus-visible {
-  color: #f2f2f2;
-  background: rgb(255 255 255 / 5%);
+  color: var(--foreground);
+  background: var(--accent);
 }
 .item:focus-visible {
-  outline: 2px solid #75a7ff;
+  outline: 2px solid var(--ring);
   outline-offset: -2px;
 }
 .item[aria-current] {
-  color: #f4f4f4;
-  background: rgb(255 255 255 / 4%);
+  color: var(--foreground);
+  background: var(--accent);
 }
 .number {
   flex-shrink: 0;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   line-height: 20px;
-  color: #747474;
+  color: var(--foreground);
 }
 .preview {
   display: -webkit-box;
@@ -138,7 +138,7 @@
   .rail {
     max-height: 90px;
     padding: 12px 8px;
-    background: rgb(24 24 24 / 85%);
+    background: var(--popover);
   }
 }
 @media (prefers-reduced-motion: reduce) {

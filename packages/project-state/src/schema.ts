@@ -6,7 +6,7 @@
  * ledger that browser reconnect depends on. Redis Streams is transport and
  * never the only record of work.
  */
-export const PROJECT_STATE_SCHEMA_VERSION = 8;
+export const PROJECT_STATE_SCHEMA_VERSION = 9;
 
 export const PROJECT_STATE_MIGRATION_SQL = `
 create table if not exists organizations (

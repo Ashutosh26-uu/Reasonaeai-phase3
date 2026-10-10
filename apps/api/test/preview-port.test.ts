@@ -131,7 +131,10 @@ describe.skipIf(!dockerAvailable)(
         command: "pkill",
       });
       await expect
-        .poll(async () => (await service.status(view.previewId))?.view.status)
+        .poll(async () => (await service.status(view.previewId))?.view.status, {
+          // Two bounded HTTP probes and Docker teardown exceed the default poll window.
+          timeout: 15_000,
+        })
         .toBe("failed");
     });
   }

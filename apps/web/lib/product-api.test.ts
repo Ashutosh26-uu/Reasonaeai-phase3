@@ -1,12 +1,7 @@
 import { CSRF_COOKIE, CSRF_HEADER } from "@reasonateai/contracts/auth";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { networkManager } from "./network-state";
-import {
-  ApiRequestError,
-  exportWorkspaceZip,
-  request,
-  synthesizeSpeech,
-} from "./product-api";
+import { exportWorkspaceZip, request, synthesizeSpeech } from "./product-api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -89,9 +84,11 @@ describe("authenticated product requests", () => {
     vi.stubGlobal("fetch", transport);
     await expect(
       request("/v1/example", (value) => value, { body: "{}", method: "POST" })
-    ).rejects.toEqual(
-      new ApiRequestError(503, "Voice transcription is not configured.")
-    );
+    ).rejects.toMatchObject({
+      message: "Voice transcription is not configured.",
+      requestId: expect.any(String),
+      status: 503,
+    });
     expect(transport).toHaveBeenCalledWith(
       "/v1/example",
       expect.objectContaining({
@@ -101,6 +98,58 @@ describe("authenticated product requests", () => {
         }),
       })
     );
+  });
+  it("reports session expiry while allowing a refused login link to retry", async () => {
+    vi.stubGlobal("document", { cookie: "" });
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal("window", { dispatchEvent });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockImplementation(() =>
+          Promise.resolve(
+            Response.json(
+              { error: { message: "Sign in again." } },
+              { status: 401 }
+            )
+          )
+        )
+    );
+    await expect(
+      request("/v1/auth/session", (value) => value)
+    ).rejects.toMatchObject({ status: 401 });
+    expect(dispatchEvent.mock.calls[0]?.[0].type).toBe(
+      "reasonate:session-ended"
+    );
+    dispatchEvent.mockClear();
+    await expect(
+      request("/v1/auth/callback", (value) => value, {
+        body: "{}",
+        method: "POST",
+      })
+    ).rejects.toMatchObject({ status: 401 });
+    expect(dispatchEvent).not.toHaveBeenCalled();
+  });
+  it("retains the service retry window for rate-limited sign-in", async () => {
+    vi.stubGlobal("document", { cookie: "" });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          Response.json(
+            { error: { message: "Try again shortly." } },
+            { headers: { "Retry-After": "45" }, status: 429 }
+          )
+        )
+    );
+    await expect(
+      request("/v1/auth/magic-links", (value) => value, {
+        body: "{}",
+        method: "POST",
+      })
+    ).rejects.toMatchObject({ retryAfterSeconds: 45, status: 429 });
   });
   it("explains a missing running route and logs correlation without message content", async () => {
     vi.stubGlobal("document", { cookie: `${CSRF_COOKIE}=private-csrf` });

@@ -87,8 +87,8 @@ Authentication is a prerequisite for the resource and agent systems.
 
 ### Launch identity flows
 
-- Verified email magic-link sign-in.
-- At least one OIDC provider; provider selection remains an implementation decision until current provider requirements are evaluated.
+- Verified email magic-link sign-in through Resend; development can explicitly deliver to a loopback Mailpit inbox. Production never logs tokens or uses the local inbox.
+- Google OIDC uses authorization code with PKCE, encrypted browser-bound state/nonce, durable single-use state, and signature/issuer/audience/expiry verification. Email linking requires verified Gmail or a Google Workspace hosted-domain claim; stable provider subjects own subsequent sign-ins.
 - Server-managed, revocable sessions using opaque identifiers in `HttpOnly`, `Secure`, appropriately scoped `SameSite` cookies.
 - Absolute and idle session expiry.
 - Session rotation after login, privilege changes, and step-up authentication.
@@ -97,6 +97,10 @@ Authentication is a prerequisite for the resource and agent systems.
 - Strict redirect allowlists and rate limits on identity endpoints.
 
 Locally managed passwords are not part of the initial authentication surface.
+
+Signup and login share the verified identity flow. Email links expire after 15 minutes and require confirmation in the requesting browser; GET requests never consume them. The browser removes the token fragment before submitting redemption. New accounts complete a resumable name/workspace wizard; completion, workspace rename, and its audit record commit together. Existing accounts retain completed setup during the additive schema version 9 migration. Provider availability is explicit, with retryable delivery errors and no fabricated success. Production activation remains contingent on company provider credentials and staging acceptance.
+
+Users can create multiple organizations (presented as workspaces), switch among active memberships, and create projects through an accessible modal with an authorized workspace selector. Organization changes clear the previous project's view and discard stale responses; server membership resolution remains authoritative.
 
 ### Authorization contract
 
@@ -120,9 +124,10 @@ Passkeys, MFA, recovery codes, enterprise SSO, domain verification, and SCIM are
 
 - Users can edit their account display name; the verified sign-in email remains managed by the identity flow.
 - Appearance offers System, Light, and Dark themes, saved as a browser-local preference.
+- Both appearance themes use the exact Bklit Components neutral palette captured in `docs/design/bklit-palette.json`; `docs/design/palette.md` defines the shared surface/control mapping. Authentication and workspace routes honor the same saved preference.
 - Workspace settings show the member's role, project count, current enforced plan, and metered usage against that plan's entitlements. Until billing assigns plans, the documented default plan is authoritative and the interface must identify billing and plan changes as unavailable.
 - Workspace renaming is available only to owners and admins and is authorized centrally and audited. Other workspace settings are read-only unless a corresponding authorized save operation exists.
-- Security settings show the current session's idle and absolute expiry and allow that session to be revoked. Device/session management and stronger authentication controls remain deferred until their server contracts exist.
+- Security settings list the user's active browser sessions, identify the current session, show idle and absolute expiry, and allow individual or global revocation. Stronger authentication controls remain deferred.
 
 ## Secrets
 
@@ -153,7 +158,7 @@ The event stream carries two channels of different authority. The durable channe
 
 SSE connections send ten-second comment heartbeats without advancing the replay cursor. A failed transport closes its followers so clients can reconnect and replay the ledger; bounded status reconciliation covers a missing terminal frame. The chat's reconnect notice waits eight seconds after interruption, warns once per outage, and clears after an eight-second stable connection; short-lived handshakes do not reset its outage deadline. Live publishers copy only their declared organization/project/run scope. During worker rollout, readers accept retained frames with the older extra build-session field only when it matches the run's tenant-scoped verified owner, including inherited conversation branches; all other schema and scope validation remains strict. Stream, command, and worker failures carry correlation identifiers without logging input or credentials. Each worker schedules at most two independent project runs by default, configurable from one to eight; PostgreSQL still permits only one active run per project. An unanswered question occupies one slot rather than blocking the entire worker.
 
-The workspace URL includes both selected resource identifiers as query parameters: `/?projectId=<id>&conversationId=<build-session-id>`. Selecting a project without a conversation opens a blank conversation pane; prior conversations open only when selected or when their URL is loaded. Browser back/forward restores the prior selection.
+The workspace URL includes selected organization, project, and conversation identifiers as query parameters: `/?organizationId=<id>&projectId=<id>&conversationId=<build-session-id>`. Organization selection resolves against active memberships; legacy URLs use the first active organization. Selecting a project without a conversation opens a blank conversation pane; prior conversations open only when selected or when their URL is loaded. Browser back/forward restores the prior selection.
 
 Mastra `AgentController` session state is process-local and therefore non-authoritative. ReasonateAI reconstructs a controller session from the durable build-session, run, approval, and thread binding after restart; no correctness, authorization, or recovery decision depends on an in-memory controller session.
 
@@ -292,7 +297,7 @@ PostgreSQL is the authoritative production source of truth. Redis Streams distri
 | Public client protocol | HTTPS JSON commands and SSE progress streams; WebSocket/WebRTC only for bidirectional real-time features |
 | Worker topology | Private API/worker split; workers consume Redis Streams, use shared PostgreSQL/object storage, and never receive browser traffic |
 
-The browser framework is Next.js 16 App Router with React 19 and Tailwind CSS 4. It is hosted as a Node.js application, uses `packages/ui` for shared shadcn-compatible components and design tokens, and uses selected AI Elements components for conversation presentation. Streamdown with its Shiki code, Mermaid, and KaTeX math plugins renders agent Markdown. This stack matches the component libraries' documented prerequisites and supports server-rendered shell content with client-side event views. Its tradeoffs are a larger dependency and build surface than a static React app and the need to keep browser-to-agent access behind company-owned authenticated product routes. The ORM/database library, browser-test framework, authentication implementation/provider, production sandbox provider, object-store provider, deployment provider, and queue operations provider remain intentionally undecided. Their selected adapters must preserve the PostgreSQL/Redis/object-storage/Git contracts above and be chosen through current official documentation, compatibility evidence, security review, and an explicit decision recorded here.
+The browser framework is Next.js 16 App Router with React 19 and Tailwind CSS 4. It is hosted as a Node.js application, uses `packages/ui` for shared shadcn-compatible components and design tokens, and uses selected AI Elements components for conversation presentation. Streamdown with its Shiki code, Mermaid, and KaTeX math plugins renders agent Markdown. This stack matches the component libraries' documented prerequisites and supports server-rendered shell content with client-side event views. Its tradeoffs are a larger dependency and build surface than a static React app and the need to keep browser-to-agent access behind company-owned authenticated product routes. The ORM/database library, browser-test framework, production sandbox provider, object-store provider, deployment provider, and queue operations provider remain intentionally undecided. Their selected adapters must preserve the PostgreSQL/Redis/object-storage/Git contracts above and be chosen through current official documentation, compatibility evidence, security review, and an explicit decision recorded here.
 
 TypeScript is pinned to 6.0.3 because Mastra 1.67.0 uses `typescript-paths` 1.5.2 during production builds, whose declared peer range ends at TypeScript 6 and whose legacy compiler-API access fails under TypeScript 7. Re-evaluate TypeScript 7 after that dependency path declares and demonstrates compatibility.
 

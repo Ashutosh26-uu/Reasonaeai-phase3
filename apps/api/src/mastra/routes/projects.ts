@@ -103,8 +103,12 @@ export function createProjectHandlers(deps: ProjectRouteDeps) {
           auditEvent({
             action: "authorization.denied",
             actor: principal,
-            metadata: { action: "project:create", reason: decision.reason },
-            organizationId,
+            metadata: {
+              action: "project:create",
+              reason: decision.reason,
+              requestedOrganizationId: organizationId,
+            },
+            organizationId: organizationMembership ? organizationId : null,
             projectId: null,
             requestId: rid,
           })

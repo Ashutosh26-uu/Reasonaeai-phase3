@@ -30,6 +30,7 @@
     "@reasonateai/cto-runtime": "workspace:*",
     "@reasonateai/project-state": "workspace:*",
     "@reasonateai/sandbox": "workspace:*",
+    "jose": "6.2.12",
     "zod": "catalog:"
   },
   "devDependencies": {

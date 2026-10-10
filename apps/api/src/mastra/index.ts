@@ -20,6 +20,7 @@ import {
   type ProjectStateStore,
 } from "@reasonateai/project-state/postgres";
 import { resolveAsrAdapter } from "./adapters/asr";
+import { createGoogleIdentity } from "./adapters/google-identity";
 import { createMagicLinkSender } from "./adapters/magic-link-sender";
 import { createTtsAdapterFromEnv } from "./adapters/tts";
 import { createCsrfMiddleware } from "./middleware";
@@ -183,10 +184,21 @@ const environment = process.env.NODE_ENV ?? "";
  */
 function sessionSecret(): string {
   const secret = process.env.SESSION_SECRET;
-  if (!secret) {
-    throw new Error(
-      "SESSION_SECRET is required: browser sessions cannot be protected without it."
-    );
+  if (!secret || secret.length < 32) {
+    throw new Error("SESSION_SECRET must contain at least 32 characters.");
+  }
+  if (environment === "production") {
+    const configuredOrigin = process.env.REASONATE_PUBLIC_ORIGIN;
+    const origin = configuredOrigin ? new URL(configuredOrigin) : undefined;
+    if (
+      origin?.protocol !== "https:" ||
+      origin.origin !== configuredOrigin ||
+      !allowedOrigins.includes(configuredOrigin)
+    ) {
+      throw new Error(
+        "Production identity requires an explicit HTTPS public origin included in REASONATE_ALLOWED_ORIGINS."
+      );
+    }
   }
   return secret;
 }
@@ -220,6 +232,12 @@ const resolvePrincipalFrom = async (input: {
 
 const authHandlers = createAuthHandlers({
   csrfSecret: sessionSecret,
+  google: createGoogleIdentity({
+    clientId: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    publicOrigin,
+    secret: sessionSecret,
+  }),
   publicOrigin,
   secureCookies: environment === "production",
   sender: createMagicLinkSender({ environment }),
@@ -416,6 +434,38 @@ export const mastra = new Mastra({
   }),
   server: {
     apiRoutes: [
+      registerApiRoute("/v1/auth/readiness", {
+        handler: (c) => authHandlers.readiness(c),
+        method: "GET",
+      }),
+      registerApiRoute("/v1/auth/options", {
+        handler: (c) => authHandlers.options(c),
+        method: "GET",
+      }),
+      registerApiRoute("/v1/auth/google", {
+        handler: (c) => authHandlers.googleStart(c),
+        method: "GET",
+      }),
+      registerApiRoute("/v1/auth/google/callback", {
+        handler: (c) => authHandlers.googleCallback(c),
+        method: "GET",
+      }),
+      registerApiRoute("/v1/auth/onboarding", {
+        handler: (c) => authHandlers.completeOnboarding(c),
+        method: "POST",
+      }),
+      registerApiRoute("/v1/auth/sessions", {
+        handler: (c) => authHandlers.listSessions(c),
+        method: "GET",
+      }),
+      registerApiRoute("/v1/auth/sessions/:sessionId", {
+        handler: (c) => authHandlers.revokeSessions(c),
+        method: "DELETE",
+      }),
+      registerApiRoute(AUTH_CALLBACK_PATH, {
+        handler: (c) => authHandlers.redeem(c),
+        method: "POST",
+      }),
       registerApiRoute(PROJECT_CONVERSATIONS_PATH, {
         handler: (c) => buildSessionHandlers.listConversations(c),
         method: "GET",
@@ -696,7 +746,7 @@ export const mastra = new Mastra({
         },
       }),
       registerApiRoute(AUTH_CALLBACK_PATH, {
-        handler: (c) => authHandlers.callback(c),
+        handler: (c) => authHandlers.landing(c),
         method: "GET",
         openapi: {
           description:

@@ -10,6 +10,7 @@
 }
 
 .beam {
+  --beam-stroke-opacity: 4;
   position: relative;
   z-index: 2;
 }
@@ -247,7 +248,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 12px;
-  color: var(--ink-3);
+  color: var(--ink-2);
   white-space: nowrap;
 }
 
@@ -262,23 +263,23 @@
 .compact .voiceMode[class~="prompt-send"] {
   width: 34px;
   height: 34px;
-  color: #ffffff;
-  background: #3478f6;
+  color: var(--primary-foreground);
+  background: var(--primary);
   border-color: transparent;
 }
 
 .compact button[class~="prompt-send"] {
-  color: #ffffff;
-  background: #3478f6;
+  color: var(--primary-foreground);
+  background: var(--primary);
 }
 
 .compact button[class~="prompt-send"]:hover:not(:disabled) {
-  background: #2468df;
+  background: color-mix(in srgb, var(--primary) 90%, var(--background));
 }
 
 .compact button[class~="prompt-send"]:disabled {
-  color: #dce8ff;
-  background: #355991;
+  color: var(--muted-foreground);
+  background: var(--muted);
   opacity: 1;
 }
 

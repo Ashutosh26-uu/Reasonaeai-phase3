@@ -3,6 +3,7 @@
 import {
   type AccountProfile,
   AccountProfileSchema,
+  CreateOrganizationResponseSchema,
   ProjectListSchema,
   type ProjectSummary,
   ProjectViewSchema,
@@ -63,6 +64,7 @@ import {
   agentPreviewSelection,
 } from "@/components/workspace/agent-preview";
 import { ConversationHeader } from "@/components/workspace/conversation-header";
+import { CreateResourceDialog } from "@/components/workspace/create-resource-dialog";
 import { Panel } from "@/components/workspace/panel";
 import { Rail } from "@/components/workspace/rail";
 import { Settings } from "@/components/workspace/settings";
@@ -370,11 +372,12 @@ function hasVisibleWorkspacePanel(panelOpen: boolean, conversationId: string) {
 
 function readRoute() {
   if (typeof window === "undefined") {
-    return { conversationId: "", projectId: "" };
+    return { conversationId: "", organizationId: "", projectId: "" };
   }
   const query = new URLSearchParams(window.location.search);
   return {
     conversationId: query.get("conversationId") ?? "",
+    organizationId: query.get("organizationId") ?? "",
     projectId: query.get("projectId") ?? "",
   };
 }
@@ -441,12 +444,19 @@ function useRunSettlement({
 function writeRoute(
   projectId: string,
   conversationId: string,
-  replace = false
+  replace = false,
+  organizationId?: string
 ) {
   if (typeof window === "undefined") {
     return;
   }
   const query = new URLSearchParams();
+  const scope =
+    organizationId ??
+    new URLSearchParams(window.location.search).get("organizationId");
+  if (scope) {
+    query.set("organizationId", scope);
+  }
   if (projectId) {
     query.set("projectId", projectId);
   }
@@ -479,17 +489,25 @@ export interface WorkspaceProps {
  */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the workspace coordinates the existing project, conversation, and stream state in one component
 export function Workspace({ onSignedOut, session }: WorkspaceProps) {
+  const [creation, setCreation] = useState<"project" | "workspace" | null>(
+    null
+  );
   const [route] = useState(readRoute);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [projectName, setProjectName] = useState("");
   const [organizations, setOrganizations] = useState(session.organizations);
   const [accountProfile, setAccountProfile] = useAccountProfile();
   const [organizationId, setOrganizationId] = useState(
-    initialOrganizationId(session)
+    session.organizations.some(
+      (item) => item.organizationId === route.organizationId
+    )
+      ? route.organizationId
+      : initialOrganizationId(session)
   );
   const { pinnedConversationIds, togglePin } =
     useConversationPins(organizationId);
+  const selectedOrganization = useRef(organizationId);
+  selectedOrganization.current = organizationId;
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [projectId, setProjectId] = useState(route.projectId);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -593,6 +611,9 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       `/v1/projects?organizationId=${encodeURIComponent(organizationId)}`,
       (value) => ProjectListSchema.parse(value).projects
     );
+    if (selectedOrganization.current !== organizationId) {
+      return;
+    }
     setProjects(result);
     setProjectId((selected) =>
       result.some((item) => item.projectId === selected)
@@ -697,6 +718,13 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       setVoiceOpen(false);
       setDraft("");
       const next = readRoute();
+      setOrganizationId(
+        organizations.some(
+          (item) => item.organizationId === next.organizationId
+        )
+          ? next.organizationId
+          : initialOrganizationId(session)
+      );
       setProjectId(next.projectId);
       setConversationId(next.conversationId);
       setMessages([]);
@@ -704,11 +732,11 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [setDraft]);
+  }, [organizations, session, setDraft]);
 
   useEffect(() => {
-    writeRoute(projectId, conversationId, true);
-  }, [projectId, conversationId]);
+    writeRoute(projectId, conversationId, true, organizationId);
+  }, [projectId, conversationId, organizationId]);
 
   const onInterrupted = useCallback((reason: string) => setNotice(reason), []);
 
@@ -1331,28 +1359,36 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   );
 
   const createProjectNamed = useCallback(
-    async (name: string): Promise<boolean> => {
-      if (!(organizationId && name.trim())) {
+    async (
+      name: string,
+      targetOrganizationId = organizationId
+    ): Promise<boolean> => {
+      if (!(targetOrganizationId && name.trim())) {
         return false;
       }
       setSubmitting(true);
       setError("");
       try {
-        const created = await request(
-          "/v1/projects",
-          (value) => ProjectViewSchema.parse(value).projectId,
-          {
-            body: JSON.stringify({ name: name.trim(), organizationId }),
-            method: "POST",
-          }
-        );
-        await loadProjects();
-        setProjectId(created);
+        const created = await request("/v1/projects", ProjectViewSchema.parse, {
+          body: JSON.stringify({
+            name: name.trim(),
+            organizationId: targetOrganizationId,
+          }),
+          method: "POST",
+        });
+        setVoiceOpen(false);
+        setDraft("");
+        if (targetOrganizationId === organizationId) {
+          await loadProjects();
+        } else {
+          setOrganizationId(targetOrganizationId);
+          setProjects([created]);
+        }
+        setProjectId(created.projectId);
         setConversationId("");
         setMessages([]);
-        setProjectName("");
         setPanelOpen(false);
-        writeRoute(created, "");
+        writeRoute(created.projectId, "", false, targetOrganizationId);
         return true;
       } catch (cause) {
         setError(describeError(cause, "Could not create the project."));
@@ -1361,28 +1397,59 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
         setSubmitting(false);
       }
     },
-    [loadProjects, organizationId]
+    [loadProjects, organizationId, setDraft]
   );
 
-  const createProject = useCallback(
-    async (event: React.FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
-      await createProjectNamed(projectName);
+  const openProjectCreation = useCallback(() => {
+    setError("");
+    setCreation("project");
+  }, []);
+  const openWorkspaceCreation = useCallback(() => {
+    setError("");
+    setCreation("workspace");
+  }, []);
+  const closeCreation = useCallback(() => setCreation(null), []);
+  const createWorkspaceNamed = useCallback(
+    async (name: string): Promise<boolean> => {
+      setError("");
+      try {
+        const created = await request(
+          "/v1/organizations",
+          CreateOrganizationResponseSchema.parse,
+          { body: JSON.stringify({ name }), method: "POST" }
+        );
+        setVoiceOpen(false);
+        setDraft("");
+        setOrganizations((current) => [
+          ...current,
+          {
+            name: created.name,
+            organizationId: created.organizationId,
+            role: created.membershipRole,
+          },
+        ]);
+        setOrganizationId(created.organizationId);
+        setProjects([]);
+        setProjectId("");
+        setConversationId("");
+        setMessages([]);
+        setConversations([]);
+        setConversationsByProject({});
+        setPanelOpen(false);
+        writeRoute("", "", false, created.organizationId);
+        return true;
+      } catch (cause) {
+        setError(describeError(cause, "Could not create the workspace."));
+        return false;
+      }
     },
-    [createProjectNamed, projectName]
+    [setDraft]
   );
 
   const signOut = useCallback(async () => {
     await request("/v1/auth/session", (value) => value, { method: "DELETE" });
     onSignedOut();
   }, [onSignedOut]);
-
-  const updateProjectName = useCallback(
-    (event: React.ChangeEvent<HTMLInputElement>) => {
-      setProjectName(event.currentTarget.value);
-    },
-    []
-  );
 
   const selectOrganization = useCallback(
     (nextOrganizationId: string) => {
@@ -1396,6 +1463,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       setFailedConversationProjects([]);
       setMessages([]);
       setPanelOpen(false);
+      writeRoute("", "", false, nextOrganizationId);
     },
     [setDraft]
   );
@@ -1814,7 +1882,7 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
       limit={DRAFT_LIMIT}
       listFiles={listFiles}
       model={MODEL}
-      onCreateProject={createProjectNamed}
+      onCreateProject={openProjectCreation}
       onDismissSuggestions={dismissSuggestions}
       onKeyDown={promptKeyDown}
       onOpenSideChat={openSideChat}
@@ -1892,21 +1960,33 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
 
   return (
     <div className="app" data-stopping-run={stoppingRunId || undefined}>
+      {creation && (
+        <CreateResourceDialog
+          error={error}
+          key={creation}
+          kind={creation}
+          onClose={closeCreation}
+          onCreate={
+            creation === "project" ? createProjectNamed : createWorkspaceNamed
+          }
+          organizationId={organizationId}
+          organizations={organizations}
+        />
+      )}
       <Rail
         accountEmail={accountProfile?.email ?? ""}
         accountName={accountProfile?.displayName ?? ""}
         conversationId={conversationId}
         conversationsByProject={conversationsByProject}
-        draftProjectName={projectName}
         errorMessage={error}
         failedConversationProjects={failedConversationProjects}
         onConversationSelect={selectConversation}
+        onCreateProject={openProjectCreation}
+        onCreateWorkspace={openWorkspaceCreation}
         onNewConversation={newConversation}
         onNewConversationForProject={newConversationForProject}
         onOrganizationSelect={selectOrganization}
-        onProjectNameChange={updateProjectName}
         onProjectSelect={selectProject}
-        onProjectSubmit={createProject}
         onSettings={openSettings}
         onSignOut={signOut}
         onTogglePin={togglePin}
@@ -1915,7 +1995,6 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
         pinnedConversationIds={pinnedConversationIds}
         projectId={projectId}
         projects={projects}
-        submitting={submitting}
       />
 
       <div

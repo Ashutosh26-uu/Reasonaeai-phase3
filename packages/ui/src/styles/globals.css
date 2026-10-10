@@ -7,38 +7,54 @@
 @source "../../../../apps/web/node_modules/@streamdown/math/dist/*.js";
 @source "../../../../apps/web/node_modules/@streamdown/mermaid/dist/*.js";
 
-/*
- * Neutral gray, no hue.
- *
- * Every gray here has zero chroma, so nothing in the product is tinted, and the
- * ladder is the one the product's surfaces actually use: shell, surface, raised,
- * and hover, from darkest to lightest. The accent is the same near-white as the
- * foreground, which is what makes a primary control read as "the obvious next
- * action" without introducing a second color language.
+/* Exact hex declarations read from https://bklit.com/docs/components.
+ * Source capture and role mapping: docs/design/bklit-palette.json and palette.md.
  */
 :root {
-  --background: oklch(0.191 0 0);
-  --foreground: oklch(0.961 0 0);
-  --card: oklch(0.227 0 0);
-  --card-foreground: oklch(0.961 0 0);
-  --popover: oklch(0.227 0 0);
-  --popover-foreground: oklch(0.961 0 0);
-  --primary: oklch(0.961 0 0);
-  --primary-foreground: oklch(0.191 0 0);
-  --secondary: oklch(0.297 0 0);
-  --secondary-foreground: oklch(0.87 0 0);
-  --muted: oklch(0.256 0 0);
-  --muted-foreground: oklch(0.757 0 0);
-  --accent: oklch(0.256 0 0);
-  --accent-foreground: oklch(0.961 0 0);
-  --destructive: oklch(0.62 0.19 25);
-  --border: oklch(0.297 0 0);
-  --input: oklch(0.297 0 0);
-  --ring: oklch(0.616 0 0);
-  /* Squared controls. Rounded corners here are a shape decision, not a token
-     to be scaled: 6px reads as a control, and anything larger reads as a pill. */
+  --background: #08090b;
+  --foreground: #f9fbfb;
+  --card: #0e0f12;
+  --card-foreground: #f9fbfb;
+  --popover: #18181b;
+  --popover-foreground: #f9fbfb;
+  --primary: #e3e7e8;
+  --primary-foreground: #161b1d;
+  --secondary: #22242b;
+  --secondary-foreground: #f9fbfb;
+  --muted: #2b2d37;
+  --muted-foreground: #818694;
+  --accent: #292b34;
+  --accent-foreground: #f9fbfb;
+  --destructive: #ff6568;
+  --border: #6f748033;
+  --input: #545b6a33;
+  --ring: #67787c;
+  --brand-icon-filter: brightness(1);
   --radius: 0.375rem;
   color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --background: #f5f5f5;
+  --foreground: #090b0c;
+  --card: #fff;
+  --card-foreground: #090b0c;
+  --popover: #fff;
+  --popover-foreground: #090b0c;
+  --primary: #3e3e3e;
+  --primary-foreground: #ececec;
+  --secondary: #f8f8fa;
+  --secondary-foreground: #18181b;
+  --muted: #eaeaea;
+  --muted-foreground: #757575;
+  --accent: #ebebeb;
+  --accent-foreground: #182034;
+  --destructive: #e33f57;
+  --border: #e4e4e4;
+  --input: #f1f1f1;
+  --ring: #000;
+  --brand-icon-filter: brightness(0.3);
+  color-scheme: light;
 }
 
 @theme inline {
@@ -85,7 +101,7 @@ body {
 }
 
 ::selection {
-  background: oklch(0.961 0 0 / 0.22);
+  background: color-mix(in srgb, var(--foreground) 22%, transparent);
 }
 
 :focus-visible {
