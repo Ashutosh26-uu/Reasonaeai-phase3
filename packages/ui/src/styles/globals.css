@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Space+Grotesk:wght@300;400;600&family=Syne:wght@700;800&display=swap");
 @import "tailwindcss";
 
 @source "../components";
@@ -8,40 +9,72 @@
 @source "../../../../apps/web/node_modules/@streamdown/mermaid/dist/*.js";
 
 /*
- * Neutral gray, no hue.
- *
- * Every gray here has zero chroma, so nothing in the product is tinted, and the
- * ladder is the one the product's surfaces actually use: shell, surface, raised,
- * and hover, from darkest to lightest. The accent is the same near-white as the
- * foreground, which is what makes a primary control read as "the obvious next
- * action" without introducing a second color language.
+ * DOSSIER PRO MAX Design Language
+ * Classified technical dossier — brutalist minimal, editorial tech, glassmorphism.
+ * 1px borders > shadows. Typography is the UI. Minimal surface, maximal information.
  */
 :root {
-  --background: oklch(0.191 0 0);
-  --foreground: oklch(0.961 0 0);
-  --card: oklch(0.227 0 0);
-  --card-foreground: oklch(0.961 0 0);
-  --popover: oklch(0.227 0 0);
-  --popover-foreground: oklch(0.961 0 0);
-  --primary: oklch(0.961 0 0);
-  --primary-foreground: oklch(0.191 0 0);
-  --secondary: oklch(0.297 0 0);
-  --secondary-foreground: oklch(0.87 0 0);
-  --muted: oklch(0.256 0 0);
-  --muted-foreground: oklch(0.757 0 0);
-  --accent: oklch(0.256 0 0);
-  --accent-foreground: oklch(0.961 0 0);
-  --destructive: oklch(0.62 0.19 25);
-  --border: oklch(0.297 0 0);
-  --input: oklch(0.297 0 0);
-  --ring: oklch(0.616 0 0);
-  /* Squared controls. Rounded corners here are a shape decision, not a token
-     to be scaled: 6px reads as a control, and anything larger reads as a pill. */
-  --radius: 0.375rem;
+  /* Base color system */
+  --bg: #050507;
+  --bg-soft: #0a0a0d;
+  --text: #edede9;
+  --text-muted: rgba(237, 237, 233, 0.5);
+  --text-faint: rgba(237, 237, 233, 0.25);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+
+  /* Accents */
+  --lime: #d6ff57;
+  --cyan: #00fff0;
+  --orange: #ff4d00;
+
+  /* Surfaces */
+  --glass: rgba(255, 255, 255, 0.06);
+  --glass-strong: rgba(255, 255, 255, 0.09);
+  --overlay-gradient: linear-gradient(0deg, var(--bg) 5%, transparent 60%);
+
+  /* Semantic UI mappings */
+  --background: var(--bg);
+  --foreground: var(--text);
+  --card: rgba(255, 255, 255, 0.06);
+  --card-foreground: var(--text);
+  --popover: #0a0a0d;
+  --popover-foreground: var(--text);
+  --primary: var(--lime);
+  --primary-foreground: #050507;
+  --secondary: rgba(255, 255, 255, 0.06);
+  --secondary-foreground: var(--text);
+  --muted: rgba(255, 255, 255, 0.04);
+  --muted-foreground: var(--text-muted);
+  --accent: rgba(214, 255, 87, 0.12);
+  --accent-foreground: var(--lime);
+  --destructive: var(--orange);
+  --input: var(--border);
+  --ring: var(--lime);
+  --radius: 1.5rem;
   color-scheme: dark;
 }
 
 @theme inline {
+  --font-sans:
+    "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    sans-serif;
+  --font-display: "Syne", sans-serif;
+  --font-mono:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    monospace;
+
+  --color-lime: #d6ff57;
+  --color-cyan: #00fff0;
+  --color-orange: #ff4d00;
+  --color-bg: #050507;
+  --color-bg-soft: #0a0a0d;
+  --color-text: #edede9;
+  --color-text-muted: rgba(237, 237, 233, 0.5);
+  --color-text-faint: rgba(237, 237, 233, 0.25);
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.15);
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -57,38 +90,41 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
-  --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --radius-sm: calc(var(--radius) - 2px);
-  --radius-md: var(--radius);
-  --radius-lg: calc(var(--radius) + 2px);
-  --radius-xl: calc(var(--radius) + 4px);
+
+  --radius-sm: 12px;
+  --radius-md: 16px;
+  --radius-lg: 24px;
+  --radius-xl: 28px;
+  --radius-full: 100px;
 }
 
 * {
   border-color: var(--border);
+  box-shadow: none !important;
 }
 
 html {
-  background: var(--background);
+  background: var(--bg);
 }
 
 body {
   margin: 0;
   font-family:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI Variable Text",
-    "Segoe UI", Roboto, Inter, sans-serif;
+    "Space Grotesk", -apple-system, BlinkMacSystemFont,
+    "Segoe UI Variable Text", "Segoe UI", Roboto, Inter, sans-serif;
   -webkit-font-smoothing: antialiased;
-  color: var(--foreground);
-  background: var(--background);
+  color: var(--text);
+  background: var(--bg);
 }
 
 ::selection {
-  background: oklch(0.961 0 0 / 0.22);
+  color: #edede9;
+  background: rgba(214, 255, 87, 0.25);
 }
 
 :focus-visible {
-  outline: 2px solid var(--ring);
+  outline: 1px solid var(--lime);
   outline-offset: 2px;
 }

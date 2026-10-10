@@ -4,13 +4,15 @@
   gap: 14px;
   width: 100%;
   max-width: 736px;
-  padding: 18px 20px;
+  padding: 22px 24px;
   margin: 12px 0;
   font-size: 13px;
-  background: var(--raised, #16181d);
-  border: 1px solid var(--line, #282c34);
-  border-radius: 14px;
-  box-shadow: 0 4px 20px #00000020;
+  background: var(--glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-surface);
+  box-shadow: none;
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
 }
 
 .header {
@@ -25,53 +27,56 @@
   display: flex;
   gap: 8px;
   align-items: center;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--ink, #ffffff);
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
 }
 
 .riskBadge {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
-  font-size: 11px;
-  font-weight: 500;
-  text-transform: capitalize;
-  border-radius: 9999px;
+  padding: 3px 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  border-radius: 100px;
 }
 
 .riskLow {
-  color: #22c55e;
-  background: #22c55e1a;
-  border: 1px solid #22c55e33;
+  color: var(--lime);
+  background: rgba(214, 255, 87, 0.12);
+  border: 1px solid rgba(214, 255, 87, 0.3);
 }
 
 .riskMedium {
-  color: #f59e0b;
-  background: #f59e0b1a;
-  border: 1px solid #f59e0b33;
+  color: var(--cyan);
+  background: rgba(0, 255, 240, 0.12);
+  border: 1px solid rgba(0, 255, 240, 0.3);
 }
 
 .riskHigh {
-  color: #ef4444;
-  background: #ef44441a;
-  border: 1px solid #ef444433;
+  color: var(--orange);
+  background: rgba(255, 77, 0, 0.15);
+  border: 1px solid rgba(255, 77, 0, 0.4);
 }
 
 .summary {
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--ink-2, #d1d5db);
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text);
 }
 
 .rationale {
-  padding: 8px 12px;
+  padding: 10px 14px;
   font-size: 12px;
-  line-height: 1.5;
-  color: var(--ink-3, #9ca3af);
-  background: var(--surface, #1e222b);
-  border-left: 3px solid var(--line, #374151);
-  border-radius: 4px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.04);
+  border-left: 2px solid var(--lime);
+  border-radius: 8px;
 }
 
 .section {
@@ -80,18 +85,19 @@
 }
 
 .sectionLabel {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--ink-3, #9ca3af);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.15em;
 }
 
 .steps {
   padding-left: 20px;
   margin: 0;
   line-height: 1.6;
-  color: var(--ink-2, #d1d5db);
+  color: var(--text);
 }
 
 .steps li {
@@ -111,48 +117,52 @@
   flex-wrap: wrap;
   gap: 8px;
   align-items: baseline;
-  padding: 6px 10px;
+  padding: 8px 12px;
   font-size: 12px;
-  background: var(--surface, #1e222b);
-  border: 1px solid var(--line, #282c34);
-  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 12px;
 }
 
 .fileBadge {
-  padding: 1px 6px;
-  font-family: monospace;
+  padding: 2px 7px;
+  font-family: var(--font-mono);
   font-size: 10px;
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
-  border-radius: 4px;
+  letter-spacing: 0.12em;
+  border-radius: 100px;
 }
 
 .actionCreate {
-  color: #34d399;
-  background: #34d39922;
+  color: var(--lime);
+  background: rgba(214, 255, 87, 0.15);
+  border: 1px solid rgba(214, 255, 87, 0.3);
 }
 
 .actionModify {
-  color: #60a5fa;
-  background: #60a5fa22;
+  color: var(--cyan);
+  background: rgba(0, 255, 240, 0.15);
+  border: 1px solid rgba(0, 255, 240, 0.3);
 }
 
 .actionDelete {
-  color: #f87171;
-  background: #f8717122;
+  color: var(--orange);
+  background: rgba(255, 77, 0, 0.15);
+  border: 1px solid rgba(255, 77, 0, 0.3);
 }
 
 .filePath {
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 500;
-  color: var(--ink, #ffffff);
+  color: var(--text);
 }
 
 .fileDesc {
   flex: 1 1 100%;
   font-size: 11px;
-  color: var(--ink-3, #9ca3af);
+  color: var(--text-muted);
 }
 
 .actions {
@@ -161,68 +171,84 @@
   gap: 10px;
   align-items: center;
   justify-content: flex-end;
-  padding-top: 6px;
-  border-top: 1px solid var(--line, #282c34);
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
 }
 
 .approveButton {
-  padding: 7px 16px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--shell, #ffffff);
+  padding: 8px 22px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: #050507;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
   cursor: pointer;
-  background: #2563eb;
-  border: 1px solid #3b82f6;
-  border-radius: 8px;
-  transition: background 150ms ease;
+  background: var(--lime);
+  border: 1px solid transparent;
+  border-radius: 100px;
+  transition:
+    transform 0.4s var(--ease),
+    opacity 0.4s var(--ease);
 }
 
 .approveButton:hover:not(:disabled) {
-  background: #1d4ed8;
+  transform: scale(0.98);
 }
 
 .rejectButton {
-  padding: 7px 14px;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--ink-2, #d1d5db);
+  padding: 8px 18px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
   cursor: pointer;
-  background: transparent;
-  border: 1px solid var(--line, #374151);
-  border-radius: 8px;
-  transition: background 150ms ease;
+  background: var(--glass);
+  border: 1px solid var(--border);
+  border-radius: 100px;
+  transition:
+    border-color 0.4s var(--ease),
+    color 0.4s var(--ease);
 }
 
 .rejectButton:hover:not(:disabled) {
-  color: var(--ink, #ffffff);
-  background: var(--surface, #1e222b);
+  color: var(--text);
+  border-color: var(--border-strong);
 }
 
 .approveButton:disabled,
 .rejectButton:disabled {
   cursor: default;
-  opacity: 0.5;
+  opacity: 0.4;
 }
 
 .rejectForm {
   display: grid;
   gap: 8px;
   width: 100%;
-  padding-top: 6px;
-  border-top: 1px solid var(--line, #282c34);
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
 }
 
 .rejectTextarea {
   width: 100%;
-  min-height: 60px;
-  padding: 8px 10px;
+  min-height: 64px;
+  padding: 10px 14px;
   font: inherit;
+  font-family: var(--font-mono);
   font-size: 13px;
-  color: var(--ink, #ffffff);
+  color: var(--text);
   resize: vertical;
-  background: var(--surface, #1e222b);
-  border: 1px solid var(--line, #374151);
-  border-radius: 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.rejectTextarea:focus-visible {
+  outline: none;
+  border-color: var(--lime);
 }
 
 .rejectActions {
@@ -235,32 +261,35 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 8px 12px;
-  border-radius: 8px;
+  padding: 10px 14px;
+  border-radius: 12px;
 }
 
 .resolvedApproved {
-  color: #22c55e;
-  background: #22c55e14;
-  border: 1px solid #22c55e2e;
+  color: var(--lime);
+  background: rgba(214, 255, 87, 0.1);
+  border: 1px solid rgba(214, 255, 87, 0.25);
 }
 
 .resolvedRejected {
-  color: #f87171;
-  background: #f8717114;
-  border: 1px solid #f871712e;
+  color: var(--orange);
+  background: rgba(255, 77, 0, 0.1);
+  border: 1px solid rgba(255, 77, 0, 0.25);
 }
 
 .resolvedStatus {
   display: flex;
   gap: 6px;
   align-items: center;
-  font-size: 12px;
-  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
 }
 
 .feedbackQuote {
   margin: 0;
   font-size: 12px;
-  color: var(--ink-2, #d1d5db);
+  color: var(--text-muted);
 }

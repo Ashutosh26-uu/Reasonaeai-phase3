@@ -1,4 +1,4 @@
-/* Suggestion Bubbles - Google AI Studio style compact bubbles row */
+/* Suggestion Bubbles - Dossier Pro Max Horizontal Snap Stream */
 
 .container {
   position: relative;
@@ -23,12 +23,13 @@
 
 .scrollArea {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
-  padding: 2px 2px 4px;
+  scroll-snap-type: x mandatory;
+  padding: 4px 2px;
   margin: 0;
   list-style: none;
   flex: 1;
@@ -38,6 +39,7 @@
 .item {
   display: flex;
   flex: 0 0 auto;
+  scroll-snap-align: start;
 }
 
 .scrollArea::-webkit-scrollbar {
@@ -51,47 +53,46 @@
   flex-direction: column;
   gap: 4px;
   justify-content: space-between;
-  width: 200px;
-  height: 64px;
-  min-height: 64px;
-  padding: 6px 10px;
+  width: 210px;
+  height: 68px;
+  min-height: 68px;
+  padding: 8px 12px;
   overflow: hidden;
-  color: var(--ink);
+  color: var(--text);
   text-align: left;
   cursor: pointer;
   user-select: none;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
+  background: var(--glass);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: none;
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
   transition:
-    transform 120ms ease,
-    background-color 150ms ease,
-    border-color 150ms ease,
-    box-shadow 150ms ease;
+    transform 0.4s var(--ease),
+    background-color 0.4s var(--ease),
+    border-color 0.4s var(--ease);
 }
 
 .bubble:hover {
-  background: var(--raised);
-  border-color: var(--line-strong);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.09);
+  border-color: var(--lime);
+  box-shadow: none;
+  transform: translateY(-2px);
 }
 
 .bubble:active {
-  transform: translateY(0);
-  scale: 0.98;
+  transform: translateY(0) scale(0.98);
 }
 
 .bubble:focus-visible {
-  outline: 2px solid var(--ink-3);
-  outline-offset: 2px;
+  outline: none;
+  border-color: var(--lime);
 }
 
 .bubble:disabled {
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 0.4;
   transform: none;
 }
 
@@ -103,10 +104,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
   -webkit-line-clamp: 2;
+  font-family: var(--font-body);
   font-size: 12px;
   font-weight: 500;
-  line-height: 1.25;
-  color: var(--ink);
+  line-height: 1.35;
+  color: var(--text);
 }
 
 .badgeRow {
@@ -122,62 +124,39 @@
   display: inline-flex;
   gap: 4px;
   align-items: center;
-  padding: 1.5px 7px;
-  font-size: 10px;
-  font-weight: 600;
+  padding: 2px 8px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
   line-height: 1.2;
-  letter-spacing: 0.02em;
-  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  border-radius: 100px;
 }
 
 /* Category-specific badge accent styles (Dark default) */
 .badgeAi {
-  color: #93c5fd;
-  background: rgba(59, 130, 246, 0.16);
-  border: 1px solid rgba(59, 130, 246, 0.3);
+  color: var(--lime);
+  background: rgba(214, 255, 87, 0.12);
+  border: 1px solid rgba(214, 255, 87, 0.3);
 }
 
 .badgeDesign {
-  color: #e9d5ff;
-  background: rgba(168, 85, 247, 0.16);
-  border: 1px solid rgba(168, 85, 247, 0.3);
+  color: var(--cyan);
+  background: rgba(0, 255, 240, 0.12);
+  border: 1px solid rgba(0, 255, 240, 0.3);
 }
 
 .badgeFeature {
-  color: #7dd3fc;
-  background: rgba(14, 165, 233, 0.16);
-  border: 1px solid rgba(14, 165, 233, 0.3);
+  color: var(--cyan);
+  background: rgba(0, 255, 240, 0.12);
+  border: 1px solid rgba(0, 255, 240, 0.3);
 }
 
 .badgeQuality {
-  color: #86efac;
-  background: rgba(16, 185, 129, 0.16);
-  border: 1px solid rgba(16, 185, 129, 0.3);
-}
-
-/* Accessible high-contrast colors for Light Mode */
-:root[data-theme="light"] .badgeAi {
-  color: #1d4ed8;
-  background: rgba(59, 130, 246, 0.1);
-  border-color: rgba(59, 130, 246, 0.28);
-}
-
-:root[data-theme="light"] .badgeDesign {
-  color: #7e22ce;
-  background: rgba(168, 85, 247, 0.1);
-  border-color: rgba(168, 85, 247, 0.28);
-}
-
-:root[data-theme="light"] .badgeFeature {
-  color: #0369a1;
-  background: rgba(14, 165, 233, 0.1);
-  border-color: rgba(14, 165, 233, 0.28);
-}
-
-:root[data-theme="light"] .badgeQuality {
-  color: #047857;
-  background: rgba(16, 185, 129, 0.1);
-  border-color: rgba(16, 185, 129, 0.28);
+  color: var(--lime);
+  background: rgba(214, 255, 87, 0.12);
+  border: 1px solid rgba(214, 255, 87, 0.3);
 }
 
 /* Watermark background icon positioned at bottom-right corner */
@@ -188,16 +167,16 @@
   z-index: 0;
   width: 26px;
   height: 26px;
-  color: var(--ink-2);
+  color: var(--text-muted);
   pointer-events: none;
-  opacity: 0.12;
+  opacity: 0.1;
   transition:
-    opacity 150ms ease,
-    transform 150ms ease;
+    opacity 0.4s var(--ease),
+    transform 0.4s var(--ease);
 }
 
 .bubble:hover .watermark {
-  opacity: 0.22;
+  opacity: 0.2;
   transform: scale(1.05);
 }
 
@@ -215,38 +194,39 @@
   width: 28px;
   height: 28px;
   padding: 0;
-  color: var(--ink-2);
+  color: var(--text-muted);
   cursor: pointer;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  background: var(--glass);
+  border: 1px solid var(--border);
+  border-radius: 100px;
+  box-shadow: none;
   transition:
-    background-color 150ms ease,
-    color 150ms ease,
-    border-color 150ms ease;
+    background-color 0.4s var(--ease),
+    color 0.4s var(--ease),
+    border-color 0.4s var(--ease);
 }
 
 .actionButton:hover {
-  color: var(--ink);
-  background: var(--raised);
-  border-color: var(--line-strong);
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.09);
+  border-color: var(--border-strong);
 }
 
 .actionButton:focus-visible {
-  outline: 2px solid var(--ink-3);
-  outline-offset: 2px;
+  outline: none;
+  border-color: var(--lime);
 }
 
 @media (max-width: 640px) {
   .bubble {
     gap: 3px;
-    width: 170px;
-    height: 60px;
-    min-height: 60px;
-    padding: 5px 8px;
+    width: 175px;
+    height: 64px;
+    min-height: 64px;
+    padding: 6px 10px;
   }
   .title {
     font-size: 11px;
-    line-height: 1.2;
+    line-height: 1.25;
   }
 }

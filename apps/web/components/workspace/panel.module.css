@@ -51,7 +51,7 @@
   min-width: 0;
   height: 28px;
   padding: 0 9px;
-  font-family: "Cascadia Mono", ui-monospace, Consolas, monospace;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 12px;
   color: var(--ink-2);
   background: var(--raised);
@@ -64,7 +64,7 @@
   padding-left: 6px;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-family: "Cascadia Mono", ui-monospace, Consolas, monospace;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 12px;
   white-space: nowrap;
 }

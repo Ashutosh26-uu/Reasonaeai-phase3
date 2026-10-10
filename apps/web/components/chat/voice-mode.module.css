@@ -277,22 +277,39 @@
   gap: 10px;
   align-items: center;
   justify-content: center;
-  min-height: 46px;
-  padding: 12px 20px;
-  font-size: 14px;
+  min-height: 44px;
+  padding: 12px 24px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
   cursor: pointer;
-  border: 1px solid var(--line-strong);
-  border-radius: 30px;
+  border-radius: 100px;
+  transition:
+    transform 0.4s var(--ease),
+    opacity 0.4s var(--ease);
 }
 
 .primary {
-  color: var(--surface);
-  background: var(--ink);
+  color: #050507;
+  background: var(--lime);
+  border: 1px solid transparent;
+}
+
+.primary:hover:not(:disabled) {
+  transform: scale(0.98);
 }
 
 .secondary {
-  color: var(--ink-2);
-  background: transparent;
+  color: var(--text);
+  background: var(--glass);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(24px);
+}
+
+.secondary:hover:not(:disabled) {
+  border-color: var(--border-strong);
 }
 
 .surface button:disabled {
