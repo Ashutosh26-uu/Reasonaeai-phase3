@@ -521,3 +521,6 @@ export const WorkspaceFileSchema = z.strictObject({
 export function isReplayableSequence(afterSequence: number): boolean {
   return Number.isInteger(afterSequence) && afterSequence >= 0;
 }
+
+export const WORKSPACE_EXPORT_PATH =
+  "/v1/build-sessions/:buildSessionId/workspace/export";

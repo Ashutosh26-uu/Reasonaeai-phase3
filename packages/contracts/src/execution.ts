@@ -495,3 +495,6 @@ export const OpenAppPreviewResultSchema = z.strictObject({
   status: z.literal("requested"),
 });
 export type OpenAppPreviewResult = z.infer<typeof OpenAppPreviewResultSchema>;
+
+export const WORKSPACE_EXPORT_PATH =
+  "/v1/build-sessions/:buildSessionId/workspace/export";

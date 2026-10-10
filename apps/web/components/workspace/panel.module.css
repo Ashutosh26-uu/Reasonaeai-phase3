@@ -116,3 +116,67 @@
     margin: 0 2px;
   }
 }
+
+.exportButton {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  height: 28px;
+  padding: 0 8px;
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-2);
+  white-space: nowrap;
+  cursor: pointer;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control, 5px);
+  transition:
+    color 0.15s ease,
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.exportButton:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--raised-hover);
+  border-color: var(--line-hover, var(--line));
+}
+
+.exportButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.exportButton:focus-visible {
+  outline: 2px solid var(--ink-3);
+  outline-offset: 2px;
+}
+
+.exportErrorNotice {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--ink-2);
+  background: var(--raised);
+  border-bottom: 1px solid var(--line);
+}
+
+.dismissExportError {
+  padding: 0 4px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--ink-3);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+}
+
+.dismissExportError:hover {
+  color: var(--ink);
+}
