@@ -2,10 +2,13 @@
 
 import type { ConversationMessage } from "@reasonateai/contracts/execution";
 import {
+  WorkspaceFileSchema,
+  WorkspaceTreeSchema,
+} from "@reasonateai/contracts/execution-protocol";
+import {
   ArrowLeft,
   ArrowRight,
   ExternalLink,
-  FileCode2,
   FolderClosed,
   Loader2,
   Monitor,
@@ -14,17 +17,19 @@ import {
   Smartphone,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { Timeline } from "@/components/chat/timeline";
 import { request } from "@/lib/product-api";
 import type { AgentPreviewSelection } from "./agent-preview";
 import { FileContentPreview } from "./file-content";
+import { FileTree } from "./file-tree";
 import styles from "./panel.module.css";
 import {
+  formatSandboxPreviewAddress,
   movePreviewHistory,
   observedPreviewPath,
   type PreviewHistory,
-  parsePreviewPath,
+  parseSandboxPreviewAddress,
   previewRoot,
   previewTransportUrl,
   recordPreviewPath,
@@ -52,9 +57,9 @@ import {
 /**
  * The workspace panel: what the agent actually produced.
  *
- * Files and Changes read saved Git checkpoints. App preview attaches to the
- * current run's existing mutable sandbox and selected app port; it does not
- * wait for or restore a checkpoint. Live unsaved file browsing is not exposed.
+ * Files observes the current mutable sandbox and falls back to saved Git
+ * checkpoints. Changes remains checkpoint-backed. Preview attaches to the
+ * selected app port and survives ordinary run completion without remounting.
  */
 
 interface TreeEntry {
@@ -67,6 +72,7 @@ interface TreeResponse {
   checkpointId: string;
   commit: string;
   files: TreeEntry[];
+  source: "checkpoint" | "live";
   truncated: boolean;
 }
 
@@ -98,6 +104,7 @@ export interface PanelProps {
   refreshKey?: number | undefined;
   requestedView: "new" | "preview";
   timeline: Timeline;
+  visible?: boolean | undefined;
 }
 
 const treeUrl = (
@@ -125,7 +132,17 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function FileView({ file }: { file: FileResponse | null }) {
+function workspaceReadError(cause: unknown): string {
+  return cause instanceof Error
+    ? cause.message
+    : "Could not read the workspace.";
+}
+
+const FileView = memo(function FileViewContent({
+  file,
+}: {
+  file: FileResponse | null;
+}) {
   if (file === null) {
     return <div className="panel-state">Choose a file.</div>;
   }
@@ -145,82 +162,131 @@ function FileView({ file }: { file: FileResponse | null }) {
       <FileContentPreview key={file.path} path={file.path} text={file.text} />
     </>
   );
-}
+});
 
-function FilesView({
+const FilesView = memo(function FilesViewContent({
   buildSessionId,
   organizationId,
   projectId,
   refreshKey,
+  visible = true,
 }: {
   buildSessionId: string;
   organizationId: string;
   projectId: string;
   refreshKey?: number | undefined;
+  visible?: boolean | undefined;
 }) {
   const [tree, setTree] = useState<TreeResponse | null>(null);
   const [file, setFile] = useState<FileResponse | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const result = await request(
-        treeUrl(buildSessionId, organizationId, projectId),
-        (value) => value as TreeResponse
+  const selectedPath = useRef<string | null>(null);
+  const [retry, setRetry] = useState(0);
+  const load = useCallback(() => setRetry((value) => value + 1), []);
+
+  const readSelectedFile = useCallback(
+    async (result: TreeResponse, signal: AbortSignal) => {
+      const path = result.files.some(
+        (entry) => entry.kind === "file" && entry.path === selectedPath.current
+      )
+        ? selectedPath.current
+        : result.files.find((entry) => entry.kind === "file")?.path;
+      if (selectedPath.current !== (path ?? null)) {
+        setFile(null);
+      }
+      selectedPath.current = path ?? null;
+      if (!path) {
+        setFile(null);
+        return;
+      }
+      const content = await request(
+        fileUrl(buildSessionId, organizationId, projectId, path),
+        WorkspaceFileSchema.parse,
+        { signal }
       );
-      setTree(result);
-      setError("");
-      const first = result.files.find((entry) => entry.kind === "file");
-      if (first) {
-        setFile(
-          await request(
-            fileUrl(buildSessionId, organizationId, projectId, first.path),
-            (value) => value as FileResponse
-          )
+      if (!signal.aborted && selectedPath.current === path) {
+        setFile((previous) =>
+          JSON.stringify(previous) === JSON.stringify(content)
+            ? previous
+            : content
         );
       }
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Could not read the workspace."
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [buildSessionId, organizationId, projectId]);
-
-  useEffect(() => {
-    load().catch(() => undefined);
-  }, [load, refreshKey]);
-
-  const openFile = useCallback(
-    (event: React.MouseEvent<HTMLButtonElement>) => {
-      const path = event.currentTarget.value;
-      request(
-        fileUrl(buildSessionId, organizationId, projectId, path),
-        (value) => value as FileResponse
-      )
-        .then(setFile)
-        .catch((cause: unknown) =>
-          setError(
-            cause instanceof Error ? cause.message : "Could not read that file."
-          )
-        );
     },
     [buildSessionId, organizationId, projectId]
+  );
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const read = async () => {
+      try {
+        const result = await request(
+          treeUrl(buildSessionId, organizationId, projectId),
+          WorkspaceTreeSchema.parse,
+          { signal: controller.signal }
+        );
+        if (controller.signal.aborted) {
+          return;
+        }
+        setTree((previous) =>
+          JSON.stringify(previous) === JSON.stringify(result)
+            ? previous
+            : result
+        );
+        await readSelectedFile(result, controller.signal);
+        if (!controller.signal.aborted) {
+          setError("");
+        }
+      } catch (cause) {
+        if (!controller.signal.aborted) {
+          setError(workspaceReadError(cause));
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoading(false);
+          timer = setTimeout(read, 2000);
+        }
+      }
+    };
+    read().catch(() => undefined);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [
+    buildSessionId,
+    organizationId,
+    projectId,
+    refreshKey,
+    retry,
+    visible,
+    readSelectedFile,
+  ]);
+
+  const openFile = useCallback(
+    (path: string) => {
+      selectedPath.current = path;
+      setFile(null);
+      load();
+    },
+    [load]
   );
 
   if (loading) {
     return (
       <div className="panel-state">
         <Loader2 aria-hidden="true" className="spin" size={15} /> Reading the
-        project's latest checkpoint…
+        project's workspace…
       </div>
     );
   }
 
-  if (error.length > 0) {
+  if (error.length > 0 && tree === null) {
     return (
       <div className="panel-state">
         {error}
@@ -234,8 +300,7 @@ function FilesView({
   if (tree === null || tree.files.length === 0) {
     return (
       <div className="panel-state">
-        No checkpoint yet. The project's files appear here after its first run
-        finishes.
+        No files yet. Files appear here as the agent creates them.
       </div>
     );
   }
@@ -257,44 +322,40 @@ function FilesView({
         <div className="files-tree">
           <div className="files-meta" title={tree.commit}>
             {files.length} file{files.length === 1 ? "" : "s"} ·{" "}
-            {tree.commit.slice(0, 7)}
+            {tree.source === "live"
+              ? "Live workspace"
+              : tree.commit.slice(0, 7)}
+            {tree.truncated && " · File list limit reached"}
           </div>
-          {tree.files.map((entry) => (
-            <button
-              className="files-row"
-              data-active={entry.path === file?.path || undefined}
-              data-kind={entry.kind}
-              disabled={entry.kind === "directory"}
-              key={entry.path}
-              onClick={openFile}
-              type="button"
-              value={entry.path}
-            >
-              {entry.kind === "directory" ? (
-                <FolderClosed aria-hidden="true" size={13} />
-              ) : (
-                <FileCode2 aria-hidden="true" size={13} />
-              )}
-              <span className="files-name">{entry.path}</span>
-              <span className="files-size">{formatBytes(entry.bytes)}</span>
-            </button>
-          ))}
+          <FileTree
+            entries={tree.files}
+            onOpen={openFile}
+            selected={file?.path ?? selectedPath.current ?? undefined}
+          />
         </div>
         <div className="files-view">
+          {error.length > 0 && (
+            <div className="panel-state" role="status">
+              {error}
+              <button className="panel-retry" onClick={load} type="button">
+                Try again
+              </button>
+            </div>
+          )}
           <FileView file={file} />
         </div>
       </div>
     </>
   );
-}
+});
 
-function ReadyPreview({
+const ReadyPreview = memo(function ReadyPreviewContent({
   root,
   port,
   initialPath,
 }: {
   root: string;
-  port: number | null;
+  port: number;
   initialPath: string;
 }) {
   const [history, setHistory] = useState<PreviewHistory>({
@@ -302,7 +363,9 @@ function ReadyPreview({
     paths: [initialPath],
   });
   const [framePath, setFramePath] = useState(initialPath);
-  const [address, setAddress] = useState(initialPath);
+  const [address, setAddress] = useState(
+    formatSandboxPreviewAddress(port, initialPath)
+  );
   const [navigationError, setNavigationError] = useState("");
   const [locationNotice, setLocationNotice] = useState("");
   const [loading, setLoading] = useState(true);
@@ -315,7 +378,10 @@ function ReadyPreview({
   const source = previewTransportUrl(root, framePath);
   const openUrl = previewTransportUrl(root, currentPath);
 
-  useEffect(() => setAddress(currentPath), [currentPath]);
+  useEffect(
+    () => setAddress(formatSandboxPreviewAddress(port, currentPath)),
+    [currentPath, port]
+  );
 
   const observeLocation = useCallback(() => {
     if (pendingPath.current !== null) {
@@ -396,24 +462,24 @@ function ReadyPreview({
   const navigate = useCallback(
     (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      const path = parsePreviewPath(address);
+      const path = parseSandboxPreviewAddress(address, port);
       if (path === null || previewTransportUrl(root, path) === null) {
         setNavigationError(
-          "Enter a project path such as / or /settings. External addresses and parent paths are unavailable."
+          `Enter a project path or this sandbox app URL on port ${port}. Other hosts and ports are unavailable.`
         );
         return;
       }
-      setAddress(path);
+      setAddress(formatSandboxPreviewAddress(port, path));
       setHistory((previous) => recordPreviewPath(previous, path));
       loadPath(path);
     },
-    [address, loadPath, root]
+    [address, loadPath, port, root]
   );
 
   const move = useCallback(
     (delta: -1 | 1) => {
       const next = movePreviewHistory(history, delta);
-      const path = next.paths[next.index];
+      const path = next.paths.at(next.index);
       if (next === history || path === undefined) {
         return;
       }
@@ -446,11 +512,11 @@ function ReadyPreview({
           href={openUrl ?? root}
           rel="noopener noreferrer"
           target="_blank"
-          title={openUrl ?? root}
+          title={`Open sandbox app at ${formatSandboxPreviewAddress(port, currentPath)}`}
         >
-          {openUrl ?? root}
+          {formatSandboxPreviewAddress(port, currentPath)}
         </a>
-        {port && <span>Preview port {port}</span>}
+        <span>Sandbox app</span>
       </div>
       <div className={styles.chrome}>
         <button
@@ -474,15 +540,13 @@ function ReadyPreview({
         <form className={styles.addressForm} onSubmit={navigate}>
           <input
             aria-invalid={navigationError.length > 0}
-            aria-label="Preview project path"
+            aria-label="Sandbox app URL"
             autoComplete="off"
             className={styles.address}
             maxLength={2048}
             onChange={changeAddress}
             spellCheck={false}
-            title={
-              locationNotice || "Enter a path in this project and press Enter"
-            }
+            title={locationNotice || `Sandbox app address on port ${port}`}
             value={address}
           />
         </form>
@@ -560,9 +624,9 @@ function ReadyPreview({
       </div>
     </>
   );
-}
+});
 
-function PreviewView({
+const PreviewView = memo(function PreviewViewContent({
   buildSessionId,
   organizationId,
   projectId,
@@ -580,6 +644,7 @@ function PreviewView({
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
+  const [heartbeat, setHeartbeat] = useState(0);
 
   const start = useCallback(async () => {
     setStarting(true);
@@ -614,28 +679,43 @@ function PreviewView({
   // Poll while the relay is connecting. The API persists a run-scoped preview
   // lease and can reattach to the same sandbox after a process restart.
   useEffect(() => {
-    if (preview === null || preview.status !== "starting") {
+    if (
+      preview === null ||
+      (preview.status !== "starting" && preview.status !== "ready")
+    ) {
       return;
     }
-    const timer = setTimeout(() => {
-      const read = async () => {
-        try {
-          setPreview(
-            await request(
+    const timer = setTimeout(
+      () => {
+        const read = async () => {
+          try {
+            const next = await request(
               `/v1/previews/${preview.previewId}/status`,
               (value) => value as PreviewResponse
-            )
-          );
-        } catch {
-          await start();
-        }
-      };
-      read().catch(() => undefined);
-    }, 1500);
+            );
+            setPreview((previous) =>
+              JSON.stringify(previous) === JSON.stringify(next)
+                ? previous
+                : next
+            );
+          } catch (cause) {
+            setError(
+              cause instanceof Error
+                ? cause.message
+                : "Could not check the preview."
+            );
+          } finally {
+            setHeartbeat((value) => value + 1);
+          }
+        };
+        read().catch(() => undefined);
+      },
+      preview.status === "starting" ? 1500 : 30_000
+    );
     return () => clearTimeout(timer);
-  }, [preview, start]);
+  }, [preview, heartbeat]);
 
-  if (error.length > 0) {
+  if (error.length > 0 && preview?.status !== "ready") {
     return (
       <div className="panel-state">
         {error}
@@ -699,6 +779,11 @@ function PreviewView({
       </div>
     );
   }
+  if (preview.port === null) {
+    return (
+      <div className="panel-state">The sandbox app port is unavailable.</div>
+    );
+  }
   return (
     <ReadyPreview
       initialPath={initialPath}
@@ -707,15 +792,17 @@ function PreviewView({
       root={root}
     />
   );
-}
+});
 
 function AppPreviewContent(props: PanelProps) {
   const selection = props.previewSelection;
   return (
     <PreviewView
-      {...props}
+      buildSessionId={props.buildSessionId}
       initialPath={selection?.path ?? "/"}
-      key={`${props.buildSessionId}:${props.refreshKey ?? 0}:${selection?.runId ?? ""}:${selection?.sequence ?? 0}`}
+      key={`${props.buildSessionId}:${selection?.runId ?? ""}:${selection?.port ?? ""}`}
+      organizationId={props.organizationId}
+      projectId={props.projectId}
       runId={selection?.runId}
       selectedPort={selection?.port}
     />
@@ -767,7 +854,15 @@ function AppWorkspaceView(props: PanelProps) {
       <div className="workspace-tab-content" hidden={view !== "preview"}>
         <AppPreviewContent {...props} />
       </div>
-      {view === "files" && <FilesView {...props} />}
+      {view === "files" && (
+        <FilesView
+          buildSessionId={props.buildSessionId}
+          organizationId={props.organizationId}
+          projectId={props.projectId}
+          refreshKey={props.refreshKey}
+          visible={props.visible}
+        />
+      )}
       {view === "changes" && (
         <ChangesView scope={props} timeline={props.timeline} />
       )}
@@ -802,7 +897,15 @@ function WorkspaceViewContent({
     case "preview":
       return <AppWorkspaceView {...props} />;
     case "files":
-      return <FilesView {...props} />;
+      return (
+        <FilesView
+          buildSessionId={props.buildSessionId}
+          organizationId={props.organizationId}
+          projectId={props.projectId}
+          refreshKey={props.refreshKey}
+          visible={props.visible}
+        />
+      );
     case "changes":
       return <ChangesView scope={props} timeline={props.timeline} />;
     case "activity":
@@ -1001,6 +1104,7 @@ export function Panel(props: PanelProps) {
                   {...props}
                   onChoose={chooseTabView}
                   tab={tab}
+                  visible={state.activeId === tab.id}
                 />
               )}
             </div>

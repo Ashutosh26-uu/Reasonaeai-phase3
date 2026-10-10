@@ -7,6 +7,8 @@ import { createBrowserVerificationTool } from "../src/tools/browser-verification
 
 const METADATA_PATTERN = /metadata/i;
 const RESTRICTED_PATTERN = /restricted/i;
+const UNSELECTED_PORT_PATTERN = /not the app port selected for this run/i;
+const CLOUD_METADATA_PATTERN = /cloud metadata/i;
 const PROTOCOL_RELATIVE_PATTERN = /Protocol-relative URLs are forbidden/i;
 
 describe("createBrowserVerificationTool", () => {
@@ -141,6 +143,52 @@ describe("createBrowserVerificationTool", () => {
 
     expect(result.passed).toBe(true);
     expect(result.url).toBe(`http://127.0.0.1:${serverPort}/`);
+  });
+
+  it("routes this run's private sandbox app URL through its preview gateway", async () => {
+    const tool = createBrowserVerificationTool({
+      resolveRunSandboxPreview: async () => ({
+        appPort: 4173,
+        baseUrl: `http://127.0.0.1:${serverPort}/`,
+        previewId: "123e4567-e89b-12d3-a456-426614174000",
+        relayPort: 18_080,
+      }),
+    });
+    const results = await Promise.all(
+      ["http://172.17.0.4:4173/", "http://172.17.0.4:18080/"].map((url) =>
+        executeTool(tool, {
+          expectedTitle: "Preview Demo",
+          url,
+        })
+      )
+    );
+
+    expect(results.map((result) => result.passed)).toEqual([true, true]);
+    expect(results.map((result) => result.url)).toEqual([
+      `http://127.0.0.1:${serverPort}/`,
+      `http://127.0.0.1:${serverPort}/`,
+    ]);
+  });
+
+  it("does not route other private hosts or ports through this run's preview", async () => {
+    const tool = createBrowserVerificationTool({
+      resolveRunSandboxPreview: async () => ({
+        appPort: 4173,
+        baseUrl: `http://127.0.0.1:${serverPort}/`,
+        previewId: "123e4567-e89b-12d3-a456-426614174000",
+        relayPort: 18_080,
+      }),
+    });
+
+    await expect(
+      executeTool(tool, { url: "http://172.17.0.4:5432/" })
+    ).rejects.toThrow(RESTRICTED_PATTERN);
+    await expect(
+      executeTool(tool, { url: "http://172.17.0.4:3001/" })
+    ).rejects.toThrow(UNSELECTED_PORT_PATTERN);
+    await expect(
+      executeTool(tool, { url: "http://169.254.169.254:4173/" })
+    ).rejects.toThrow(CLOUD_METADATA_PATTERN);
   });
 
   it("scopes relative path with previewId when provided", async () => {

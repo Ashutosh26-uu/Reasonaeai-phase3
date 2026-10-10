@@ -1647,11 +1647,10 @@ export function Workspace({ onSignedOut, session }: WorkspaceProps) {
   }
   const heading = conversationHeading(active, conversationId);
   const project = projects.find((item) => item.projectId === projectId);
-  const renderedMessages = visibleHistory(
-    historyIdentity,
-    history,
-    messages
-  ).messages;
+  const renderedMessages = useMemo(
+    () => visibleHistory(historyIdentity, history, messages).messages,
+    [historyIdentity, history, messages]
+  );
   const completedVoiceTurn = projectTranscript(timeline, renderedMessages)
     .filter((turn) =>
       Object.values(timeline.runs[turn.id]?.events ?? {}).some(

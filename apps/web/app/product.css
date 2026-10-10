@@ -4874,3 +4874,20 @@
 .workspace-preview-address :where(span) {
   flex-shrink: 0;
 }
+
+.files-tree-group {
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+.files-tree-spacer {
+  display: inline-block;
+  flex: 0 0 12px;
+}
+.files-tree-group .files-row {
+  width: 100%;
+}
+.files-tree-group .files-row[data-kind="directory"] {
+  cursor: pointer;
+}

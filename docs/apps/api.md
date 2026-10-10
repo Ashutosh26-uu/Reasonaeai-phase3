@@ -1,6 +1,6 @@
 # `apps/api`
 
-**Status:** ✅ authenticated product control plane implemented and verified · 🟡 preview, deployment, and approval-resolution routes not yet built
+**Status:** ✅ authenticated product control plane and same-sandbox app preview routes implemented · 🟡 deployment and approval-resolution routes remain in progress
 **Owns:** `apps/api`
 **Owner role:** API Control Plane
 
@@ -17,6 +17,7 @@ Three responsibilities, deliberately separated in the code:
 | Compose configuration for Mastra | `src/mastra/index.ts`, `src/mastra/workspace.ts` |
 | Protect the public surface | `src/mastra/server.ts`, `src/mastra/principal.ts` |
 | Serve the product routes | `src/mastra/routes/*`, `src/mastra/run-event-fanout.ts`, `src/mastra/outbox-relay.ts` |
+| Serve HTTP and preview WebSocket upgrades | `src/server.ts`, `src/mastra/preview-websocket.ts` |
 
 Agent behaviour is **not** here. It lives in `@reasonateai/cto-runtime`. This application supplies storage, observability, model configuration, workspace, and the ingress policy.
 
@@ -27,6 +28,8 @@ Agent behaviour is **not** here. It lives in `@reasonateai/cto-runtime`. This ap
 | File | Responsibility |
 | --- | --- |
 | `src/mastra/index.ts` | Mastra instance: storage, observability, runtime registration, ingress denial, route registration, outbox relay |
+| `src/server.ts` | Hono/Mastra API server and shared HTTP/WebSocket listener |
+| `src/mastra/preview-websocket.ts` | Authenticated, bounded raw WebSocket tunnel to a ready preview's loopback relay |
 | `src/mastra/server.ts` | Blocked built-in route groups and the middleware that denies them |
 | `src/mastra/principal.ts` | Session cookie reading, principal resolution, typed error responses |
 | `src/mastra/middleware.ts` | CSRF pair verification and the `Origin` allowlist on state-changing requests |
@@ -68,7 +71,12 @@ POST   /v1/build-sessions/:buildSessionId/branches             branch through a 
 PUT    /v1/build-sessions/:buildSessionId/feedback             save or clear private answer feedback
 POST   /v1/build-sessions/:buildSessionId/runs/:runId/steering  request guidance for the active run
 GET    /v1/build-sessions/:buildSessionId/workspace/checkpoint-diff  read a saved turn's file diff
+GET    /v1/build-sessions/:buildSessionId/workspace/tree       read bounded live source, with saved-checkpoint fallback
+GET    /v1/build-sessions/:buildSessionId/workspace/file       read a literal workspace file under the same scope
 GET    /v1/build-sessions/:buildSessionId/events               follow the run's events (SSE)
+GET    /v1/previews/:previewId/*                               serve the authorized app; tunnel WebSocket upgrades to its selected port
+GET    /v1/previews/:previewId/status                          read scoped preview status
+DELETE /v1/previews/:previewId                                 stop the preview
 POST   /v1/artifacts  · GET /v1/artifacts                        record and list artifact metadata
 POST   /v1/artifacts/:artifactId/access · GET .../download       signed access and byte delivery
 ```
@@ -84,6 +92,8 @@ Branch accepts JSON `{ "runId": "completed-turn-id" }` with scoped authorization
 Steering accepts a strict `{ message }` body and an `Idempotency-Key` header, with organization/project query scope resolved against the authenticated membership and build session. Admission requires an active, uncancelled run and allows at most ten messages per run. A 202 response reports requested/delivering/delivered/failed status, not guaranteed model consumption. Only the current worker lease owner delivers the command; requested and delivery-result events are replayable through the same scoped ledger. Ambiguous delivery after takeover is recorded as failed rather than repeated.
 
 Checkpoint diffs require organization/project, run ID, terminal-event sequence, and a literal file path. The route authorizes the build session, validates that exact saved worker checkpoint, verifies its private bundle digest/commit, and returns a bounded textual diff or an explicit binary/oversized/unavailable state. It does not diff the latest mutable workspace. See `docs/operations/workspace-interactions.md` for rollout and verification limits.
+
+Workspace tree/file routes authorize the conversation before attaching its existing active or preview-retained sandbox. Tree responses identify `source: live|checkpoint` and truncation; file responses identify binary/truncated content. Reads exclude internal/dependency/cache paths and reject traversal, symlinks and special files. No read creates a sandbox. Live observations are fenced to the selected run and are not checkpoint or recovery authority. See `docs/operations/conversation-workspace.md` for bounds, polling and verification evidence.
 
 One SSE route carries two channels of different authority.
 
@@ -160,18 +170,19 @@ Generated code never receives a host Docker socket.
 ## Build and run
 
 ```bash
-pnpm --filter @reasonateai/api run dev     # Mastra dev server and Studio
-pnpm --filter @reasonateai/api run build   # .mastra/output
-pnpm --filter @reasonateai/api run start   # serve the built artifact
+pnpm --filter @reasonateai/api run dev     # Hono API with the Mastra route adapter
+pnpm --filter @reasonateai/api run build   # .mastra/output/server.mjs
+pnpm --filter @reasonateai/api run start   # serve the built API artifact
 ```
 
-The build is intentionally **not** cached by Turborepo. `mastra build` runs a package install into its output directory, which contains symlinked `node_modules`; caching it made Turbo archive that install, slowed the build past two minutes, emitted a tar warning about writing outside the directory, and risked restoring an artifact with no dependencies installed.
+The build is intentionally **not** cached by Turborepo. `mastra build` prepares the production dependency output; `scripts/build-server.mjs` bundles the shared HTTP entrypoint, including the raw preview WebSocket upgrade listener, to `.mastra/output/server.mjs`.
 
 ---
 
-## What is not built yet
+## Remaining work
 
-- **No preview, deployment, or approval-resolution routes.** The ledger already carries `preview.*`, `deployment.*`, and `approval.*` events, and the browser renders a parked approval, but no route decides one or promotes a checkpoint.
+- **Preview isolation and runtime acceptance remain incomplete.** HTTP and WebSocket previews share the product API origin and the relay is Docker-specific. Do not expose untrusted generated apps in a deployed environment until separate-origin isolation is implemented and verified. The WebSocket regression test is added but unrun at the user's request.
+- **No deployment or approval-resolution route.** The ledger carries `deployment.*` and `approval.*` events, but no route promotes a checkpoint or decides an approval.
 - **No cancellation route.** `run.cancel` exists in the command contract and nothing consumes it.
 - **Mastra storage is still LibSQL and DuckDB** for the composition root's own memory and observability, while the product's authoritative state is PostgreSQL through `@reasonateai/project-state`.
 - **Oversized tool output still spills to the host filesystem** rather than the artifact store, so `artifact://` does not yet resolve a durable artifact.
@@ -247,12 +258,12 @@ Generated code never receives a host Docker socket.
 ## Build and run
 
 ```bash
-pnpm --filter @reasonateai/api run dev     # Mastra dev server and Studio
-pnpm --filter @reasonateai/api run build   # .mastra/output
-pnpm --filter @reasonateai/api run start   # serve the built artifact
+pnpm --filter @reasonateai/api run dev     # Hono API with the Mastra route adapter
+pnpm --filter @reasonateai/api run build   # .mastra/output/server.mjs
+pnpm --filter @reasonateai/api run start   # serve the built API artifact
 ```
 
-The build is intentionally **not** cached by Turborepo. `mastra build` runs a package install into its output directory, which contains symlinked `node_modules`; caching it made Turbo archive that install, slowed the build past two minutes, emitted a tar warning about writing outside the directory, and risked restoring an artifact with no dependencies installed.
+The build is intentionally **not** cached by Turborepo. `mastra build` prepares the production dependency output; `scripts/build-server.mjs` bundles the shared HTTP entrypoint, including the raw preview WebSocket upgrade listener, to `.mastra/output/server.mjs`.
 
 ---
 

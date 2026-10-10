@@ -12,9 +12,18 @@ import {
 } from "@mastra/observability";
 import type { ArtifactStore } from "@reasonateai/artifact-store";
 import { createLocalArtifactStore } from "@reasonateai/artifact-store/local";
-import { PreviewIdSchema } from "@reasonateai/contracts/execution";
+import {
+  APP_PREVIEW_RELAY_PORT,
+  type PreviewId,
+  PreviewIdSchema,
+} from "@reasonateai/contracts/execution";
+import type { RunId } from "@reasonateai/contracts/identity";
 import { createReasonateCtoRuntime } from "@reasonateai/cto-runtime";
-import { sandboxIdFor } from "@reasonateai/cto-runtime/run-scope";
+import { readRunScope, sandboxIdFor } from "@reasonateai/cto-runtime/run-scope";
+import {
+  type RunSandboxPreviewTarget,
+  waitForRunSandboxPreview,
+} from "@reasonateai/cto-runtime/tools/run-preview";
 import {
   createProjectStateStore,
   type ProjectStateStore,
@@ -69,6 +78,7 @@ import {
   PREVIEW_ITEM_PATH,
   PREVIEW_PROXY_PATH,
   PREVIEW_STATUS_PATH,
+  type PreviewRouteDeps,
 } from "./routes/previews";
 import {
   createProjectHandlers,
@@ -279,6 +289,22 @@ const workspaceHandlers = createWorkspaceHandlers({
  */
 const previewService = createPreviewService({
   attachRunSandbox: async (scope) => await attachBuildSandbox(scope),
+  isBuildSessionActive: async (scope) => {
+    const session = await stateStore().getBuildSession(
+      scope,
+      scope.buildSessionId
+    );
+    if (!session) {
+      return false;
+    }
+    const run = await stateStore().getRun({ ...scope, runId: session.runId });
+    return (
+      run?.status === "queued" ||
+      run?.status === "leased" ||
+      run?.status === "running" ||
+      run?.status === "awaiting_approval"
+    );
+  },
   isRunActive: async (runId) => {
     const preview = await stateStore().previews.getByRun(runId);
     if (!preview) {
@@ -322,12 +348,13 @@ if (process.env.DATABASE_URL) {
 }
 await previewService.sweepOrphans();
 
-const previewHandlers = createPreviewHandlers({
+export const previewRouteDeps: PreviewRouteDeps = {
   frameOrigin: process.env.REASONATE_PREVIEW_FRAME_ORIGIN,
   previews: previewService,
   resolvePrincipal: resolvePrincipalFrom,
   store: stateStore,
-});
+};
+const previewHandlers = createPreviewHandlers(previewRouteDeps);
 
 /**
  * Transcription is resolved per request: a deployment with no ASR endpoint
@@ -360,17 +387,45 @@ const storage = new MastraCompositeStore({
   id: "composite-storage",
 });
 
+const previewSelections = new Map<
+  RunId,
+  { appPort: number; previewId: PreviewId }
+>();
+
 export const reasonateCtoRuntime = createReasonateCtoRuntime({
   ...buildSandboxEnvironment,
+  browserVerification: {
+    resolveRunSandboxPreview: (
+      requestContext
+    ): Promise<RunSandboxPreviewTarget | undefined> => {
+      const scope = readRunScope(requestContext);
+      const selection = previewSelections.get(scope.runId);
+      if (!selection) {
+        return Promise.resolve(undefined);
+      }
+      return waitForRunSandboxPreview({
+        loadPreview: async (previewId) =>
+          await stateStore().previews.get(previewId),
+        relayPort: APP_PREVIEW_RELAY_PORT,
+        scope,
+        selection,
+      });
+    },
+  },
   enableBrowserVerification: true,
   enableTestRunner: true,
   model: frontierModel,
   registerPreview: async ({ appPort, ...scope }) => {
-    if (await stateStore().previews.getByRun(scope.runId)) {
+    const existing = await stateStore().previews.getByRun(scope.runId);
+    if (existing) {
+      previewSelections.set(scope.runId, {
+        appPort,
+        previewId: existing.previewId,
+      });
       return;
     }
     const sandboxId = sandboxIdFor(scope);
-    await stateStore().previews.record({
+    const preview = await stateStore().previews.record({
       buildSessionId: scope.buildSessionId,
       containerName: sandboxId,
       detail: `Selected app port ${appPort}`,
@@ -380,6 +435,10 @@ export const reasonateCtoRuntime = createReasonateCtoRuntime({
       runId: scope.runId,
       sandboxId,
       status: "starting",
+    });
+    previewSelections.set(scope.runId, {
+      appPort,
+      previewId: preview.previewId,
     });
   },
   storage,

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { AgentControllerEvent } from "@mastra/core/agent-controller";
 import type { PromptAttachment } from "@reasonateai/contracts/execution";
+import { PreviewIdSchema } from "@reasonateai/contracts/execution";
 import {
   RunCheckpointSchema,
   type RunEventEnvelope,
@@ -12,6 +13,7 @@ import {
   SessionIdSchema,
   UserIdSchema,
 } from "@reasonateai/contracts/identity";
+import { sandboxIdFor } from "@reasonateai/cto-runtime/run-scope";
 import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
 import {
   afterAll,
@@ -166,6 +168,69 @@ describeWithDatabase("run execution", () => {
     volumes.push(allocated.volume);
     return allocated;
   }
+
+  it("publishes the final checkpoint and keeps the preview process alive after the turn ends", async () => {
+    const scripted = scriptedRuntime();
+    const allocated = await fixture("Build a preview");
+    const scope = candidateScope(allocated.candidate);
+    const executor = createExecutor({
+      harness,
+      holder: "worker-preview-survival",
+      runtime: scripted.runtime,
+    });
+    const attempt = executor.execute(allocated.candidate, createStopSignal());
+    const session = await scripted.waitForSession();
+    await Promise.race([
+      session.started,
+      attempt.then((outcome) => {
+        throw new Error(
+          `Run ended before startup: ${outcome}; ${harness.logs().join("\n")}`
+        );
+      }),
+    ]);
+    const sandbox = await resolveBuildSandbox({
+      requestContext: createRunRequestContext(scope),
+    });
+    const started = await sandbox.executeCommand?.(
+      "node -e \"require('node:fs').writeFileSync('app.cjs', \\\"require('node:http').createServer((req,res)=>res.end('still running')).listen(5191,'127.0.0.1')\\\")\"\nnohup node app.cjs >/tmp/app.log 2>&1 </dev/null &"
+    );
+    expect(started?.success).toBe(true);
+    await harness.store.previews.record({
+      ...scope,
+      containerName: sandboxIdFor(scope),
+      previewId: PreviewIdSchema.parse(randomUUID()),
+      sandboxId: sandboxIdFor(scope),
+      status: "starting",
+    });
+    await expect
+      .poll(
+        async () =>
+          (
+            await sandbox.executeCommand?.(
+              "node -e \"fetch('http://127.0.0.1:5191').then(r=>r.text()).then(t=>process.stdout.write(t))\""
+            )
+          )?.stdout
+      )
+      .toBe("still running");
+    session.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await attempt).toBe("succeeded");
+    const checkpoint = (await ledger(harness, allocated)).findLast(
+      (event) =>
+        event.type === "run.completed" && event.payload.outcome === "succeeded"
+    );
+    expect(checkpoint?.payload.checkpointId).toEqual(expect.any(String));
+    expect(checkpoint?.payload.checkpoint).toMatchObject({
+      status: "available",
+    });
+    expect(await containerCount(allocated.volume)).toBe(1);
+    expect(
+      (
+        await sandbox.executeCommand?.(
+          "node -e \"fetch('http://127.0.0.1:5191').then(r=>r.text()).then(t=>process.stdout.write(t))\""
+        )
+      )?.stdout
+    ).toBe("still running");
+  });
 
   it("forwards durable user attachments into the Mastra session", async () => {
     const attachment = {
@@ -504,6 +569,14 @@ describeWithDatabase("run execution", () => {
       createStopSignal()
     );
     const resumeSession = await resumeScripted.waitForSession();
+    // Session allocation precedes Docker restore/startup. Await the real
+    // startup boundary before measuring delivery of the saved answer.
+    await Promise.race([
+      resumeSession.started,
+      resumeAttempt.then((result) => {
+        throw new Error(`Resume ended before startup: ${result}`);
+      }),
+    ]);
     await vi.waitFor(
       () => {
         expect(resumeSession.lastResumeData).toBe("us-east-1");
@@ -620,6 +693,12 @@ describeWithDatabase("run execution", () => {
       createStopSignal()
     );
     const resumeSession = await resumeScripted.waitForSession();
+    await Promise.race([
+      resumeSession.started,
+      resumeAttempt.then((result) => {
+        throw new Error(`Resume ended before startup: ${result}`);
+      }),
+    ]);
     await vi.waitFor(
       () => {
         expect(resumeSession.lastResumeData).toBe("Choice-B");
@@ -1042,11 +1121,15 @@ describeWithDatabase("run execution", () => {
     );
 
     const terminal = (await ledger(harness, allocated)).at(-1);
-    expect(terminal?.type).toBe("run.failed");
-    expect(terminal?.payload.checkpoint).toMatchObject({
-      added: 1,
-      removed: 0,
-      status: "available",
+    expect(terminal).toMatchObject({
+      payload: {
+        checkpoint: {
+          added: 1,
+          removed: 0,
+          status: "available",
+        },
+      },
+      type: "run.failed",
     });
     expect(String(terminal?.payload.reason)).toContain(
       "the provider refused the run"
