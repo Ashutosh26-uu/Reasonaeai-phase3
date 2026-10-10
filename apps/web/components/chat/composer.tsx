@@ -1196,10 +1196,8 @@ export function Composer({
         />
         <VoiceBeam
           active={listening}
-          colorVariant="mono"
           processing={voice.transcribing}
           strength={0.9}
-          theme={beamTheme}
           type="default"
         >
           <BorderBeam
@@ -1207,7 +1205,7 @@ export function Composer({
             className={styles.beam ?? ""}
             colorVariant="colorful"
             saturation={1.5}
-            size="line"
+            size="md"
             strength={1}
             theme={beamTheme}
           >

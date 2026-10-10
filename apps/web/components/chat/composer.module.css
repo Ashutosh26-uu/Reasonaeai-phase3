@@ -10,7 +10,6 @@
 }
 
 .beam {
-  --beam-stroke-opacity: 4;
   position: relative;
   z-index: 2;
 }
