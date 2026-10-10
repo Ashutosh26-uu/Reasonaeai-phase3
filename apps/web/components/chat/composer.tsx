@@ -1205,8 +1205,8 @@ export function Composer({
           <BorderBeam
             brightness={2}
             className={styles.beam ?? ""}
-            colorVariant="mono"
-            saturation={0}
+            colorVariant="colorful"
+            saturation={1.5}
             size="line"
             strength={1}
             theme={beamTheme}
