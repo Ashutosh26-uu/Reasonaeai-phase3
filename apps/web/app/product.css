@@ -30,10 +30,13 @@
   --overlay-gradient: linear-gradient(0deg, var(--bg) 5%, transparent 60%);
 
   /* Typography */
-  --font-display: "Syne", sans-serif;
-  --font-body:
-    "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    sans-serif;
+  --font-display:
+    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display",
+    "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-sans:
+    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+    "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-body: var(--font-sans);
   --font-mono:
     "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     monospace;
@@ -1889,18 +1892,11 @@
 .empty-title {
   margin: 0 0 10px;
   font-family: var(--font-display);
-  font-size: clamp(32px, 5vw, 44px);
-  font-weight: 800;
-  line-height: 0.92;
+  font-size: clamp(28px, 4.5vw, 38px);
+  font-weight: 700;
+  line-height: 1.15;
   color: var(--text);
-  letter-spacing: -0.03em;
-  transition: text-shadow 0.4s var(--ease);
-}
-
-.empty-title:hover {
-  text-shadow:
-    1px 0 var(--cyan),
-    -1px 0 var(--orange);
+  letter-spacing: -0.025em;
 }
 
 .empty-note {
@@ -1927,11 +1923,12 @@
   align-items: center;
   height: 36px;
   padding: 0 16px;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
+  text-transform: none;
+  letter-spacing: normal;
   cursor: pointer;
   background: var(--glass);
   border: 1px solid var(--border);
@@ -2423,10 +2420,11 @@
 .gate-title {
   margin: 0 0 10px;
   font-family: var(--font-display);
-  font-size: 28px;
-  font-weight: 800;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.2;
   color: var(--text);
-  letter-spacing: -0.03em;
+  letter-spacing: -0.02em;
 }
 
 .gate-note {
@@ -2443,17 +2441,18 @@
 }
 
 .gate-label {
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
+  text-transform: none;
+  letter-spacing: normal;
 }
 
 .gate-input {
   height: 44px;
   padding: 0 14px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 14px;
   color: var(--text);
   outline: none;
@@ -2479,12 +2478,12 @@
   justify-content: center;
   height: 44px;
   margin-top: 8px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 700;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
   color: #050507;
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
+  text-transform: none;
+  letter-spacing: normal;
   cursor: pointer;
   background: var(--lime);
   border: 0;
@@ -3766,8 +3765,9 @@
   margin: 0;
   font-family: var(--font-display);
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text);
+  letter-spacing: -0.01em;
 }
 
 .settings-profile-head,
@@ -3786,12 +3786,12 @@
 .settings-field-label {
   display: block;
   margin: 0 0 7px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
+  text-transform: none;
+  letter-spacing: normal;
 }
 
 .settings-label-spaced {
@@ -3803,8 +3803,8 @@
   min-width: 0;
   min-height: 44px;
   padding: 10px 14px;
-  font-family: var(--font-mono);
-  font-size: 13px;
+  font-family: var(--font-sans);
+  font-size: 13.5px;
   color: var(--text);
   outline: none;
   background: transparent;
@@ -3883,12 +3883,12 @@
   justify-content: center;
   min-height: 38px;
   padding: 10px 22px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 700;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
   color: #050507;
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
+  text-transform: none;
+  letter-spacing: normal;
   cursor: pointer;
   background: var(--lime);
   border: 1px solid var(--lime);
@@ -3911,12 +3911,12 @@
   justify-content: center;
   min-height: 38px;
   padding: 10px 22px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 700;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
   color: var(--orange);
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
+  text-transform: none;
+  letter-spacing: normal;
   cursor: pointer;
   background: transparent;
   border: 1px solid var(--orange);
@@ -3979,7 +3979,7 @@
   align-items: flex-start;
   min-height: 92px;
   padding: 14px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   color: var(--text-muted);
   text-align: left;
   cursor: pointer;
@@ -4427,12 +4427,12 @@
   white-space: normal;
 }
 .rail-menu-eyebrow {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 700;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
   color: var(--lime);
   text-transform: uppercase;
-  letter-spacing: 0.15em;
+  letter-spacing: 0.06em;
 }
 .rail-menu-org-name {
   overflow: hidden;
@@ -4456,8 +4456,9 @@
   place-items: center;
   width: 22px;
   height: 22px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11px;
+  font-weight: 600;
   color: #050507;
   background: var(--lime);
   border-radius: 6px;
@@ -4509,7 +4510,8 @@
   margin: 0;
   font-family: var(--font-display);
   font-size: 18px;
-  font-weight: 700;
+  font-weight: 600;
+  letter-spacing: -0.015em;
 }
 .rail-project-dialog-head p {
   margin: 4px 0 0;

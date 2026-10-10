@@ -125,12 +125,12 @@
   gap: 4px;
   align-items: center;
   padding: 2px 8px;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  font-weight: 700;
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 600;
   line-height: 1.2;
   text-transform: uppercase;
-  letter-spacing: 0.15em;
+  letter-spacing: 0.04em;
   border-radius: 100px;
 }
 

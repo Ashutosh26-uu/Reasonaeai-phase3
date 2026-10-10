@@ -25,7 +25,7 @@ export function NetworkBanner() {
       role="status"
     >
       <div
-        className={`pointer-events-auto flex items-center gap-2.5 rounded-full border px-4 py-1.5 font-mono text-xs shadow-none backdrop-blur-xl transition-colors ${
+        className={`pointer-events-auto flex items-center gap-2.5 rounded-full border px-4 py-1.5 font-medium font-sans text-xs shadow-none backdrop-blur-xl transition-colors ${
           isRestored
             ? "border-[rgba(214,255,87,0.3)] bg-[#0a0a0d]/95 text-[#d6ff57]"
             : "border-[rgba(255,77,0,0.3)] bg-[#0a0a0d]/95 text-[#edede9]"

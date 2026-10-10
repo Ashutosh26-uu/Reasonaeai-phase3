@@ -35,11 +35,12 @@
 
 .onb-progress {
   margin: 0 0 6px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: 11px;
+  font-weight: 600;
   color: var(--lime);
   text-transform: uppercase;
-  letter-spacing: 0.15em;
+  letter-spacing: 0.06em;
 }
 
 .onb-title {
@@ -179,12 +180,12 @@
 .onb-primary {
   height: 42px;
   padding: 0 24px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 700;
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  font-weight: 600;
   color: #050507;
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
+  text-transform: none;
+  letter-spacing: normal;
   cursor: pointer;
   background: var(--lime);
   border: 0;
@@ -207,11 +208,12 @@
 .onb-skip {
   padding: 6px 10px;
   margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
   color: var(--ink-3);
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
+  text-transform: none;
+  letter-spacing: normal;
   cursor: pointer;
   background: none;
   border: 0;

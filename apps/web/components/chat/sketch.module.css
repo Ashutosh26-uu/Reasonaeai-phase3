@@ -326,8 +326,8 @@
   z-index: 2;
   width: 46px;
   height: 46px;
-  font-family: var(--font-mono);
-  font-weight: 700;
+  font-family: var(--font-sans);
+  font-weight: 600;
   color: #050507;
   background: var(--lime);
   border-radius: 100px;

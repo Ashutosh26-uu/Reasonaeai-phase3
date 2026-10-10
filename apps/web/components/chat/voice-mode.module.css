@@ -273,11 +273,11 @@
   justify-content: center;
   min-height: 44px;
   padding: 12px 24px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: normal;
   cursor: pointer;
   border-radius: 100px;
   transition:

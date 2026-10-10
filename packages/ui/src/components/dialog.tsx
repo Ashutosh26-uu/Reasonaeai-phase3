@@ -124,7 +124,7 @@ function DialogTitle({
   return (
     <DialogPrimitive.Title
       className={cn(
-        "font-['Syne'] font-bold text-[var(--text)] text-lg leading-tight tracking-tight",
+        "font-display font-semibold text-[var(--text)] text-lg leading-snug tracking-tight",
         className
       )}
       data-slot="dialog-title"
@@ -140,7 +140,7 @@ function DialogDescription({
   return (
     <DialogPrimitive.Description
       className={cn(
-        "font-['Space_Grotesk'] text-[var(--text-muted)] text-sm leading-relaxed",
+        "font-sans text-[var(--text-muted)] text-sm leading-relaxed",
         className
       )}
       data-slot="dialog-description"
