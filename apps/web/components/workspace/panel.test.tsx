@@ -123,7 +123,7 @@ describe("FilesView component", () => {
       />
     );
 
-    expect(html).toContain("Reading the project&#x27;s latest checkpoint");
+    expect(html).toContain("project&#x27;s workspace");
   });
 
   it("renders empty state when checkpoint has no files", () => {
@@ -134,6 +134,7 @@ describe("FilesView component", () => {
           checkpointId: "cp-empty",
           commit: "",
           files: [],
+          source: "checkpoint",
           truncated: false,
         }}
         organizationId="org-1"
@@ -142,9 +143,7 @@ describe("FilesView component", () => {
       />
     );
 
-    expect(html).toContain(
-      "No checkpoint yet. The project&#x27;s files appear here"
-    );
+    expect(html).toContain("Files appear here as the agent creates them.");
   });
 
   it("renders accessible 'Export ZIP' / 'Download Source' button with Download icon when files exist", () => {
@@ -158,6 +157,7 @@ describe("FilesView component", () => {
             { bytes: 120, kind: "file", path: "src/main.ts" },
             { bytes: 45, kind: "file", path: "package.json" },
           ],
+          source: "checkpoint",
           truncated: false,
         }}
         organizationId="org-1"

@@ -16,9 +16,12 @@ import {
   type RunCheckpoint,
   RunCheckpointSchema,
   type RunEventEnvelope,
+  WORKSPACE_READ_EXCLUDED_SEGMENTS,
+  WorkspaceFileSchema,
   type WorkspaceRestoreRequest,
   WorkspaceRestoreRequestSchema,
   WorkspaceRestoreResponseSchema,
+  WorkspaceTreeSchema,
 } from "@reasonateai/contracts/execution-protocol";
 import {
   type OrganizationId,
@@ -44,12 +47,17 @@ import {
 } from "@reasonateai/sandbox/checkpoint";
 import { z } from "zod";
 import { conversationCheckpoint } from "../conversation-checkpoint";
+import { readLiveWorkspace } from "../live-workspace";
 import {
   apiErrorResponse,
   readCookie,
   unauthenticatedResponse,
 } from "../principal";
-import { checkpointSandboxFor, createBuildSandbox } from "../workspace";
+import {
+  attachBuildSandbox,
+  checkpointSandboxFor,
+  createBuildSandbox,
+} from "../workspace";
 import {
   restoreWorkspace,
   WorkspaceRestoreFailure,
@@ -167,13 +175,11 @@ const CLONE_ROOT = join(
  * file read refuses them, and both compare the path's first segment against
  * this table so the two answers cannot drift apart.
  */
-const EXCLUDED_SEGMENTS: Record<string, true> = {
-  ".cache": true,
-  ".git": true,
-  ".npm": true,
-  ".reasonate": true,
-  node_modules: true,
-};
+const EXCLUDED_SEGMENTS: ReadonlySet<string> = new Set(
+  WORKSPACE_READ_EXCLUDED_SEGMENTS
+);
+const isExcludedPath = (path: string) =>
+  path.split(PATH_SEPARATOR).some((segment) => EXCLUDED_SEGMENTS.has(segment));
 
 /** A path separator under either platform's spelling. */
 const PATH_SEPARATOR = /[\\/]+/;
@@ -244,7 +250,7 @@ function workspacePathSchema(maximum: number) {
     .refine((path) => !path.split(PATH_SEPARATOR).includes(".."), {
       message: "A workspace path may not traverse upwards.",
     })
-    .refine((path) => !EXCLUDED_SEGMENTS[path.split(PATH_SEPARATOR)[0] ?? ""], {
+    .refine((path) => !isExcludedPath(path), {
       message: "That part of the workspace is not exposed.",
     });
 }
@@ -266,45 +272,6 @@ const WorkspaceExportQuerySchema = z.strictObject({
   projectId: ProjectIdSchema,
   projectName: z.string().max(256).optional(),
 });
-
-const WorkspaceEntrySchema = z.strictObject({
-  bytes: z.number().int().nonnegative(),
-  kind: z.enum(["directory", "file"]),
-  path: z.string().min(1).max(4096),
-});
-
-const WorkspaceTreeSchema = z.strictObject({
-  checkpointId: z.string().max(512),
-  commit: z.string().max(128),
-  files: z.array(WorkspaceEntrySchema),
-  truncated: z.boolean(),
-});
-
-/**
- * The text answer. A file is either small enough and printable, or it is
- * reported as binary with no body at all: a partial body of an image or of a
- * minified bundle is not a preview, and a client that frames it as text would
- * be shown noise.
- */
-const WorkspaceTextFileSchema = z.strictObject({
-  binary: z.literal(false),
-  bytes: z.number().int().nonnegative(),
-  path: z.string().min(1).max(1024),
-  text: z.string(),
-  truncated: z.boolean(),
-});
-
-const WorkspaceBinaryFileSchema = z.strictObject({
-  binary: z.literal(true),
-  bytes: z.number().int().nonnegative(),
-  path: z.string().min(1).max(1024),
-  text: z.literal(""),
-});
-
-const WorkspaceFileSchema = z.discriminatedUnion("binary", [
-  WorkspaceTextFileSchema,
-  WorkspaceBinaryFileSchema,
-]);
 
 type WorkspaceFileAnswer = z.infer<typeof WorkspaceFileSchema>;
 
@@ -738,10 +705,12 @@ async function resolveWorkspaceSandbox(
     projectId: scope.projectId,
     runId,
   });
-  await createdSandbox.start();
+  const started = await createdSandbox.start();
   return {
     dispose: async () => {
-      await createdSandbox.destroy();
+      if (started.outcome === "created") {
+        await createdSandbox.destroy();
+      }
     },
     sandbox: checkpointSandboxFor(createdSandbox),
   };
@@ -820,7 +789,15 @@ async function readWorkspaceFile(input: {
     };
   }
   if (bytes > MAX_TEXT_BYTES) {
-    return { answer: { binary: true, bytes, path: input.path, text: "" } };
+    return {
+      answer: {
+        binary: true,
+        bytes,
+        path: input.path,
+        text: "",
+        truncated: false,
+      },
+    };
   }
 
   const body = await runGit(
@@ -837,6 +814,7 @@ async function readWorkspaceFile(input: {
         bytes: body.stdout.byteLength,
         path: input.path,
         text: "",
+        truncated: false,
       },
     };
   }
@@ -987,6 +965,43 @@ async function readCheckpointDiff({
     return gitFailure(rid, patch.stderr);
   }
   return answer(patch.stdout.toString("utf8"));
+}
+
+async function liveWorkspaceRead(
+  deps: WorkspaceRouteDeps,
+  scope: TenantScope,
+  buildSessionId: BuildSessionId,
+  path?: string
+) {
+  const store = deps.store();
+  const session = await store.getBuildSession(scope, buildSessionId);
+  if (!session) {
+    return;
+  }
+  const run = await store.getRun({ ...scope, runId: session.runId });
+  const preview = await store.previews.getByRun(session.runId);
+  const active =
+    run?.status === "running" || run?.status === "awaiting_approval";
+  const retained =
+    preview?.status === "ready" || preview?.status === "starting";
+  if (!(active || retained)) {
+    return;
+  }
+  const sandbox = await attachBuildSandbox({
+    ...scope,
+    buildSessionId,
+    runId: session.runId,
+  });
+  if (!sandbox) {
+    return;
+  }
+  const value = await readLiveWorkspace(sandbox, path);
+  // A new turn or history action may have changed this conversation during I/O.
+  const current = await store.getBuildSession(scope, buildSessionId);
+  if (current?.runId !== session.runId) {
+    throw new Error("The workspace changed while reading. Retry the request.");
+  }
+  return value;
 }
 
 function isValidCsrf(input: {
@@ -1325,6 +1340,16 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
         return refusal;
       }
 
+      const live = await liveWorkspaceRead(
+        deps,
+        query.data,
+        buildSessionId.data,
+        query.data.path
+      );
+      if (live) {
+        return c.json(WorkspaceFileSchema.parse(live), 200);
+      }
+
       const checkpoint = await conversationCheckpoint({
         buildSessionId: buildSessionId.data,
         checkpoints,
@@ -1343,7 +1368,7 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
       }
 
       const { path } = query.data;
-      if (checkpoint.empty) {
+      if (checkpoint.empty === true) {
         return apiErrorResponse({
           code: "not_found",
           message: "This file did not exist before the selected turn.",
@@ -1504,6 +1529,15 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
         return refusal;
       }
 
+      const live = await liveWorkspaceRead(
+        deps,
+        scope.data,
+        buildSessionId.data
+      );
+      if (live) {
+        return c.json(WorkspaceTreeSchema.parse(live), 200);
+      }
+
       const checkpoint = await conversationCheckpoint({
         buildSessionId: buildSessionId.data,
         checkpoints,
@@ -1522,7 +1556,7 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
         );
       }
 
-      if (checkpoint.empty) {
+      if (checkpoint.empty === true) {
         return c.json(
           WorkspaceTreeSchema.parse({
             checkpointId: checkpoint.checkpointId,
@@ -1562,10 +1596,7 @@ export function createWorkspaceHandlers(deps: WorkspaceRouteDeps) {
       // Sorting before the cap makes the cut deterministic: the same
       // checkpoint always reports the same first entries.
       const files = parseTreeRecords(listing.stdout.toString("utf8"))
-        .filter(
-          (entry) =>
-            !EXCLUDED_SEGMENTS[entry.path.split(PATH_SEPARATOR)[0] ?? ""]
-        )
+        .filter((entry) => !isExcludedPath(entry.path))
         .sort((left, right) =>
           left.path < right.path ? -1 : Number(left.path > right.path)
         );

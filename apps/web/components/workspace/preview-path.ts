@@ -3,6 +3,7 @@ const MAX_HISTORY_ENTRIES = 100;
 const SCHEME = /^[a-z][a-z\d+.-]*:/i;
 const ENCODED_SEPARATOR = /%(?:2f|5c)/i;
 const PATH_BOUNDARY = /[?#]/;
+const TRAILING_SLASHES = /\/+$/;
 const LEADING_SLASHES = /^\/+/;
 
 function hasUnsafeCharacters(value: string): boolean {
@@ -49,6 +50,45 @@ export function parsePreviewPath(input: string): string | null {
     }
   }
   return null;
+}
+
+/** Show the selected app's sandbox address while requests use the preview gateway. */
+export function formatSandboxPreviewAddress(
+  port: number,
+  route: string
+): string {
+  const path = parsePreviewPath(route) ?? "/";
+  return `http://localhost:${port}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+/** Accept only a project path or the selected app's own loopback URL. */
+export function parseSandboxPreviewAddress(
+  input: string,
+  appPort: number
+): string | null {
+  const trimmed = input.trim();
+  if (!SCHEME.test(trimmed)) {
+    return parsePreviewPath(trimmed);
+  }
+  try {
+    const address = new URL(trimmed);
+    if (
+      address.protocol !== "http:" ||
+      !["localhost", "127.0.0.1", "[::1]", "::1"].includes(
+        address.hostname.toLowerCase()
+      ) ||
+      Number(address.port) !== appPort ||
+      address.username ||
+      address.password
+    ) {
+      return null;
+    }
+    return parsePreviewPath(
+      `${address.pathname}${address.search}${address.hash}`
+    );
+  } catch {
+    return null;
+  }
 }
 
 /** The server-issued root stays private to transport and cannot be edited. */
@@ -105,16 +145,18 @@ export function observedPreviewPath(root: string, href: string): string | null {
   try {
     const base = new URL(root);
     const location = new URL(href);
+    const rootAlias =
+      location.pathname === base.pathname.replace(TRAILING_SLASHES, "");
     if (
       location.origin !== base.origin ||
       location.username ||
       location.password ||
-      !location.pathname.startsWith(base.pathname)
+      !(rootAlias || location.pathname.startsWith(base.pathname))
     ) {
       return null;
     }
     return parsePreviewPath(
-      `/${location.pathname.slice(base.pathname.length)}${location.search}${location.hash}`
+      `/${rootAlias ? "" : location.pathname.slice(base.pathname.length)}${location.search}${location.hash}`
     );
   } catch {
     return null;

@@ -10,6 +10,8 @@ const RELAY_PATH = "/tmp/reasonate-preview-relay.cjs";
 const RELAY_LOG = "/tmp/reasonate-preview-relay.log";
 const RELAY_READY_PATH = "/tmp/reasonate-preview-relay.ready";
 const RELAY_PID_PATH = "/tmp/reasonate-preview-relay.pid";
+const RELAY_ERROR_PATH = "/tmp/reasonate-preview-relay.error";
+const RELAY_LOCK_PATH = "/tmp/reasonate-preview-relay.lock";
 
 /** Probe only listening sockets inside the assigned preview sandbox, never host URLs. */
 export async function discoverPreviewApp(
@@ -80,11 +82,12 @@ export async function connectPreviewApp(
   const code = `
 const fs = require('node:fs');
 const http = require('node:http');
+const net = require('node:net');
 const os = require('node:os');
 const addresses = Object.values(os.networkInterfaces()).flat().filter(Boolean);
 const address = addresses.find(item => item.family === 'IPv4' && !item.internal)?.address;
 if (!address) throw new Error('Preview network interface unavailable');
-http.createServer((request, response) => {
+const server = http.createServer((request, response) => {
   const upstream = http.request({ hostname: ${JSON.stringify(app.host)}, port: ${app.port}, path: ${JSON.stringify(prefix)} + (request.url || "/"), method: request.method, headers: request.headers }, result => {
     response.writeHead(result.statusCode || 502, result.headers);
     result.pipe(response);
@@ -94,7 +97,67 @@ http.createServer((request, response) => {
   upstream.on('error', () => { if (!response.headersSent) response.writeHead(502, { 'x-reasonate-preview-upstream': 'unavailable' }); response.end('The app server is unavailable.'); });
   response.on('close', () => upstream.destroy());
   request.pipe(upstream);
-}).listen(${publishedPort}, address, () => {
+});
+server.on('upgrade', (request, socket, head) => {
+  const requestPath = request.url || '/';
+  const path = ${JSON.stringify(prefix)} + requestPath;
+  if (!path.startsWith('/') || /[\\r\\n]/.test(path)) {
+    socket.end('HTTP/1.1 400 Bad Request\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n');
+    return;
+  }
+  const upstream = net.connect({ host: ${JSON.stringify(app.host)}, port: ${app.port} });
+  let closed = false;
+  let responseStarted = false;
+  let connectTimer;
+  const fail = () => {
+    if (closed) return;
+    closed = true;
+    clearTimeout(connectTimer);
+    if (!responseStarted && !socket.destroyed && !socket.writableEnded) {
+      socket.end('HTTP/1.1 502 Bad Gateway\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n');
+    } else {
+      socket.destroy();
+    }
+    upstream.destroy();
+  };
+  connectTimer = setTimeout(fail, 5000);
+  upstream.once('connect', () => {
+    clearTimeout(connectTimer);
+    if (socket.destroyed) { upstream.destroy(); return; }
+    const blocked = new Set(['connection', 'host', 'upgrade', 'cookie', 'authorization', 'proxy-authorization', 'proxy-connection', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto']);
+    for (const token of (request.headers.connection || '').split(',')) {
+      if (token.trim()) blocked.add(token.trim().toLowerCase());
+    }
+    const lines = [(request.method || 'GET') + ' ' + path + ' HTTP/' + request.httpVersion];
+    const headers = new Map();
+    for (let index = 0; index < request.rawHeaders.length; index += 2) {
+      const name = request.rawHeaders[index];
+      const lowerName = name.toLowerCase();
+      if (blocked.has(lowerName)) continue;
+      const values = headers.get(lowerName) || [];
+      values.push([name, request.rawHeaders[index + 1]]);
+      headers.set(lowerName, values);
+    }
+    const host = ${JSON.stringify(app.host)}.includes(':') ? '[' + ${JSON.stringify(app.host)} + ']' : ${JSON.stringify(app.host)};
+    lines.push('Host: ' + host + ':' + ${app.port});
+    lines.push('Connection: Upgrade');
+    lines.push('Upgrade: websocket');
+    for (const values of headers.values()) for (const [name, value] of values) lines.push(name + ': ' + value);
+    upstream.write(lines.join('\\r\\n') + '\\r\\n\\r\\n');
+    if (head.length > 0) upstream.write(head);
+    socket.pipe(upstream);
+    upstream.pipe(socket);
+  });
+  upstream.on('data', () => { responseStarted = true; });
+  upstream.once('error', fail);
+  socket.once('error', () => upstream.destroy());
+  socket.once('close', () => { closed = true; clearTimeout(connectTimer); upstream.destroy(); });
+  upstream.once('close', () => { if (!socket.destroyed && !socket.writableEnded) socket.end(); });
+});
+server.on('error', error => {
+  try { fs.writeFileSync(${JSON.stringify(RELAY_ERROR_PATH)}, String(error.message).slice(0, 400)); } catch {}
+});
+server.listen(${publishedPort}, address, () => {
   try { fs.writeFileSync(${JSON.stringify(RELAY_PID_PATH)}, String(process.pid)); } catch {}
   fs.writeFileSync(${JSON.stringify(RELAY_READY_PATH)}, ${JSON.stringify(readyToken)});
 });
@@ -102,20 +165,64 @@ http.createServer((request, response) => {
   const written = await sandbox.runCommand({
     args: [
       "-e",
-      `const fs = require('node:fs');
+      `(async () => {
+const fs = require('node:fs');
+const relayPath = ${JSON.stringify(RELAY_PATH)};
+const lockPath = ${JSON.stringify(RELAY_LOCK_PATH)};
+const lockDeadline = Date.now() + 8000;
+let lockFd;
+while (lockFd === undefined && Date.now() < lockDeadline) {
+  try {
+    lockFd = fs.openSync(lockPath, 'wx');
+    fs.writeSync(lockFd, String(process.pid));
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    try {
+      const lockPid = Number.parseInt(fs.readFileSync(lockPath, 'utf8'), 10);
+      let alive = false;
+      try { process.kill(lockPid, 0); alive = true; } catch (probeError) { alive = probeError.code !== 'ESRCH'; }
+      const stale = !alive && Number.isSafeInteger(lockPid) && lockPid > 1;
+      const abandoned = Date.now() - fs.statSync(lockPath).mtimeMs > 10000;
+      if (stale || abandoned) fs.rmSync(lockPath, { force: true });
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+}
+if (lockFd === undefined) throw new Error('Another preview relay startup is still in progress.');
 try {
-  const oldPid = parseInt(fs.readFileSync(${JSON.stringify(RELAY_PID_PATH)}, 'utf8'), 10);
-  if (oldPid && !Number.isNaN(oldPid)) process.kill(oldPid);
-} catch {}
+let oldPid;
+try { oldPid = Number.parseInt(fs.readFileSync(${JSON.stringify(RELAY_PID_PATH)}, 'utf8'), 10); } catch {}
+if (Number.isSafeInteger(oldPid) && oldPid > 1) {
+  const commandLine = () => { try { return fs.readFileSync('/proc/' + oldPid + '/cmdline', 'utf8').split('\\0'); } catch { return []; } };
+  const ownsRelay = () => commandLine().some(argument => argument === relayPath || argument.endsWith('/reasonate-preview-relay.cjs'));
+  if (ownsRelay()) {
+    try { process.kill(oldPid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+    const deadline = Date.now() + 3000;
+    while (ownsRelay() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+    if (ownsRelay()) throw new Error('The previous preview relay did not exit before restart.');
+  }
+}
 fs.rmSync(${JSON.stringify(RELAY_READY_PATH)}, { force: true });
+fs.rmSync(${JSON.stringify(RELAY_ERROR_PATH)}, { force: true });
 fs.rmSync(${JSON.stringify(RELAY_PID_PATH)}, { force: true });
-fs.writeFileSync(${JSON.stringify(RELAY_PATH)}, ${JSON.stringify(code)});`,
+fs.writeFileSync(${JSON.stringify(RELAY_LOG)}, '');
+fs.writeFileSync(relayPath, ${JSON.stringify(code)});
+} finally {
+  fs.closeSync(lockFd);
+  fs.rmSync(lockPath, { force: true });
+}
+})().catch(error => { process.stderr.write(String(error.message || error).slice(0, 400)); process.exitCode = 1; });`,
     ],
     command: "node",
-    timeoutMs: 5000,
+    timeoutMs: 10_000,
   });
   if (written.exitCode !== 0) {
-    throw new Error("The preview port relay could not be prepared.");
+    const detail = written.stderr.trim().slice(0, 400);
+    throw new Error(
+      detail
+        ? `The preview port relay could not be prepared: ${detail}`
+        : "The preview port relay could not be prepared."
+    );
   }
   const result = await sandbox.runCommand({
     args: ["-c", `nohup node ${RELAY_PATH} > ${RELAY_LOG} 2>&1 </dev/null &`],
@@ -134,7 +241,15 @@ fs.writeFileSync(${JSON.stringify(RELAY_PATH)}, ${JSON.stringify(code)});`,
 const deadline = Date.now() + 3000;
 function poll() {
   try { if (fs.readFileSync(${JSON.stringify(RELAY_READY_PATH)}, 'utf8') === ${JSON.stringify(readyToken)}) return; } catch {}
-  if (Date.now() >= deadline) { process.exitCode = 1; return; }
+  try {
+    const error = fs.readFileSync(${JSON.stringify(RELAY_ERROR_PATH)}, 'utf8').slice(0, 400);
+    if (error) { process.stdout.write(error); process.exitCode = 1; return; }
+  } catch {}
+  if (Date.now() >= deadline) {
+    try { process.stdout.write(fs.readFileSync(${JSON.stringify(RELAY_LOG)}, 'utf8').slice(-400)); } catch {}
+    process.exitCode = 1;
+    return;
+  }
   setTimeout(poll, 50);
 }
 poll();`,
@@ -143,8 +258,11 @@ poll();`,
     timeoutMs: 5000,
   });
   if (ready.exitCode !== 0) {
+    const detail = ready.stdout.trim() || ready.stderr.trim();
     throw new Error(
-      `The app preview relay could not listen on port ${publishedPort}. Configure the app to bind to localhost or choose a different app port.`
+      detail
+        ? `The preview relay could not listen on port ${publishedPort}: ${detail}`
+        : `The preview relay did not become ready on port ${publishedPort}.`
     );
   }
 }

@@ -117,6 +117,28 @@ function finishStatusOf(driven: DriveResult): RunFinishStatus {
   return "failed";
 }
 
+function logFinishedRun(input: {
+  checkpointId?: string;
+  fields: LogFields;
+  logger: Logger;
+  outcome: RunFinishStatus;
+  reason: string | null;
+}): void {
+  const logFields = {
+    ...input.fields,
+    ...(input.checkpointId === undefined
+      ? {}
+      : { checkpointId: input.checkpointId }),
+    outcome: input.outcome,
+    ...(input.reason === null ? {} : { reason: input.reason }),
+  };
+  if (input.outcome === "failed") {
+    input.logger.error("run.finished", logFields);
+  } else {
+    input.logger.info("run.finished", logFields);
+  }
+}
+
 interface StopRequest {
   cause: StopCause;
   reason: string;
@@ -1074,12 +1096,14 @@ export class RunExecutor {
         status,
       });
     }
-    logger.info("run.finished", {
-      ...fields,
+    logFinishedRun({
       ...(checkpoint === undefined
         ? {}
         : { checkpointId: checkpoint.checkpointId }),
+      fields,
+      logger,
       outcome: status,
+      reason,
     });
 
     if (status === "cancelled") {
@@ -1174,7 +1198,7 @@ export class RunExecutor {
           : input.retainedReason,
         volume: workspaceVolumeName(scope),
       });
-      return;
+      return written;
     }
 
     try {
