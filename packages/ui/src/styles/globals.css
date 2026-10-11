@@ -7,10 +7,25 @@
 @source "../../../../apps/web/node_modules/@streamdown/math/dist/*.js";
 @source "../../../../apps/web/node_modules/@streamdown/mermaid/dist/*.js";
 
-/* Exact hex declarations read from https://bklit.com/docs/components.
- * Source capture and role mapping: docs/design/bklit-palette.json and palette.md.
+/*
+ * Neutral gray, no hue.
+ *
+ * Every gray here has zero chroma, so nothing in the product is tinted, and the
+ * ladder is the one the product's surfaces actually use: shell, surface, raised,
+ * and hover, from darkest to lightest.
  */
 :root {
+  /* Clean Dark Theme */
+  --bg: #08090b;
+  --bg-soft: #0e0f12;
+  --surface: #0e0f12;
+  --text: #f9fbfb;
+  --text-muted: #818694;
+  --text-faint: rgba(249, 251, 251, 0.3);
+  --border: #6f748033;
+  --border-strong: #545b6a33;
+
+  /* Semantic UI mappings */
   --background: #08090b;
   --foreground: #f9fbfb;
   --card: #0e0f12;
@@ -26,23 +41,30 @@
   --accent: #292b34;
   --accent-foreground: #f9fbfb;
   --destructive: #ff6568;
-  --border: #6f748033;
   --input: #545b6a33;
   --ring: #67787c;
-  --lime: var(--primary);
-  --cyan: var(--ring);
-  --orange: var(--destructive);
-  --brand-icon-filter: brightness(1);
   --radius: 0.375rem;
+
   color-scheme: dark;
 }
 
 :root[data-theme="light"] {
+  /* True Light Mode */
+  --bg: #f5f5f5;
+  --bg-soft: #f8f8fa;
+  --surface: #ffffff;
+  --text: #090b0c;
+  --text-muted: #757575;
+  --text-faint: #d1d1d1;
+  --border: #e4e4e4;
+  --border-strong: #e3e7e8;
+
+  /* Semantic UI mappings */
   --background: #f5f5f5;
   --foreground: #090b0c;
-  --card: #fff;
+  --card: #ffffff;
   --card-foreground: #090b0c;
-  --popover: #fff;
+  --popover: #ffffff;
   --popover-foreground: #090b0c;
   --primary: #3e3e3e;
   --primary-foreground: #ececec;
@@ -53,17 +75,31 @@
   --accent: #ebebeb;
   --accent-foreground: #182034;
   --destructive: #e33f57;
-  --border: #e4e4e4;
   --input: #f1f1f1;
   --ring: #000;
-  --lime: var(--primary);
-  --cyan: var(--ring);
-  --orange: var(--destructive);
-  --brand-icon-filter: brightness(0.3);
+
   color-scheme: light;
 }
 
 @theme inline {
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI Variable Text", "Segoe UI", Roboto, Inter, sans-serif;
+  --font-display:
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI Variable Display", "Segoe UI", Roboto, Inter, sans-serif;
+  --font-mono:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    monospace;
+
+  --color-bg: var(--bg);
+  --color-bg-soft: var(--bg-soft);
+  --color-surface: var(--surface);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-faint: var(--text-faint);
+  --color-border-strong: var(--border-strong);
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -82,6 +118,7 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
@@ -99,18 +136,95 @@ html {
 body {
   margin: 0;
   font-family:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI Variable Text",
-    "Segoe UI", Roboto, Inter, sans-serif;
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI Variable Text", "Segoe UI", Roboto, Inter, sans-serif;
   -webkit-font-smoothing: antialiased;
   color: var(--foreground);
   background: var(--background);
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--foreground) 22%, transparent);
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--primary) 25%, transparent);
 }
 
 :focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
+}
+
+@keyframes statusBeaconPulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: brightness(1.2);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.82);
+    filter: brightness(0.8);
+  }
+}
+
+@keyframes activeBeaconPulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: brightness(1.25);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.82);
+    filter: brightness(0.8);
+  }
+}
+
+@keyframes limeBeaconPulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: brightness(1.2);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.82);
+    filter: brightness(0.8);
+  }
+}
+
+@keyframes cyanBeaconPulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: brightness(1.25);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.82);
+    filter: brightness(0.8);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .pane-status-beacon,
+  .activity-status-beacon,
+  .sk-status-beacon,
+  .live-dot,
+  .stream-caret {
+    transform: none !important;
+    animation: none !important;
+  }
 }

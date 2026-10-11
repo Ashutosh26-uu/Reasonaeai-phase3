@@ -25,7 +25,7 @@
 }
 .title small {
   margin-left: 6px;
-  font-family: monospace;
+  font-family: var(--font-mono, monospace);
   font-size: 10px;
   color: var(--muted-foreground);
 }
@@ -33,6 +33,7 @@
   display: inline-flex;
   flex-shrink: 0;
   gap: 8px;
+  font-family: var(--font-mono, monospace);
   font-variant-numeric: tabular-nums;
 }
 .added {
@@ -78,10 +79,11 @@
 .path {
   flex: 1;
   min-width: 0;
-  font-family: monospace;
+  font-family: var(--font-mono, monospace);
   overflow-wrap: anywhere;
 }
 .status {
+  font-family: var(--font-mono, monospace);
   font-size: 10px;
   color: var(--muted-foreground);
 }
@@ -99,16 +101,16 @@
   max-height: 400px;
   margin: 0;
   overflow: auto;
-  font: 11px / 1.7 monospace;
+  font: 11px / 1.7 var(--font-mono, monospace);
   white-space: pre;
 }
 .addedLine {
   color: #28a56a;
-  background: rgb(40 165 106 / 8%);
+  background: rgba(40, 165, 106, 0.08);
 }
 .removedLine {
   color: #d36b75;
-  background: rgb(211 107 117 / 8%);
+  background: rgba(211, 107, 117, 0.08);
 }
 .unavailable {
   display: flex;
@@ -153,7 +155,9 @@
   background: var(--muted);
   border: 1px solid var(--border);
   border-radius: 6px;
-  transition: background 150ms ease;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
 }
 
 .restoreButton:hover:not(:disabled) {
@@ -172,7 +176,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #00000080;
+  background: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(2px);
 }
 
@@ -184,7 +188,7 @@
   background: var(--raised, #16181d);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 10px 30px #00000040;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
 }
 
 .confirmBox h4 {
@@ -202,14 +206,14 @@
 }
 
 .confirmBox code {
-  font-family: monospace;
+  font-family: var(--font-mono, monospace);
   font-size: 12px;
   color: var(--foreground);
 }
 
 .restoreError {
   font-size: 12px;
-  color: var(--foreground);
+  color: #ef4444;
 }
 
 .confirmActions {
@@ -233,10 +237,10 @@
   padding: 6px 14px;
   font-size: 12px;
   font-weight: 550;
-  color: var(--foreground);
+  color: #ffffff;
   cursor: pointer;
-  background: color-mix(in srgb, var(--destructive) 8%, var(--card));
-  border: 1px solid var(--destructive);
+  background: #dc2626;
+  border: 1px solid #ef4444;
   border-radius: 6px;
 }
 

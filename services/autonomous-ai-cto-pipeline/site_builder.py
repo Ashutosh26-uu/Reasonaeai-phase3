@@ -58,7 +58,10 @@ COLORS = {"red": "#d7263d", "blue": "#2563eb", "green": "#1f9d6b", "purple": "#7
 SECTION_WORDS = {"hours": ("hour", "timing", "schedule", "open"),
                  "gallery": ("gallery", "image", "photo", "picture"),
                  "contact": ("contact", "form", "message", "enquir", "inquir"),
-                 "menu": ("menu", "service", "price", "offer")}
+                 "menu": ("menu", "service", "price", "offer"),
+                 "about": ("about", "story", "team"),
+                 "reviews": ("testimonial", "review", "feedback"),
+                 "faq": ("faq", "question")}
 SITE_HINTS = ("site", "website", "landing", "portfolio", "homepage", "gallery", "opening hours", "contact form")
 
 
@@ -129,6 +132,7 @@ Invent a fictional business. Make the look and feel unique to this idea (not gen
 Reply with ONLY a JSON object, no markdown, in exactly this shape:
 {{"business_name":"...", "emoji":"one emoji", "tagline":"max 90 chars", "about":"max 200 chars", "cta":"max 3 words",
  "accent":"#rrggbb main brand colour", "mode":"light or dark",
+ "mood":"one of: calm, bold, playful, luxury, elegant, modern",
  "heading_font":"one of: {fonts}", "hero":"one of: split, center, bold",
  "style":"one of: soft, sharp, outline", "gallery_layout":"one of: grid, mosaic",
  "cards":[{{"icon":"emoji","title":"2-4 words","text":"max 70 chars"}}, (exactly 3)],
@@ -235,7 +239,8 @@ def write_site(project_dir: Path, idea: str, requirements: dict, spec: dict) -> 
             "cards": cards, "gallery": gallery, "hours": hours,
             "address": _clip(b.get("address"), 60, "12 Market Street, Old Town"), "phone": _clip(b.get("phone"), 24, "+1 555 0142"),
             "hero": hero, "style": style, "galleryLayout": gal,
-            "sections": _sections(requirements), "contact": _contact_cfg(spec),
+            "sections": [x for x in _sections(requirements) if x in ("menu", "hours", "gallery", "contact")] or ["menu", "hours", "gallery", "contact"],
+            "contact": _contact_cfg(spec),
             "feature_titles": [f["name"] for f in requirements.get("features", [])]}
     src = project_dir / "frontend" / "src"
     (src / "app.jsx").write_text(_APP.replace("__DATA__", json.dumps(data, ensure_ascii=False)), encoding="utf-8")

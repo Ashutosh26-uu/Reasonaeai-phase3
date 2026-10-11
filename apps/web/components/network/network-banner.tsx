@@ -28,7 +28,7 @@ export function NetworkBanner() {
         className={`pointer-events-auto flex items-center gap-2.5 rounded-full border px-3.5 py-1.5 font-medium text-xs shadow-lg backdrop-blur-md transition-colors ${
           isRestored
             ? "border-emerald-800 bg-emerald-950/80 text-emerald-200"
-            : "border-border bg-popover text-popover-foreground"
+            : "border-neutral-800 bg-neutral-900/90 text-neutral-200"
         }`}
       >
         {isRestored ? (
@@ -59,7 +59,7 @@ export function NetworkBanner() {
               )}
             </span>
             <button
-              className="ml-1 flex cursor-pointer items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-secondary-foreground transition-all hover:bg-accent hover:text-accent-foreground active:scale-95"
+              className="ml-1 flex cursor-pointer items-center gap-1 rounded-md bg-neutral-800 px-2 py-0.5 text-neutral-300 transition-colors hover:bg-neutral-700 hover:text-white"
               disabled={isReconnecting}
               onClick={handleRetry}
               type="button"

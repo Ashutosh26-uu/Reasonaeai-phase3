@@ -109,10 +109,14 @@
   background: transparent;
   border: 1px solid transparent;
   border-radius: 6px;
+  transition:
+    color 150ms var(--ease),
+    background 150ms var(--ease);
 }
 
 .queuedActions button:hover,
 .compact .queueButton:hover {
+  color: var(--ink);
   background: var(--raised);
 }
 
@@ -128,7 +132,7 @@
   color: var(--ink);
   background: var(--composer-tray);
   border: 1px solid var(--line-strong);
-  border-radius: 14px;
+  border-radius: 12px;
 }
 
 .queueMenu [role="menuitem"] {
@@ -146,7 +150,7 @@
 .queueEditor textarea {
   width: 100%;
   min-height: 65px;
-  padding: 8px;
+  padding: 8px 10px;
   color: var(--ink);
   resize: vertical;
   background: var(--composer-surface);
@@ -159,7 +163,14 @@
   padding: 14px 14px 12px;
   background: var(--composer-surface);
   border-color: var(--composer-line);
-  border-radius: 24px;
+  border-radius: 20px;
+  transition:
+    border-color 200ms var(--ease),
+    background 200ms var(--ease);
+}
+
+.compact .surface[class~="prompt"]:focus-within {
+  border-color: var(--line-strong);
 }
 
 .compact .textRow[class~="prompt-top"] {
@@ -195,6 +206,16 @@
   height: 32px;
   color: var(--ink-2);
   border-color: transparent;
+  border-radius: 6px;
+  transition:
+    color 150ms var(--ease),
+    background 150ms var(--ease);
+}
+
+.compact .attach[class~="prompt-mic"]:hover,
+.compact .microphone[class~="prompt-mic"]:hover {
+  color: var(--ink);
+  background: var(--raised-hover);
 }
 
 .compact .attach[data-state="open"] {
@@ -211,8 +232,8 @@
   color: var(--ink);
   background: var(--composer-tray);
   border: 1px solid var(--line-strong);
-  border-radius: 22px;
-  box-shadow: 0 12px 36px #0003;
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.25);
 }
 
 .addMenu .addMenuLabel {
@@ -224,15 +245,19 @@
 
 .addMenu .addMenuItem {
   gap: 8px;
-  min-height: 38px;
+  min-height: 36px;
   padding: 8px 10px;
   font-size: 14px;
   color: var(--ink-2);
   cursor: pointer;
-  border-radius: 16px;
+  border-radius: 6px;
+  transition:
+    color 140ms var(--ease),
+    background 140ms var(--ease);
 }
 
-.addMenu .addMenuItem[data-highlighted] {
+.addMenu .addMenuItem[data-highlighted],
+.addMenu .addMenuItem:hover {
   color: var(--ink);
   background: var(--raised-hover);
 }
@@ -247,7 +272,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 12px;
-  color: var(--ink-2);
+  color: var(--ink-3);
   white-space: nowrap;
 }
 
@@ -262,24 +287,42 @@
 .compact .voiceMode[class~="prompt-send"] {
   width: 34px;
   height: 34px;
-  color: var(--primary-foreground);
-  background: var(--primary);
+  color: #ffffff;
+  background: #2563eb;
   border-color: transparent;
+  border-radius: 8px;
+  transition: background 150ms var(--ease);
 }
 
 .compact button[class~="prompt-send"] {
-  color: var(--primary-foreground);
-  background: var(--primary);
+  color: #ffffff;
+  background: #2563eb;
+  border: 0;
+  border-radius: 8px;
+  transition: background 150ms var(--ease);
 }
 
 .compact button[class~="prompt-send"]:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--primary) 90%, var(--background));
+  background: #1d4ed8;
 }
 
 .compact button[class~="prompt-send"]:disabled {
-  color: var(--muted-foreground);
-  background: var(--muted);
-  opacity: 1;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: default;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border);
+  opacity: 0.6;
+}
+
+.compact button[class~="prompt-send"][data-working]:not(:disabled),
+.compact button[class~="prompt-send"][data-status="streaming"] {
+  color: #ffffff;
+  background: #ef4444;
+}
+
+.compact button[class~="prompt-send"][data-working]:not(:disabled):hover,
+.compact button[class~="prompt-send"][data-status="streaming"]:hover {
+  background: #dc2626;
 }
 
 .compact .model[class~="prompt-chip"] {
@@ -328,6 +371,9 @@
   background: transparent;
   border-color: transparent;
   border-radius: 6px;
+  transition:
+    color 150ms var(--ease),
+    background 150ms var(--ease);
 }
 
 .compact .context [class~="project-picker"] {
@@ -361,8 +407,8 @@
 
 .compact button:focus-visible,
 .compact textarea:focus-visible {
-  outline: 2px solid var(--ink-3);
-  outline-offset: 3px;
+  outline: 2px solid var(--primary, #2563eb);
+  outline-offset: 2px;
 }
 
 @media (max-width: 600px) {
