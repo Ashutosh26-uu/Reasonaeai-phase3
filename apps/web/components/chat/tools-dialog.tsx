@@ -153,9 +153,9 @@ function ToolRow({ tool, isEnabled, onToggle }: ToolRowProps) {
   );
 
   return (
-    <div className="flex items-start justify-between gap-4 rounded-[20px] border border-[var(--border)] bg-[rgba(255,255,255,0.06)] p-5 shadow-none backdrop-blur-[24px] transition-all hover:border-[var(--border-strong)] hover:bg-[rgba(255,255,255,0.09)]">
+    <div className="flex items-start justify-between gap-4 rounded-xl border border-border bg-card p-4 shadow-xs transition-all hover:border-border/80 hover:bg-accent/20">
       <div className="flex items-start gap-3.5">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] border border-[var(--border)] bg-transparent text-foreground shadow-none">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/50 text-foreground">
           <IconComponent className="size-5 text-foreground" />
         </div>
         <div className="flex flex-col gap-1">
@@ -196,7 +196,7 @@ function ToolRow({ tool, isEnabled, onToggle }: ToolRowProps) {
           type="button"
         >
           <span
-            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-[#EDEDE9] shadow-none ring-0 transition duration-200 ease-in-out ${
+            className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-background shadow-xs ring-0 transition duration-200 ease-in-out ${
               isEnabled ? "translate-x-5" : "translate-x-0"
             }`}
           />
@@ -336,7 +336,7 @@ export function ToolsDialog({
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>
       <DialogContent
-        className="flex max-h-[85vh] flex-col gap-0 overflow-hidden border-border bg-background p-0 shadow-none sm:max-w-2xl md:max-w-3xl"
+        className="flex max-h-[85vh] flex-col gap-0 overflow-hidden border-border bg-background p-0 shadow-2xl sm:max-w-2xl md:max-w-3xl"
         onCloseAutoFocus={handleCloseAutoFocus}
       >
         <DialogHeader className="sticky top-0 z-10 space-y-4 border-border border-b bg-background/95 p-6 pb-4 text-left backdrop-blur-md">

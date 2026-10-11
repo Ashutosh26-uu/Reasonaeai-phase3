@@ -14,17 +14,11 @@
   min-height: 0;
   padding: 40px 24px;
   overflow-y: auto;
-  background: transparent;
+  background: var(--surface);
 }
 
 .onb-inner {
   width: min(100%, 560px);
-  padding: 36px 32px;
-  background: var(--glass);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-surface);
-  -webkit-backdrop-filter: blur(24px);
-  backdrop-filter: blur(24px);
 }
 
 .onb-hero {
@@ -34,32 +28,15 @@
 }
 
 .onb-progress {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
   margin: 0 0 6px;
-  font-family: var(--font-sans);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--lime);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.onb-progress-beacon {
-  width: 6px;
-  height: 6px;
-  background: var(--lime);
-  border-radius: 50%;
-  animation: limeBeaconPulse 2s ease-in-out infinite;
+  font-size: 11.5px;
+  color: var(--ink-4);
 }
 
 .onb-title {
   margin: 0 0 8px;
-  font-family: var(--font-display);
-  font-size: 26px;
-  font-weight: 700;
-  color: var(--text);
+  font-size: 21px;
+  font-weight: 550;
   letter-spacing: -0.02em;
 }
 
@@ -94,18 +71,12 @@
 }
 
 .onb-input {
-  height: 42px;
-  padding: 0 16px;
+  height: 38px;
+  padding: 0 11px;
   font-size: 13.5px;
   background: var(--raised);
   border: 1px solid var(--line);
-  border-radius: var(--radius-control, 100px);
-  transition: border-color 180ms var(--ease);
-}
-
-.onb-input:focus-visible {
-  outline: none;
-  border-color: var(--lime);
+  border-radius: 6px;
 }
 
 .onb-input::placeholder {
@@ -132,27 +103,20 @@
   gap: 8px;
   align-items: center;
   width: 100%;
-  min-height: 38px;
-  padding: 0 14px;
+  min-height: 34px;
+  padding: 0 10px;
   font-size: 13.5px;
   color: var(--ink-2);
   text-align: left;
   cursor: pointer;
   background: var(--raised);
   border: 1px solid var(--line);
-  border-radius: var(--radius-control, 100px);
-  transition: all 160ms var(--ease);
+  border-radius: 6px;
 }
 
 .onb-project:hover {
   color: var(--ink);
   background: var(--raised-hover);
-  border-color: var(--border-strong);
-  transform: translateY(-0.5px);
-}
-
-.onb-project:active {
-  transform: scale(0.98);
 }
 
 .onb-project[data-active] {
@@ -188,10 +152,10 @@
 }
 
 .onb-loop li::before {
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: "Cascadia Mono", ui-monospace, Consolas, monospace;
   font-size: 11.5px;
   line-height: 1.8;
-  color: var(--lime);
+  color: var(--ink-4);
   content: counter(onb-loop);
 }
 
@@ -202,28 +166,15 @@
 }
 
 .onb-primary {
-  height: 42px;
-  padding: 0 24px;
-  font-family: var(--font-sans);
+  height: 38px;
+  padding: 0 16px;
   font-size: 13.5px;
-  font-weight: 600;
-  color: #050507;
-  text-transform: none;
-  letter-spacing: normal;
+  font-weight: 500;
+  color: var(--surface);
   cursor: pointer;
-  background: var(--lime);
+  background: var(--ink);
   border: 0;
-  border-radius: 100px;
-  transition: all 180ms var(--ease);
-}
-
-.onb-primary:hover:not(:disabled) {
-  filter: brightness(1.06);
-  transform: translateY(-1px) scale(1.01);
-}
-
-.onb-primary:active:not(:disabled) {
-  transform: scale(0.97);
+  border-radius: 6px;
 }
 
 .onb-primary:disabled {
@@ -233,14 +184,10 @@
 }
 
 .onb-skip {
-  padding: 6px 10px;
+  padding: 6px 4px;
   margin-left: auto;
-  font-family: var(--font-sans);
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 12.5px;
   color: var(--ink-3);
-  text-transform: none;
-  letter-spacing: normal;
   cursor: pointer;
   background: none;
   border: 0;
@@ -255,20 +202,19 @@
 }
 
 .onb-banner {
-  padding: 10px 16px;
+  padding: 9px 11px;
   margin-bottom: 16px;
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 1.55;
   color: var(--ink-2);
-  background: var(--glass);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  backdrop-filter: blur(24px);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
 }
 
 .onb-banner.is-error {
-  color: var(--orange);
-  border-color: var(--orange);
+  color: var(--ink);
+  border-color: var(--line-strong);
 }
 
 .onb-figure {
@@ -283,7 +229,7 @@
   max-width: 100%;
   margin: 0;
   overflow: hidden;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: "Cascadia Mono", ui-monospace, Consolas, monospace;
   font-size: clamp(8px, 2.1vw, 12px);
   line-height: 1.05;
   color: var(--ink-3);

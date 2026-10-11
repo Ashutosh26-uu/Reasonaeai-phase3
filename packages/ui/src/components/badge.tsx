@@ -4,23 +4,22 @@ import { Slot } from "radix-ui";
 import type * as React from "react";
 
 const badgeVariants = cva(
-  "inline-flex w-fit shrink-0 items-center justify-center gap-1.5 overflow-hidden whitespace-nowrap rounded-full border border-[var(--border-strong)] px-2.5 py-0.5 font-medium font-sans text-xs tracking-normal transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:border-[var(--lime)] focus-visible:border-[var(--lime)] focus-visible:outline-none [&>svg]:pointer-events-none [&>svg]:size-3",
+  "inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden whitespace-nowrap rounded-full border border-transparent px-2 py-0.5 font-medium text-xs transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring aria-invalid:border-destructive aria-invalid:ring-2 aria-invalid:ring-destructive [&>svg]:pointer-events-none [&>svg]:size-3",
   {
     defaultVariants: {
       variant: "default",
     },
     variants: {
       variant: {
-        default:
-          "border-[var(--border-strong)] bg-[rgba(255,255,255,0.06)] text-[var(--text)] backdrop-blur-md",
+        default: "bg-primary text-primary-foreground [a&]:hover:bg-primary/90",
         destructive:
-          "border-[var(--orange)]/40 bg-[rgba(255,77,0,0.1)] text-[var(--orange)]",
-        ghost: "border-transparent bg-transparent text-[var(--text-muted)]",
-        link: "border-transparent text-[var(--lime)] underline-offset-4 hover:underline",
+          "bg-destructive text-white focus-visible:ring-destructive [a&]:hover:bg-destructive/90",
+        ghost: "[a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
+        link: "text-primary underline-offset-4 [a&]:hover:underline",
         outline:
-          "border-[var(--border-strong)] bg-transparent text-[var(--text)]",
+          "border-border text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
         secondary:
-          "border-[var(--border)] bg-[rgba(255,255,255,0.04)] text-[var(--text-muted)]",
+          "bg-secondary text-secondary-foreground [a&]:hover:bg-secondary/90",
       },
     },
   }

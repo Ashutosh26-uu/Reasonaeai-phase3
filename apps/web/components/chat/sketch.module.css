@@ -11,14 +11,12 @@
   padding: 0;
   overflow: hidden;
   font-family: inherit;
-  color: var(--text);
+  color: var(--ink);
   color-scheme: dark;
-  background: rgba(10, 10, 13, 0.95);
-  border: 1px solid var(--border-strong);
+  background: #212121;
+  border: 1px solid #ffffff14;
   border-radius: 28px;
-  box-shadow: none;
-  -webkit-backdrop-filter: blur(32px);
-  backdrop-filter: blur(32px);
+  box-shadow: 0 32px 100px #0009;
 }
 .editor button {
   display: inline-flex;
@@ -51,8 +49,8 @@
 }
 .editor :is(button, input, textarea, select):focus-visible,
 .board:focus-visible {
-  outline: 1px solid var(--lime);
-  outline-offset: 2px;
+  outline: 2px solid #6b9dff;
+  outline-offset: 3px;
 }
 .accessibleDescription {
   position: absolute;
@@ -74,11 +72,11 @@
   gap: 3px;
   align-items: center;
   padding: 5px;
-  background: rgba(10, 10, 13, 0.85);
-  border: 1px solid var(--border-strong);
+  background: #333333ed;
+  border: 1px solid #ffffff14;
   border-radius: 999px;
-  box-shadow: none;
-  backdrop-filter: blur(24px);
+  box-shadow: 0 6px 24px #0003;
+  backdrop-filter: blur(18px);
 }
 .toolbar {
   top: 18px;
@@ -129,7 +127,7 @@
     #facc15,
     #22c55e,
     #06b6d4,
-    #00fff0,
+    #3478f6,
     #a855f7,
     #ef4444
   );
@@ -191,13 +189,13 @@
   max-height: calc(100% - 226px);
   padding: 16px;
   overflow-y: auto;
-  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-color: #ffffff24 transparent;
   scrollbar-width: thin;
-  background: rgba(10, 10, 13, 0.92);
-  border: 1px solid var(--border-strong);
+  background: #2c2c2cf5;
+  border: 1px solid #ffffff1c;
   border-radius: 20px;
-  box-shadow: none;
-  backdrop-filter: blur(24px);
+  box-shadow: 0 12px 40px #0005;
+  backdrop-filter: blur(18px);
 }
 .palette h3,
 .inspector h3 {
@@ -326,26 +324,17 @@
   z-index: 2;
   width: 46px;
   height: 46px;
-  font-family: var(--font-sans);
-  font-weight: 600;
-  color: #050507;
-  background: var(--lime);
-  border: 0;
-  border-radius: 100px;
-  box-shadow: none;
-  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  color: white;
+  background: #3478f6;
+  box-shadow: 0 4px 18px #3478f622;
 }
-.editor .attach:hover:not(:disabled) {
-  filter: brightness(1.08);
-  transform: translateY(-1px) scale(1.04);
-}
-.editor .attach:active:not(:disabled) {
-  transform: scale(0.94);
+.editor .attach:hover {
+  background: #4a89ff;
 }
 .editor .attach:disabled {
-  color: var(--text-faint);
-  background: var(--border-strong);
-  opacity: 0.4;
+  color: #dce8ff;
+  background: #355991;
+  opacity: 1;
 }
 .error {
   position: absolute;

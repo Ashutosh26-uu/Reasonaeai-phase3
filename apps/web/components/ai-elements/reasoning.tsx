@@ -178,25 +178,12 @@ export type ReasoningTriggerProps = ComponentProps<
 
 const defaultGetThinkingMessage = (isStreaming: boolean, duration?: number) => {
   if (isStreaming) {
-    return (
-      <span className="inline-flex items-center gap-1.5 font-mono text-[var(--cyan)] text-xs uppercase tracking-wider motion-safe:animate-pulse">
-        <span className="size-1.5 rounded-full bg-[var(--cyan)]" />
-        Thinking…
-      </span>
-    );
+    return <span className="motion-safe:animate-pulse">Thinking…</span>;
   }
   if (duration === undefined) {
-    return (
-      <span className="font-mono text-[var(--text-muted)] text-xs">
-        Thought · duration unavailable
-      </span>
-    );
+    return <span>Thought · duration unavailable</span>;
   }
-  return (
-    <span className="font-mono text-[var(--text-muted)] text-xs">
-      Thought for {Math.max(1, Math.round(duration))}s
-    </span>
-  );
+  return <span>Thought for {Math.max(1, Math.round(duration))}s</span>;
 };
 
 export const ReasoningTrigger = memo(
@@ -222,7 +209,7 @@ export const ReasoningTrigger = memo(
             {getThinkingMessage(isStreaming, duration)}
             <ChevronDownIcon
               className={cn(
-                "size-4 transition-transform duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
+                "size-4 transition-transform",
                 isOpen ? "rotate-180" : "rotate-0"
               )}
             />

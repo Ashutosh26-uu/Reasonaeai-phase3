@@ -1,6 +1,3 @@
-"use client";
-
-import { Button } from "@reasonateai/ui/components/button";
 import { cn } from "cn";
 import { XIcon } from "lucide-react";
 import { Dialog as DialogPrimitive } from "radix-ui";
@@ -37,7 +34,7 @@ function DialogOverlay({
   return (
     <DialogPrimitive.Overlay
       className={cn(
-        "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-50 bg-[#050507]/80 backdrop-blur-md duration-250 ease-[cubic-bezier(0.16,1,0.3,1)] data-[state=closed]:animate-out data-[state=open]:animate-in",
+        "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=open]:animate-in",
         className
       )}
       data-slot="dialog-overlay"
@@ -59,7 +56,7 @@ function DialogContent({
       <DialogOverlay />
       <DialogPrimitive.Content
         className={cn(
-          "data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-5 rounded-[24px] border border-[var(--border-strong)] bg-[#0a0a0d]/95 p-6 shadow-none outline-none backdrop-blur-[32px] duration-250 ease-[cubic-bezier(0.16,1,0.3,1)] data-[state=closed]:animate-out data-[state=open]:animate-in sm:max-w-lg",
+          "data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg outline-none duration-200 data-[state=closed]:animate-out data-[state=open]:animate-in sm:max-w-lg",
           className
         )}
         data-slot="dialog-content"
@@ -68,7 +65,7 @@ function DialogContent({
         {children}
         {showCloseButton && (
           <DialogPrimitive.Close
-            className="absolute top-5 right-5 rounded-full p-1 opacity-70 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:rotate-90 hover:scale-110 hover:bg-[rgba(255,255,255,0.06)] hover:opacity-100 focus:border-[var(--lime)] focus:outline-none active:scale-95 disabled:pointer-events-none [&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0"
+            className="absolute top-4 right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground [&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0"
             data-slot="dialog-close"
           >
             <XIcon />
@@ -83,7 +80,7 @@ function DialogContent({
 function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
-      className={cn("flex flex-col gap-2 text-left", className)}
+      className={cn("flex flex-col gap-2 text-center sm:text-left", className)}
       data-slot="dialog-header"
       {...props}
     />
@@ -110,7 +107,7 @@ function DialogFooter({
       {children}
       {showCloseButton && (
         <DialogPrimitive.Close asChild>
-          <Button variant="outline">Close</Button>
+          <button type="button">Close</button>
         </DialogPrimitive.Close>
       )}
     </div>
@@ -123,10 +120,7 @@ function DialogTitle({
 }: React.ComponentProps<typeof DialogPrimitive.Title>) {
   return (
     <DialogPrimitive.Title
-      className={cn(
-        "font-display font-semibold text-[var(--text)] text-lg leading-snug tracking-tight",
-        className
-      )}
+      className={cn("font-semibold text-lg leading-none", className)}
       data-slot="dialog-title"
       {...props}
     />
@@ -139,10 +133,7 @@ function DialogDescription({
 }: React.ComponentProps<typeof DialogPrimitive.Description>) {
   return (
     <DialogPrimitive.Description
-      className={cn(
-        "font-sans text-[var(--text-muted)] text-sm leading-relaxed",
-        className
-      )}
+      className={cn("text-muted-foreground text-sm", className)}
       data-slot="dialog-description"
       {...props}
     />
