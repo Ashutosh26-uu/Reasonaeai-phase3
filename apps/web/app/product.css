@@ -11,17 +11,17 @@
  */
 :root {
   /* Clean Dark Theme */
-  --bg: #0b0c10;
-  --bg-soft: #12151b;
-  --surface: #181b22;
-  --text: #f0f2f5;
-  --text-muted: #8a92a0;
-  --text-faint: rgba(240, 242, 245, 0.3);
-  --border: rgba(255, 255, 255, 0.09);
-  --border-strong: rgba(255, 255, 255, 0.18);
+  --bg: #08090b;
+  --bg-soft: #0e0f12;
+  --surface: #0e0f12;
+  --text: #f9fbfb;
+  --text-muted: #818694;
+  --text-faint: rgba(249, 251, 251, 0.3);
+  --border: #6f748033;
+  --border-strong: #545b6a33;
 
-  --primary: #2563eb;
-  --destructive: #dc2626;
+  --primary: #e3e7e8;
+  --destructive: #ff6568;
 
   /* Surfaces */
   --glass: rgba(255, 255, 255, 0.05);
@@ -40,20 +40,20 @@
     monospace;
 
   /* Workspace aliases */
-  --shell: #0b0c10;
-  --raised: #222630;
-  --raised-hover: #2c3240;
-  --composer-surface: #1e222b;
-  --composer-tray: #16181f;
-  --composer-line: rgba(255, 255, 255, 0.15);
-  --bubble: #222630;
-  --line: rgba(255, 255, 255, 0.09);
-  --line-strong: rgba(255, 255, 255, 0.18);
-  --ink: #f0f2f5;
-  --ink-2: #8a92a0;
-  --ink-3: #636b79;
-  --ink-4: #454c59;
-  --bad: #ef4444;
+  --shell: #08090b;
+  --raised: #18181b;
+  --raised-hover: #292b34;
+  --composer-surface: #22242b;
+  --composer-tray: #18181b;
+  --composer-line: #545b6a33;
+  --bubble: #2b2d37;
+  --line: #6f748033;
+  --line-strong: #545b6a33;
+  --ink: #f9fbfb;
+  --ink-2: #818694;
+  --ink-3: #818694;
+  --ink-4: #555;
+  --bad: #ff6568;
   --good: #10b981;
   --radius-control: 8px;
   --radius-surface: 12px;
@@ -66,35 +66,35 @@
 
 :root[data-theme="light"] {
   /* True Light Mode */
-  --bg: #f8f9fa;
-  --bg-soft: #f1f3f5;
+  --bg: #f5f5f5;
+  --bg-soft: #f8f8fa;
   --surface: #ffffff;
-  --text: #111418;
-  --text-muted: #6c757d;
-  --text-faint: #adb5bd;
-  --border: #dee2e6;
-  --border-strong: #ced4da;
+  --text: #090b0c;
+  --text-muted: #757575;
+  --text-faint: #d1d1d1;
+  --border: #e4e4e4;
+  --border-strong: #e3e7e8;
 
-  --primary: #2563eb;
-  --destructive: #dc2626;
+  --primary: #3e3e3e;
+  --destructive: #e33f57;
 
   --glass: rgba(0, 0, 0, 0.03);
   --glass-strong: rgba(0, 0, 0, 0.06);
 
-  --shell: #f8f9fa;
-  --raised: #f1f3f5;
-  --raised-hover: #e9ecef;
+  --shell: #f5f5f5;
+  --raised: #eaeaea;
+  --raised-hover: #ebebeb;
   --composer-surface: #ffffff;
-  --composer-tray: #f8f9fa;
-  --composer-line: #dee2e6;
-  --bubble: #f1f3f5;
-  --line: #dee2e6;
-  --line-strong: #ced4da;
-  --ink: #111418;
-  --ink-2: #495057;
-  --ink-3: #6c757d;
-  --ink-4: #adb5bd;
-  --bad: #dc2626;
+  --composer-tray: #f8f8fa;
+  --composer-line: #e4e4e4;
+  --bubble: #eaeaea;
+  --line: #e4e4e4;
+  --line-strong: #e3e7e8;
+  --ink: #090b0c;
+  --ink-2: #757575;
+  --ink-3: #757575;
+  --ink-4: #d1d1d1;
+  --bad: #e33f57;
   --good: #16a34a;
   color-scheme: light;
 }

@@ -117,6 +117,8 @@ The image includes Node.js 22, Python 3.11, Go 1.27.1, and an offline npm cache.
 
 Never commit a `.env` file. `.env` and `.env.*` are ignored, with `.env.example` as the documented template.
 
+Launch identity uses configured Resend email delivery and Google OIDC. Development can use an explicitly labelled loopback Mailpit inbox; production cannot. See [authentication setup and activation](authentication.md) for provider variables, public-origin requirements, schema version 9 recovery, and verification boundaries. Use a separate database for tests when an API outbox relay is running.
+
 ### Live streaming needs a current worker
 
 Model text reaches a browser as live deltas published by the **worker** that claims the run, onto a bounded `reasonateai.run.live.<runId>` topic. A worker built before that publisher existed still executes runs correctly, but its runs show only durable events and tool activity — no streamed text. After pulling a change to the worker, restart it; `tsx src/main.ts` loads its source once and does not watch for changes.

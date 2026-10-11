@@ -1,7 +1,7 @@
 # Data Model
 
 **Status:** ✅ implemented and verified against real PostgreSQL 16
-**Owns:** `packages/project-state/src/schema.ts`, `packages/project-state/src/session-schema.ts`
+**Owns:** `packages/project-state/src/schema.ts`, `packages/project-state/src/session-schema.ts`, `packages/project-state/src/identity-schema.ts`
 **Owner role:** Project State & Data
 
 ---
@@ -36,6 +36,9 @@ A generated project is never stored as a single database object.
 | `organizations` | `organization_id` | Root tenant boundary |
 | `projects` | `project_id` | `UNIQUE (organization_id, project_id)` — enables composite foreign keys from project-owned tables |
 | `users` | `user_id` | Anchor for sessions, so a session cannot reference a non-existent user |
+| `magic_link_tokens` | token digest | Short-lived, single-use email credential with requesting-browser digest |
+| `identity_oidc_requests` | state digest | Expiring, atomically consumed Google authorization state |
+| `identity_provider_accounts` | `(provider, subject)` | Stable Google subject maps to one user; user foreign key cascades on deletion |
 | `auth_sessions` | `session_id` | `UNIQUE token_hash`; `user_id` references `users` with `ON DELETE CASCADE` |
 
 ### Execution
@@ -108,5 +111,5 @@ Rules:
 
 - No retention or pruning policy yet for `run_events`, `outbox`, or `artifacts`.
 - No partitioning strategy for high-volume tables.
-- `users` is minimal; memberships, roles, and invitations arrive with the identity workstream.
+- Users, memberships, roles, browser sessions, and durable account setup are implemented. Invitations and enterprise provisioning remain future work. Schema version 9 backfills existing accounts as configured while new accounts require setup; see [identity migration and recovery](operations/authentication.md).
 - Deployments store a rollback reference but no coordinated rollback execution yet.

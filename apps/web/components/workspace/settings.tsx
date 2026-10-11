@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { SessionManager } from "@/components/auth/session-manager";
 import { describeError, request } from "@/lib/product-api";
 import {
   applyThemePreference,
@@ -682,6 +683,7 @@ export function Settings({
 
             {!loading && section === "security" && (
               <>
+                <SessionManager />
                 <div className="settings-card">
                   <h3>Signed-in session</h3>
                   <p className="settings-help settings-top-help">
@@ -717,8 +719,8 @@ export function Settings({
                   <div>
                     <h3>More security controls</h3>
                     <p>
-                      Passkeys, multi-factor authentication, and managing other
-                      signed-in devices are not available yet.
+                      Passkeys and multi-factor authentication are not available
+                      yet.
                     </p>
                   </div>
                 </div>

@@ -22,6 +22,7 @@ export interface UserRepository {
   getProfile: (input: {
     userId: UserId;
   }) => Promise<AccountProfile | undefined>;
+  onboardingComplete: (userId: UserId) => Promise<boolean>;
   setDisplayName: (input: {
     displayName: string | null;
     userId: UserId;
@@ -97,6 +98,13 @@ export function createUserRepository(pool: Pool): UserRepository {
         email: row.primary_email,
         userId: UserIdSchema.parse(row.user_id),
       };
+    },
+    onboardingComplete: async (userId) => {
+      const result = await pool.query<{ complete: boolean }>(
+        "select onboarding_completed_at is not null as complete from users where user_id = $1",
+        [userId]
+      );
+      return result.rows[0]?.complete ?? false;
     },
     setDisplayName: async ({ displayName, userId }) => {
       const result = await pool.query<{

@@ -86,6 +86,8 @@ flowchart TB
 
 **Public surfaces** are only `apps/web`, the authenticated `apps/api` product routes, the voice gateway, and authorized preview URLs. Everything else is private infrastructure with no inbound client traffic.
 
+Launch identity adapters remain in the API boundary: Resend delivers short-lived email links, and Google provides verified OIDC identity through authorization code with PKCE. The browser confirms a fragment token bound to its requesting nonce; Google callbacks verify encrypted browser state plus the durable single-use state ledger. PostgreSQL owns account/provider links, onboarding completion, and revocable opaque sessions. Provider secrets stay at the API boundary and never enter workers. Development-only Mailpit is explicitly identified and excluded from production. Activation and migration recovery are in [authentication operations](../docs/operations/authentication.md).
+
 ---
 
 ## 3. Control plane and execution plane

@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { inflateRawSync } from "node:zlib";
 import { mintCsrfToken } from "@reasonateai/auth/csrf";
 import {
   CSRF_COOKIE,
@@ -29,6 +30,60 @@ import {
 } from "../src/mastra/routes/workspace";
 
 const execFileAsync = promisify(execFile);
+
+function readZipEntries(buffer: Buffer): Map<string, Buffer> {
+  const endRecord = buffer.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  if (endRecord < 0) {
+    throw new Error("ZIP end-of-central-directory record is missing");
+  }
+
+  const entryCount = buffer.readUInt16LE(endRecord + 10);
+  let centralOffset = buffer.readUInt32LE(endRecord + 16);
+  const entries = new Map<string, Buffer>();
+
+  for (let index = 0; index < entryCount; index += 1) {
+    if (buffer.readUInt32LE(centralOffset) !== 0x02_01_4b_50) {
+      throw new Error("ZIP central directory entry is malformed");
+    }
+
+    const method = buffer.readUInt16LE(centralOffset + 10);
+    const compressedSize = buffer.readUInt32LE(centralOffset + 20);
+    const uncompressedSize = buffer.readUInt32LE(centralOffset + 24);
+    const fileNameLength = buffer.readUInt16LE(centralOffset + 28);
+    const extraLength = buffer.readUInt16LE(centralOffset + 30);
+    const commentLength = buffer.readUInt16LE(centralOffset + 32);
+    const localOffset = buffer.readUInt32LE(centralOffset + 42);
+    const fileName = buffer
+      .subarray(centralOffset + 46, centralOffset + 46 + fileNameLength)
+      .toString("utf8");
+
+    if (buffer.readUInt32LE(localOffset) !== 0x04_03_4b_50) {
+      throw new Error("ZIP local file header is malformed");
+    }
+
+    const localNameLength = buffer.readUInt16LE(localOffset + 26);
+    const localExtraLength = buffer.readUInt16LE(localOffset + 28);
+    const dataOffset = localOffset + 30 + localNameLength + localExtraLength;
+    const compressed = buffer.subarray(dataOffset, dataOffset + compressedSize);
+    let contents: Buffer;
+    if (method === 0) {
+      contents = Buffer.from(compressed);
+    } else if (method === 8) {
+      contents = inflateRawSync(compressed);
+    } else {
+      throw new Error(`Unsupported ZIP compression method: ${method}`);
+    }
+
+    if (contents.length !== uncompressedSize) {
+      throw new Error(`ZIP entry size mismatch for ${fileName}`);
+    }
+
+    entries.set(fileName, contents);
+    centralOffset += 46 + fileNameLength + extraLength + commentLength;
+  }
+
+  return entries;
+}
 
 describe("workspace source export route", () => {
   const organizationId = OrganizationIdSchema.parse(randomUUID());
@@ -213,7 +268,7 @@ describe("workspace source export route", () => {
       join(workDir, "package.json"),
       JSON.stringify({ name: "my-app", version: "1.0.0" })
     );
-    await execFileAsync("mkdir", ["-p", join(workDir, "src")]);
+    await mkdir(join(workDir, "src"), { recursive: true });
     await writeFile(
       join(workDir, "src", "index.ts"),
       "console.log('ReasonateAI');\n"
@@ -221,19 +276,18 @@ describe("workspace source export route", () => {
     await writeFile(join(workDir, "README.md"), "# Test App\n");
 
     // Files that MUST be excluded from export
-    await execFileAsync("mkdir", [
-      "-p",
-      join(workDir, "node_modules", "some-dep"),
-    ]);
+    await mkdir(join(workDir, "node_modules", "some-dep"), {
+      recursive: true,
+    });
     await writeFile(
       join(workDir, "node_modules", "some-dep", "index.js"),
       "module.exports = {};\n"
     );
-    await execFileAsync("mkdir", ["-p", join(workDir, ".cache")]);
+    await mkdir(join(workDir, ".cache"), { recursive: true });
     await writeFile(join(workDir, ".cache", "build-cache.json"), "{}");
-    await execFileAsync("mkdir", ["-p", join(workDir, "dist")]);
+    await mkdir(join(workDir, "dist"), { recursive: true });
     await writeFile(join(workDir, "dist", "bundle.js"), "bundled code");
-    await execFileAsync("mkdir", ["-p", join(workDir, ".next")]);
+    await mkdir(join(workDir, ".next"), { recursive: true });
     await writeFile(join(workDir, ".next", "manifest.json"), "{}");
 
     await execFileAsync("git", ["-C", workDir, "add", "-f", "."]);
@@ -472,26 +526,23 @@ describe("workspace source export route", () => {
       Buffer.from([0x50, 0x4b, 0x03, 0x04])
     );
 
-    // Write zip to a temporary file and verify using unzip tool
-    const zipPath = join(tempDir, "extracted-check.zip");
-    await writeFile(zipPath, zipBuffer);
-
-    const { stdout: unzipListing } = await execFileAsync("unzip", [
-      "-l",
-      zipPath,
-    ]);
+    const entries = readZipEntries(zipBuffer);
+    const fileNames = [...entries.keys()];
 
     // Source files MUST be present
-    expect(unzipListing).toContain("package.json");
-    expect(unzipListing).toContain("src/index.ts");
-    expect(unzipListing).toContain("README.md");
+    expect(fileNames).toContain("package.json");
+    expect(fileNames).toContain("src/index.ts");
+    expect(fileNames).toContain("README.md");
+    expect(entries.get("src/index.ts")?.toString().replace(/\r\n/g, "\n")).toBe(
+      "console.log('ReasonateAI');\n"
+    );
 
     // Excluded files and folders MUST NOT be present
-    expect(unzipListing).not.toContain(".git");
-    expect(unzipListing).not.toContain("node_modules");
-    expect(unzipListing).not.toContain(".cache");
-    expect(unzipListing).not.toContain("dist");
-    expect(unzipListing).not.toContain(".next");
+    expect(fileNames.join("\n")).not.toContain(".git");
+    expect(fileNames.join("\n")).not.toContain("node_modules");
+    expect(fileNames.join("\n")).not.toContain(".cache");
+    expect(fileNames.join("\n")).not.toContain("dist");
+    expect(fileNames.join("\n")).not.toContain(".next");
   });
 
   it("sanitizes projectName preventing path traversal or special character injection in filename", async () => {

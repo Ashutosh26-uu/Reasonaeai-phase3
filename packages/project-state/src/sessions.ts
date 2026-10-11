@@ -16,9 +16,14 @@ export interface SessionRepository {
     userAgent?: string;
     userId: string;
   }) => Promise<IssuedSession>;
+  listUserSessions: (userId: string) => Promise<Session[]>;
   /** Resolves a live session, touches it, and extends idle expiry. */
   resolveSession: (token: string) => Promise<Session | undefined>;
   revokeAllUserSessions: (userId: string) => Promise<number>;
+  revokeOwnedSession: (input: {
+    sessionId: string;
+    userId: string;
+  }) => Promise<boolean>;
   revokeSession: (sessionId: string) => Promise<boolean>;
   rotateSession: (input: {
     absoluteTtlMs: number;
@@ -100,6 +105,13 @@ export function createSessionRepository(
       const session = await insertSession({ ...input, token });
       return { session, token };
     },
+    listUserSessions: async (userId) => {
+      const result = await pool.query(
+        "select * from auth_sessions where user_id = $1 and revoked_at is null and idle_expires_at > now() and absolute_expires_at > now() order by last_seen_at desc limit 100",
+        [userId]
+      );
+      return result.rows.map(toSession);
+    },
 
     resolveSession: async (token) => {
       const result = await pool.query(
@@ -129,6 +141,13 @@ export function createSessionRepository(
         [userId]
       );
       return result.rowCount ?? 0;
+    },
+    revokeOwnedSession: async ({ sessionId, userId }) => {
+      const result = await pool.query(
+        "update auth_sessions set revoked_at = now() where session_id = $1 and user_id = $2 and revoked_at is null",
+        [sessionId, userId]
+      );
+      return result.rowCount === 1;
     },
 
     revokeSession: async (sessionId) => {

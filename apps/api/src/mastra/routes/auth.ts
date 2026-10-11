@@ -1,12 +1,17 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { authorize } from "@reasonateai/auth/authorize";
 import { mintCsrfToken } from "@reasonateai/auth/csrf";
 import { safeRedirectPath } from "@reasonateai/auth/redirect";
 import { sessionCookie, sessionState } from "@reasonateai/auth/session-policy";
 import {
   AccountProfileSchema,
+  AuthOptionsSchema,
+  CompleteOnboardingSchema,
   CSRF_COOKIE,
+  DeviceSessionsSchema,
   MagicLinkAcceptedSchema,
   MagicLinkRequestSchema,
+  RedeemMagicLinkSchema,
   SESSION_COOKIE,
   SessionViewSchema,
   SignedOutSchema,
@@ -19,10 +24,17 @@ import {
   type OrganizationId,
   type Principal,
   type ProjectId,
+  SessionIdSchema,
+  type UserId,
   UserPrincipalSchema,
 } from "@reasonateai/contracts/identity";
 import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
-import type { MagicLinkSender } from "../adapters/magic-link-sender";
+import type { GoogleIdentity } from "../adapters/google-identity";
+import {
+  MagicLinkDeliveryError,
+  type MagicLinkSender,
+  MagicLinkSenderUnconfiguredError,
+} from "../adapters/magic-link-sender";
 import {
   apiErrorResponse,
   effectiveSessionExpiry,
@@ -86,6 +98,7 @@ export interface AuthRouteDeps {
    * loudly at its first sign-in instead of issuing forgeable tokens.
    */
   csrfSecret: () => string;
+  google?: GoogleIdentity;
   /**
    * The origin a sign-in link points back at, which is this API's own public
    * address. It comes from configuration and never from the request, so a
@@ -138,7 +151,7 @@ const TRAILING_SLASHES = /\/+$/;
  */
 function magicLinkUrl(publicOrigin: string, token: string): string {
   const origin = publicOrigin.replace(TRAILING_SLASHES, "");
-  return `${origin}${AUTH_CALLBACK_PATH}?token=${encodeURIComponent(token)}`;
+  return `${origin}/auth/verify#token=${encodeURIComponent(token)}`;
 }
 
 /** The separators an address uses where a person would write a space. */
@@ -213,8 +226,141 @@ function clearedCookie(
   return `${name}=; ${attributes.join("; ")}`;
 }
 
+function deliveryFailure(cause: unknown, requestId: string): Response {
+  const unavailable = cause instanceof MagicLinkSenderUnconfiguredError;
+  return apiErrorResponse({
+    code: unavailable ? "unsupported" : "internal",
+    message: unavailable ? cause.message : new MagicLinkDeliveryError().message,
+    requestId,
+  });
+}
+
 export function createAuthHandlers(deps: AuthRouteDeps) {
   const cookieMaxAgeSeconds = SESSION_ABSOLUTE_TTL_MS / 1000;
+
+  async function establishSession(
+    c: HandlerContext,
+    account: { created: boolean; userId: UserId },
+    email: string
+  ): Promise<Response> {
+    const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+    const store = deps.store();
+
+    // The session is established before the organization is, so that every
+    // audit event below names the user who actually acted. A tenant's trail
+    // must not record a real action as one nobody took, and an actor that
+    // carries a session id is the only principal the contract can express.
+    const issued = await store.sessions.createSession({
+      absoluteTtlMs: SESSION_ABSOLUTE_TTL_MS,
+      idleTtlMs: SESSION_IDLE_TTL_MS,
+      ip: clientAddress(c),
+      userAgent: c.req.header("user-agent"),
+      userId: account.userId,
+    });
+    const principal = UserPrincipalSchema.parse({
+      expiresAt: effectiveSessionExpiry(issued.session),
+      kind: "user",
+      revokedAt: null,
+      sessionId: issued.session.sessionId,
+      userId: issued.session.userId,
+    });
+
+    let organizations = await store.listOrganizationMemberships({
+      userId: account.userId,
+    });
+    if (organizations.length === 0) {
+      // A first sign-in owns the organization it creates. Nothing else grants
+      // owner, so this transaction is the only way an organization with an
+      // owner comes to exist at all.
+      const name = firstOrganizationName(email);
+      const created = await store.createOrganizationWithOwner({
+        audit: auditEvent({
+          action: "organization.created",
+          actor: principal,
+          metadata: { name },
+          // Generated inside the transaction, which is what makes it the
+          // organization's real identifier; the store stamps the audit row
+          // with it.
+          organizationId: null,
+          projectId: null,
+          requestId: rid,
+        }),
+        ensureFirst: true,
+        name,
+        userId: account.userId,
+      });
+      organizations = [
+        {
+          name: created.name,
+          organizationId: created.organizationId,
+          role: created.membershipRole,
+        },
+      ];
+    }
+
+    const previous = readCookie(c.req.header("cookie"), SESSION_COOKIE);
+    if (previous) {
+      const session = await store.sessions.resolveSession(previous);
+      if (session) {
+        await store.sessions.revokeSession(session.sessionId);
+      }
+    }
+    await store.audit.record(
+      auditEvent({
+        action: "identity.signed_in",
+        actor: principal,
+        metadata: { firstSignIn: account.created },
+        organizationId: organizations[0]?.organizationId ?? null,
+        projectId: null,
+        requestId: rid,
+      })
+    );
+
+    const response = new Response(null, {
+      headers: { "Cache-Control": "no-store" },
+      status: 303,
+    });
+    response.headers.append(
+      "Set-Cookie",
+      sessionCookie(SESSION_COOKIE, issued.token, {
+        httpOnly: true,
+        maxAgeSeconds: cookieMaxAgeSeconds,
+        secure: deps.secureCookies,
+      })
+    );
+    // The CSRF cookie is deliberately readable by the page's own script:
+    // echoing it into the header is what proves a command came from this
+    // origin's code, and a script that cannot read it cannot echo it.
+    response.headers.append(
+      "Set-Cookie",
+      sessionCookie(
+        CSRF_COOKIE,
+        mintCsrfToken({
+          secret: deps.csrfSecret(),
+          sessionId: issued.session.sessionId,
+        }),
+        {
+          httpOnly: false,
+          maxAgeSeconds: cookieMaxAgeSeconds,
+          secure: deps.secureCookies,
+        }
+      )
+    );
+    response.headers.set(
+      "Location",
+      safeRedirectPath(c.req.query("redirectTo"), { fallback: "/" })
+    );
+
+    response.headers.set("Referrer-Policy", "no-referrer");
+    response.headers.append(
+      "Set-Cookie",
+      clearedCookie("reasonate_magic_browser", {
+        httpOnly: true,
+        secure: deps.secureCookies,
+      })
+    );
+    return response;
+  }
 
   return {
     /**
@@ -226,9 +372,15 @@ export function createAuthHandlers(deps: AuthRouteDeps) {
     callback: async (c: HandlerContext): Promise<Response> => {
       const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
 
-      const token = c.req.query("token");
-      const consumed = token
-        ? await deps.store().magicLinks.consume({ token })
+      const body = RedeemMagicLinkSchema.safeParse(await readJsonBody(c.req));
+      const consumed = body.success
+        ? await deps.store().magicLinks.consume({
+            browserBinding: readCookie(
+              c.req.header("cookie"),
+              "reasonate_magic_browser"
+            ),
+            token: body.data.token,
+          })
         : undefined;
       if (!consumed) {
         // Unknown, expired, and already-used are one refusal on purpose:
@@ -240,106 +392,235 @@ export function createAuthHandlers(deps: AuthRouteDeps) {
         });
       }
 
+      const account = await deps
+        .store()
+        .users.claimByEmail({ email: consumed.email });
+      return await establishSession(c, account, consumed.email);
+    },
+    completeOnboarding: async (c: HandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
       const store = deps.store();
-      const account = await store.users.claimByEmail({ email: consumed.email });
-
-      // The session is established before the organization is, so that every
-      // audit event below names the user who actually acted. A tenant's trail
-      // must not record a real action as one nobody took, and an actor that
-      // carries a session id is the only principal the contract can express.
-      const issued = await store.sessions.createSession({
-        absoluteTtlMs: SESSION_ABSOLUTE_TTL_MS,
-        idleTtlMs: SESSION_IDLE_TTL_MS,
-        ip: clientAddress(c),
-        userAgent: c.req.header("user-agent"),
-        userId: account.userId,
+      const principal = await resolveSessionPrincipal({
+        cookieHeader: c.req.header("cookie"),
+        sessions: store.sessions,
       });
-      const principal = UserPrincipalSchema.parse({
-        expiresAt: effectiveSessionExpiry(issued.session),
-        kind: "user",
-        revokedAt: null,
-        sessionId: issued.session.sessionId,
-        userId: issued.session.userId,
+      if (!principal) {
+        return unauthenticatedResponse(rid);
+      }
+      const body = CompleteOnboardingSchema.safeParse(
+        await readJsonBody(c.req)
+      );
+      if (!body.success) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message: "Your name and workspace name are required.",
+          requestId: rid,
+        });
+      }
+      const membership = await store.memberships.getOrganizationMembership({
+        organizationId: body.data.organizationId,
+        userId: principal.userId,
       });
-
-      let organizations = await store.listOrganizationMemberships({
-        userId: account.userId,
+      const decision = authorize({
+        action: "organization:update",
+        now: new Date().toISOString(),
+        organizationMembership: membership ?? null,
+        principal,
+        projectMembership: null,
+        resource: {
+          kind: "organization",
+          organizationId: body.data.organizationId,
+          projectId: null,
+          resourceId: null,
+        },
       });
-      if (organizations.length === 0) {
-        // A first sign-in owns the organization it creates. Nothing else grants
-        // owner, so this transaction is the only way an organization with an
-        // owner comes to exist at all.
-        const name = firstOrganizationName(consumed.email);
-        const created = await store.createOrganizationWithOwner({
-          audit: auditEvent({
-            action: "organization.created",
+      if (!decision.allowed) {
+        await store.audit.record(
+          auditEvent({
+            action: "authorization.denied",
             actor: principal,
-            metadata: { name },
-            // Generated inside the transaction, which is what makes it the
-            // organization's real identifier; the store stamps the audit row
-            // with it.
-            organizationId: null,
+            metadata: {
+              action: "organization:update",
+              reason: decision.reason,
+              requestedOrganizationId: body.data.organizationId,
+            },
+            organizationId: membership ? body.data.organizationId : null,
             projectId: null,
             requestId: rid,
-          }),
-          name,
-          userId: account.userId,
+          })
+        );
+        return apiErrorResponse({
+          code: "forbidden",
+          message: "You cannot set up this workspace.",
+          requestId: rid,
         });
-        organizations = [
-          {
-            name: created.name,
-            organizationId: created.organizationId,
-            role: created.membershipRole,
-          },
-        ];
       }
-
-      await store.audit.record(
-        auditEvent({
-          action: "identity.signed_in",
+      const completed = await store.completeOnboarding({
+        ...body.data,
+        audit: auditEvent({
+          action: "identity.onboarding_completed",
           actor: principal,
-          metadata: { firstSignIn: account.created },
-          organizationId: organizations[0]?.organizationId ?? null,
+          metadata: {},
+          organizationId: body.data.organizationId,
           projectId: null,
           requestId: rid,
-        })
-      );
-
-      const response = new Response(null, {
-        headers: { "Cache-Control": "no-store" },
-        status: 303,
+        }),
+        userId: principal.userId,
       });
+      return completed
+        ? c.json({ completed: true }, 200)
+        : apiErrorResponse({
+            code: "forbidden",
+            message: "You cannot set up this workspace.",
+            requestId: rid,
+          });
+    },
+    googleCallback: async (c: HandlerContext): Promise<Response> => {
+      let response: Response;
+      try {
+        const state = c.req.query("state");
+        const code = c.req.query("code");
+        const cookie = readCookie(c.req.header("cookie"), "reasonate_oidc");
+        if (
+          !(deps.google?.configured && state && code && cookie) ||
+          state.length > 128 ||
+          code.length > 4096 ||
+          cookie.length > 4096
+        ) {
+          throw new Error("Invalid callback.");
+        }
+        const identity = await deps.google.finish({ code, cookie, state });
+        if (!(await deps.store().identity.consumeOidc(state))) {
+          throw new Error("Expired or replayed callback.");
+        }
+        const account = await deps.store().identity.claimGoogle(identity);
+        response = await establishSession(c, account, identity.email);
+      } catch {
+        console.warn(
+          JSON.stringify({
+            event: "identity.google_failed",
+            requestId: c.req.header("x-request-id") ?? crypto.randomUUID(),
+          })
+        );
+        response = new Response(null, {
+          headers: {
+            "Cache-Control": "no-store",
+            Location: "/auth/login?error=google",
+            "Referrer-Policy": "no-referrer",
+          },
+          status: 303,
+        });
+      }
       response.headers.append(
         "Set-Cookie",
-        sessionCookie(SESSION_COOKIE, issued.token, {
+        clearedCookie("reasonate_oidc", {
           httpOnly: true,
-          maxAgeSeconds: cookieMaxAgeSeconds,
           secure: deps.secureCookies,
         })
       );
-      // The CSRF cookie is deliberately readable by the page's own script:
-      // echoing it into the header is what proves a command came from this
-      // origin's code, and a script that cannot read it cannot echo it.
-      response.headers.append(
-        "Set-Cookie",
-        sessionCookie(
-          CSRF_COOKIE,
-          mintCsrfToken({
-            secret: deps.csrfSecret(),
-            sessionId: issued.session.sessionId,
-          }),
-          {
-            httpOnly: false,
-            maxAgeSeconds: cookieMaxAgeSeconds,
+      return response;
+    },
+    googleStart: async (c: HandlerContext): Promise<Response> => {
+      if (!deps.google?.configured) {
+        return new Response(null, {
+          headers: {
+            "Cache-Control": "no-store",
+            Location: "/auth/login?error=google_unavailable",
+          },
+          status: 303,
+        });
+      }
+      const limit = await deps.store().rateLimiter.consumeKey({
+        ...MAGIC_LINK_ADDRESS_LIMIT,
+        key: rateLimitKey("address", clientAddress(c) ?? "unknown"),
+      });
+      if (!limit.allowed) {
+        return apiErrorResponse({
+          code: "rate_limited",
+          message: "Too many sign-in attempts. Try again shortly.",
+          requestId: crypto.randomUUID(),
+        });
+      }
+      const flow = await deps.google.begin();
+      await deps.store().identity.beginOidc(flow.state);
+      return new Response(null, {
+        headers: {
+          "Cache-Control": "no-store",
+          Location: flow.url,
+          "Referrer-Policy": "no-referrer",
+          "Set-Cookie": sessionCookie("reasonate_oidc", flow.cookie, {
+            httpOnly: true,
+            maxAgeSeconds: 600,
             secure: deps.secureCookies,
-          }
-        )
+          }),
+        },
+        status: 303,
+      });
+    },
+    /** Safe navigation never consumes a credential, including legacy mailed links. */
+    landing: (c: HandlerContext): Response => {
+      const token = c.req.query("token");
+      const valid = RedeemMagicLinkSchema.safeParse({ token });
+      return new Response(null, {
+        headers: {
+          "Cache-Control": "no-store",
+          Location: valid.success
+            ? `/auth/verify#token=${encodeURIComponent(valid.data.token)}`
+            : "/auth/login?error=link",
+          "Referrer-Policy": "no-referrer",
+        },
+        status: 303,
+      });
+    },
+    listSessions: async (c: HandlerContext): Promise<Response> => {
+      const store = deps.store();
+      const principal = await resolveSessionPrincipal({
+        cookieHeader: c.req.header("cookie"),
+        sessions: store.sessions,
+      });
+      if (!principal) {
+        return unauthenticatedResponse(crypto.randomUUID());
+      }
+      const sessions = await store.sessions.listUserSessions(principal.userId);
+      const response = c.json(
+        DeviceSessionsSchema.parse({
+          sessions: sessions.map((session) => ({
+            absoluteExpiresAt: session.absoluteExpiresAt,
+            createdAt: session.createdAt,
+            current: session.sessionId === principal.sessionId,
+            idleExpiresAt: session.idleExpiresAt,
+            lastSeenAt: session.lastSeenAt,
+            sessionId: session.sessionId,
+          })),
+        }),
+        200
       );
-      response.headers.set(
-        "Location",
-        safeRedirectPath(c.req.query("redirectTo"), { fallback: "/" })
+      response.headers.set("Cache-Control", "no-store");
+      return response;
+    },
+    options: (c: HandlerContext): Response => {
+      const response = c.json(
+        AuthOptionsSchema.parse({
+          email: deps.sender.delivery ?? "email",
+          google: deps.google?.configured ?? false,
+        }),
+        200
       );
-
+      response.headers.set("Cache-Control", "no-store");
+      return response;
+    },
+    readiness: (c: HandlerContext): Response => {
+      let valid = false;
+      try {
+        deps.csrfSecret();
+        valid =
+          deps.sender.delivery !== "unavailable" ||
+          Boolean(deps.google?.configured);
+      } catch {
+        valid = false;
+      }
+      const response = c.json({ ready: valid }, valid ? 200 : 503);
+      response.headers.set("Cache-Control", "no-store");
       return response;
     },
     readProfile: async (c: HandlerContext): Promise<Response> => {
@@ -390,6 +671,9 @@ export function createAuthHandlers(deps: AuthRouteDeps) {
         SessionViewSchema.parse({
           absoluteExpiresAt: session.absoluteExpiresAt,
           idleExpiresAt: session.idleExpiresAt,
+          onboardingComplete: await store.users.onboardingComplete(
+            session.userId
+          ),
           organizations: await store.listOrganizationMemberships({
             userId: session.userId,
           }),
@@ -402,6 +686,18 @@ export function createAuthHandlers(deps: AuthRouteDeps) {
       response.headers.set("Cache-Control", "no-store");
       return response;
     },
+    redeem: async (c: HandlerContext): Promise<Response> => {
+      const response = await createAuthHandlers(deps).callback(c);
+      if (response.status !== 303) {
+        return response;
+      }
+      response.headers.delete("Location");
+      response.headers.set("Content-Type", "application/json");
+      return new Response(JSON.stringify({ authenticated: true }), {
+        headers: response.headers,
+        status: 200,
+      });
+    },
     /**
      * Starts a sign-in. The answer carries only the acceptance deadline, which
      * is the same fact whether or not the address has an account, so this
@@ -409,6 +705,7 @@ export function createAuthHandlers(deps: AuthRouteDeps) {
      */
     requestMagicLink: async (c: HandlerContext): Promise<Response> => {
       const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+      deps.csrfSecret();
 
       const body = MagicLinkRequestSchema.safeParse(await readJsonBody(c.req));
       if (!body.success) {
@@ -452,7 +749,25 @@ export function createAuthHandlers(deps: AuthRouteDeps) {
         return response;
       }
 
+      if (deps.sender.delivery === "unavailable") {
+        return apiErrorResponse({
+          code: "unsupported",
+          message: new MagicLinkSenderUnconfiguredError().message,
+          requestId: rid,
+        });
+      }
+      const existingBinding = readCookie(
+        c.req.header("cookie"),
+        "reasonate_magic_browser"
+      );
+      const binding = RedeemMagicLinkSchema.safeParse({
+        token: existingBinding,
+      });
+      const browserBinding = binding.success
+        ? binding.data.token
+        : randomBytes(32).toString("base64url");
       const issued = await deps.store().magicLinks.issue({
+        browserBinding,
         email: body.data.email,
         ip: address,
         ttlMs: MAGIC_LINK_TTL_MS,
@@ -460,17 +775,92 @@ export function createAuthHandlers(deps: AuthRouteDeps) {
 
       // The only moment the token leaves the database in plaintext is the
       // delivery call; the response never carries it.
-      await deps.sender.send({
-        email: body.data.email,
-        url: magicLinkUrl(deps.publicOrigin, issued.token),
-      });
+      try {
+        await deps.sender.send({
+          email: body.data.email,
+          url: magicLinkUrl(deps.publicOrigin, issued.token),
+        });
+      } catch (cause) {
+        console.warn(
+          JSON.stringify({ event: "identity.delivery_failed", requestId: rid })
+        );
+        return deliveryFailure(cause, rid);
+      }
 
-      return c.json(
+      const response = c.json(
         MagicLinkAcceptedSchema.parse({
+          delivery: deps.sender.delivery ?? "email",
           expiresAt: issued.expiresAt.toISOString(),
         }),
         202
       );
+      response.headers.set("Cache-Control", "no-store");
+      response.headers.append(
+        "Set-Cookie",
+        sessionCookie("reasonate_magic_browser", browserBinding, {
+          httpOnly: true,
+          maxAgeSeconds: 900,
+          secure: deps.secureCookies,
+        })
+      );
+      return response;
+    },
+    revokeSessions: async (c: HandlerContext): Promise<Response> => {
+      const rid = c.req.header("x-request-id") ?? crypto.randomUUID();
+      const store = deps.store();
+      const principal = await resolveSessionPrincipal({
+        cookieHeader: c.req.header("cookie"),
+        sessions: store.sessions,
+      });
+      if (!principal) {
+        return unauthenticatedResponse(rid);
+      }
+      const id = c.req.param("sessionId");
+      const parsed = SessionIdSchema.safeParse(id);
+      if (id !== "all" && !parsed.success) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message: "A valid session is required.",
+          requestId: rid,
+        });
+      }
+      const revoked =
+        id === "all"
+          ? (await store.sessions.revokeAllUserSessions(principal.userId)) > 0
+          : parsed.success &&
+            (await store.sessions.revokeOwnedSession({
+              sessionId: parsed.data,
+              userId: principal.userId,
+            }));
+      await store.audit.record(
+        auditEvent({
+          action: "identity.session_revoked",
+          actor: principal,
+          metadata: { all: id === "all", revoked },
+          organizationId: null,
+          projectId: null,
+          requestId: rid,
+        })
+      );
+      const response = c.json(SignedOutSchema.parse({ revoked }), 200);
+      if (id === "all" || id === principal.sessionId) {
+        response.headers.append(
+          "Set-Cookie",
+          clearedCookie(SESSION_COOKIE, {
+            httpOnly: true,
+            secure: deps.secureCookies,
+          })
+        );
+        response.headers.append(
+          "Set-Cookie",
+          clearedCookie(CSRF_COOKIE, {
+            httpOnly: false,
+            secure: deps.secureCookies,
+          })
+        );
+      }
+      response.headers.set("Cache-Control", "no-store");
+      return response;
     },
 
     /**

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "@reasonateai/ui/globals.css";
 import "katex/dist/katex.min.css";
 import { NetworkBanner } from "@/components/network/network-banner";
+import { ThemeProvider } from "@/components/theme-provider";
 
 export const metadata: Metadata = {
   description: "Build and manage projects with your ReasonateAI CTO.",
@@ -17,8 +18,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <NetworkBanner />
-        {children}
+        <ThemeProvider>
+          <NetworkBanner />
+          {children}
+        </ThemeProvider>
       </body>
     </html>
   );

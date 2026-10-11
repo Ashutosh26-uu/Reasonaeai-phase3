@@ -22,18 +22,21 @@ export class ApiRequestError extends Error {
   readonly status: number;
   readonly requestId: string | undefined;
   readonly code: string | undefined;
+  readonly retryAfterSeconds: number | undefined;
 
   constructor(
     status: number,
     message: string,
     requestId?: string,
-    options?: ErrorOptions & { code?: string | undefined }
+    options?: ErrorOptions & { code?: string | undefined },
+    retryAfterSeconds?: number
   ) {
     super(message, options);
     this.name = "ApiRequestError";
     this.status = status;
     this.requestId = requestId;
     this.code = options?.code;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
@@ -129,14 +132,16 @@ export async function request<T>(
     });
   }
   if (!response.ok) {
+    notifySessionEnded(response.status, path);
     diagnose(response.status, "api_refusal");
     const parsedError = extractApiError(body);
     if (parsedError) {
       throw new ApiRequestError(
         response.status,
         parsedError.message,
-        undefined,
-        parsedError.code ? { code: parsedError.code } : undefined
+        requestId,
+        parsedError.code ? { code: parsedError.code } : undefined,
+        retryDelay(response)
       );
     }
     throw new ApiRequestError(
@@ -146,6 +151,16 @@ export async function request<T>(
     );
   }
   return parse(body);
+}
+
+function retryDelay(response: Response): number | undefined {
+  const delay = Number(response.headers.get("retry-after"));
+  return Number.isFinite(delay) && delay > 0 ? delay : undefined;
+}
+function notifySessionEnded(status: number, path: string) {
+  if (status === 401 && path !== "/v1/auth/callback") {
+    window.dispatchEvent(new Event("reasonate:session-ended"));
+  }
 }
 
 /** The scope every project route requires, as a query string. */

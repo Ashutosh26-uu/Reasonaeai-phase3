@@ -16,12 +16,6 @@ import {
   HoverCardTrigger,
 } from "@reasonateai/ui/components/hover-card";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@reasonateai/ui/components/tooltip";
-import {
   Check,
   ChevronDown,
   ChevronRight,
@@ -50,16 +44,15 @@ export interface RailProps {
   accountName: string;
   conversationId: string;
   conversationsByProject: Record<string, ConversationSummary[] | undefined>;
-  draftProjectName: string;
   errorMessage: string;
   failedConversationProjects: string[];
   onConversationSelect: (projectId: string, buildSessionId: string) => void;
+  onCreateProject: () => void;
+  onCreateWorkspace: () => void;
   onNewConversation: () => void;
   onNewConversationForProject: (projectId: string) => void;
   onOrganizationSelect: (organizationId: string) => void;
-  onProjectNameChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   onProjectSelect: (projectId: string) => void;
-  onProjectSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   onSettings: () => void;
   onSignOut: () => void;
   onTogglePin: (id: string) => void;
@@ -68,7 +61,6 @@ export interface RailProps {
   pinnedConversationIds: string[];
   projectId: string;
   projects: ProjectSummary[];
-  submitting: boolean;
 }
 
 const COLLAPSED_KEY = "reasonate.rail.collapsed";
@@ -233,29 +225,23 @@ function ChatPicker({
 }
 
 interface ProjectPickerProps {
-  draftProjectName: string;
   errorMessage: string;
+  onCreateProject: () => void;
   onOpenChange: (open: boolean) => void;
-  onProjectNameChange: (event: React.ChangeEvent<HTMLInputElement>) => void;
   onProjectSelect: (projectId: string) => void;
-  onProjectSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   open: boolean;
   projectId: string;
   projects: ProjectSummary[];
-  submitting: boolean;
 }
 
 function ProjectPicker({
-  draftProjectName,
+  onCreateProject,
   errorMessage,
   onOpenChange,
-  onProjectNameChange,
   onProjectSelect,
-  onProjectSubmit,
   open,
   projectId,
   projects,
-  submitting,
 }: ProjectPickerProps) {
   const [query, setQuery] = useState("");
   const dialog = useRef<HTMLDialogElement>(null);
@@ -304,6 +290,10 @@ function ProjectPicker({
     },
     [close]
   );
+  const createProjectFromPicker = useCallback(() => {
+    close();
+    onCreateProject();
+  }, [close, onCreateProject]);
   const chooseProject = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       onProjectSelect(event.currentTarget.value);
@@ -379,23 +369,11 @@ function ProjectPicker({
           ))
         )}
       </section>
-      <form className="rail-project-create" onSubmit={onProjectSubmit}>
-        <label className="sr-only" htmlFor="project-picker-new-name">
-          New project name
-        </label>
-        <input
-          id="project-picker-new-name"
-          maxLength={120}
-          onChange={onProjectNameChange}
-          placeholder="New project name"
-          required
-          value={draftProjectName}
-        />
-        <button aria-label="Create project" disabled={submitting} type="submit">
-          <CirclePlus aria-hidden="true" size={17} />
-          Create
+      <div className="rail-project-create">
+        <button onClick={createProjectFromPicker} type="button">
+          <CirclePlus size={17} /> Create a project
         </button>
-      </form>
+      </div>
     </dialog>
   );
 }
@@ -738,219 +716,32 @@ function ProjectTreeItem({
   );
 }
 
-function RailHeadActions({
-  collapsed,
-  onOpenChatPicker,
-  onToggle,
-}: {
-  collapsed: boolean;
-  onOpenChatPicker: () => void;
-  onToggle: () => void;
-}) {
-  return (
-    <div className="rail-head-actions">
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            aria-label="Search conversations"
-            className="rail-icon-button"
-            onClick={onOpenChatPicker}
-            type="button"
-          >
-            <Search aria-hidden="true" size={19} />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">Search conversations</TooltipContent>
-      </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            aria-expanded={!collapsed}
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            className="rail-icon-button rail-desktop-toggle"
-            onClick={onToggle}
-            type="button"
-          >
-            {collapsed ? (
-              <ChevronsRight aria-hidden="true" size={18} />
-            ) : (
-              <ChevronsLeft aria-hidden="true" size={18} />
-            )}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="right">
-          {collapsed ? "Expand sidebar" : "Collapse sidebar"}
-        </TooltipContent>
-      </Tooltip>
-    </div>
-  );
-}
-
-function RailNewButton({
-  collapsed,
-  disabled,
-  onStart,
-}: {
-  collapsed: boolean;
-  disabled: boolean;
-  onStart: () => void;
-}) {
-  if (collapsed) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            aria-disabled={disabled}
-            aria-label="New conversation"
-            className="rail-new"
-            onClick={disabled ? undefined : onStart}
-            type="button"
-          >
-            <SquarePen aria-hidden="true" size={17} />
-            <span className="rail-text">New conversation</span>
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="right">
-          {disabled ? "Select a project first" : "New conversation"}
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
-
-  return (
-    <button
-      aria-label="New conversation"
-      className="rail-new"
-      disabled={disabled}
-      onClick={onStart}
-      type="button"
-    >
-      <SquarePen aria-hidden="true" size={17} />
-      <span className="rail-text">New conversation</span>
-    </button>
-  );
-}
-
-function RailProjectActions({
-  collapsed,
-  onOpenProjectPicker,
-  onToggleProjectCreation,
-}: {
-  collapsed: boolean;
-  onOpenProjectPicker: () => void;
-  onToggleProjectCreation: () => void;
-}) {
-  return (
-    <>
-      <div className="rail-label rail-project-label">
-        <span>Projects</span>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              aria-label="Create a project"
-              className="rail-label-action"
-              onClick={onToggleProjectCreation}
-              type="button"
-            >
-              <Plus aria-hidden="true" size={16} />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="top">Create project</TooltipContent>
-        </Tooltip>
-      </div>
-      {collapsed ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              aria-label="Browse projects"
-              className="rail-collapsed-projects"
-              onClick={onOpenProjectPicker}
-              type="button"
-            >
-              <FolderClosed aria-hidden="true" size={19} />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="right">Browse projects</TooltipContent>
-        </Tooltip>
-      ) : (
-        <button
-          aria-label="Browse projects"
-          className="rail-collapsed-projects"
-          onClick={onOpenProjectPicker}
-          type="button"
-        >
-          <FolderClosed aria-hidden="true" size={19} />
-        </button>
-      )}
-    </>
-  );
-}
-
-function RailProfileButton({
-  accountName,
-  collapsed,
-}: {
-  accountName: string;
-  collapsed: boolean;
-}) {
-  const trigger = (
-    <button
-      aria-label={`Open account menu${accountName ? ` for ${accountName}` : ""}`}
-      className="rail-profile"
-      type="button"
-    >
-      <span className="rail-profile-mark">
-        <UserRound aria-hidden="true" size={18} />
-      </span>
-      <span className="rail-text">{accountName || "Profile"}</span>
-    </button>
-  );
-
-  if (collapsed) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="right">
-          {accountName || "Account menu"}
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
-
-  return <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>;
-}
-
 export function Rail({
   accountEmail,
   accountName,
   conversationId,
   conversationsByProject,
   failedConversationProjects,
-  draftProjectName,
   errorMessage,
   onConversationSelect,
   onNewConversation,
   onNewConversationForProject,
   onOrganizationSelect,
-  onProjectNameChange,
+  onCreateProject,
+  onCreateWorkspace,
   onProjectSelect,
-  onProjectSubmit,
   onSettings,
   onSignOut,
   organizationId,
   organizations,
   projectId,
   projects,
-  submitting,
   pinnedConversationIds,
   onTogglePin: togglePinnedConversation,
 }: RailProps) {
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [chatPickerOpen, setChatPickerOpen] = useState(false);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
-  const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [expandedProjects, setExpandedProjects] = useState<string[]>([]);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 900px)");
@@ -1157,10 +948,6 @@ export function Rail({
   );
   const openChatPicker = useCallback(() => setChatPickerOpen(true), []);
   const openProjectPicker = useCallback(() => setProjectPickerOpen(true), []);
-  const toggleProjectCreation = useCallback(
-    () => setCreateProjectOpen((current) => !current),
-    []
-  );
   const startNewConversation = useCallback(() => {
     onNewConversation();
     closeNavigation();
@@ -1174,231 +961,284 @@ export function Rail({
   );
 
   return (
-    <TooltipProvider delayDuration={250}>
-      <aside className="rail" data-collapsed={collapsed || undefined}>
-        {!collapsed && (
-          <button
-            aria-label="Close navigation"
-            className="rail-backdrop"
-            onClick={closeNavigation}
-            tabIndex={-1}
-            type="button"
-          />
-        )}
-
-        <div className="rail-head">
-          <Image
-            alt=""
-            height={22}
-            priority
-            src="/brand/reasonateai-icon.png"
-            width={22}
-          />
-          <span className="rail-brand">
-            reasonate<span className="rail-ai">AI</span>
-          </span>
-          <RailHeadActions
-            collapsed={collapsed}
-            onOpenChatPicker={openChatPicker}
-            onToggle={toggle}
-          />
-        </div>
-
+    <aside className="rail" data-collapsed={collapsed || undefined}>
+      {!collapsed && (
         <button
-          aria-expanded={!collapsed}
-          aria-label={collapsed ? "Open navigation" : "Close navigation"}
-          className="rail-mobile-toggle"
-          onClick={toggle}
+          aria-label="Close navigation"
+          className="rail-backdrop"
+          onClick={closeNavigation}
+          tabIndex={-1}
+          type="button"
+        />
+      )}
+
+      <div className="rail-head">
+        <Image
+          alt=""
+          height={22}
+          priority
+          src="/brand/reasonateai-icon.png"
+          width={22}
+        />
+        <span className="rail-brand">
+          reasonate<span className="rail-ai">AI</span>
+        </span>
+        <div className="rail-head-actions">
+          <button
+            aria-label="Search conversations"
+            className="rail-icon-button"
+            onClick={openChatPicker}
+            title="Search conversations"
+            type="button"
+          >
+            <Search aria-hidden="true" size={19} />
+          </button>
+          <button
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className="rail-icon-button rail-desktop-toggle"
+            onClick={toggle}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            type="button"
+          >
+            {collapsed ? (
+              <ChevronsRight aria-hidden="true" size={18} />
+            ) : (
+              <ChevronsLeft aria-hidden="true" size={18} />
+            )}
+          </button>
+        </div>
+      </div>
+
+      <button
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? "Open navigation" : "Close navigation"}
+        className="rail-mobile-toggle"
+        onClick={toggle}
+        type="button"
+      >
+        {collapsed ? (
+          <Menu aria-hidden="true" size={20} />
+        ) : (
+          <X aria-hidden="true" size={20} />
+        )}
+      </button>
+
+      <div className="rail-body">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              aria-label={`Switch workspace: ${organizationName}`}
+              className="rail-workspace-switch"
+              title={organizationName}
+              type="button"
+            >
+              <FolderOpen aria-hidden="true" size={17} />
+              <span className="rail-text">{organizationName}</span>
+              <ChevronDown aria-hidden="true" className="rail-text" size={14} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="start"
+            className="rail-profile-menu"
+            sideOffset={6}
+          >
+            <DropdownMenuLabel>Workspaces</DropdownMenuLabel>
+            {organizations.map((item) => (
+              <DropdownMenuItem
+                data-organization-id={item.organizationId}
+                key={item.organizationId}
+                onSelect={selectOrganizationFromMenu}
+              >
+                <FolderOpen aria-hidden="true" />
+                {item.name}
+                {item.organizationId === organizationId && (
+                  <Check aria-hidden="true" />
+                )}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onCreateWorkspace}>
+              <Plus aria-hidden="true" />
+              Create workspace
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <button
+          className="rail-new"
+          disabled={!projectId}
+          onClick={startNewConversation}
+          title={collapsed ? "New conversation" : undefined}
           type="button"
         >
-          {collapsed ? (
-            <Menu aria-hidden="true" size={20} />
-          ) : (
-            <X aria-hidden="true" size={20} />
-          )}
+          <SquarePen aria-hidden="true" size={17} />
+          <span className="rail-text">New conversation</span>
         </button>
 
-        <div className="rail-body">
-          <RailNewButton
-            collapsed={collapsed}
-            disabled={!projectId}
-            onStart={startNewConversation}
-          />
-
-          {pinnedConversations.length > 0 && (
-            <div className="rail-block rail-pinned-block">
-              <div className="rail-label rail-pinned-label">Pinned</div>
-              <ul
-                aria-label="Pinned conversations"
-                className="rail-pinned-list"
-              >
-                {pinnedConversations.map(
-                  ({
-                    conversation,
-                    projectId: targetProjectId,
-                    projectName,
-                  }) => (
-                    <ConversationTreeItem
-                      conversation={conversation}
-                      conversationId={conversationId}
-                      isPinned
-                      key={conversation.buildSessionId}
-                      onMenuAction={selectConversationMenuAction}
-                      onPin={pinConversationFromButton}
-                      onSelect={selectConversationFromButton}
-                      projectId={targetProjectId}
-                      projectName={projectName}
-                      selectedProjectId={projectId}
-                    />
-                  )
-                )}
-              </ul>
-            </div>
-          )}
-
-          <div className="rail-block rail-project-block">
-            <RailProjectActions
-              collapsed={collapsed}
-              onOpenProjectPicker={openProjectPicker}
-              onToggleProjectCreation={toggleProjectCreation}
-            />
-
-            <ul aria-label="Projects and conversations" className="rail-tree">
-              {projects.map((project) => (
-                <ProjectTreeItem
-                  conversationId={conversationId}
-                  conversations={conversationsByProject[project.projectId]}
-                  expanded={expandedProjects.includes(project.projectId)}
-                  failed={failedConversationProjects.includes(
-                    project.projectId
-                  )}
-                  key={project.projectId}
-                  onConversationMenuAction={selectConversationMenuAction}
-                  onConversationPin={pinConversationFromButton}
-                  onConversationSelect={selectConversationFromButton}
-                  onCreateConversation={createConversationFromButton}
-                  onProjectMenuAction={selectProjectMenuAction}
-                  onProjectSelect={selectProjectFromButton}
-                  onToggleProject={toggleProjectFromButton}
-                  pinnedConversationIds={pinnedConversationIds}
-                  project={project}
-                  selectedProjectId={projectId}
-                />
-              ))}
-            </ul>
-
-            {createProjectOpen && (
-              <form className="rail-form" onSubmit={onProjectSubmit}>
-                <label className="sr-only" htmlFor="project-name">
-                  New project
-                </label>
-                <input
-                  autoFocus
-                  className="rail-input"
-                  id="project-name"
-                  maxLength={120}
-                  onChange={onProjectNameChange}
-                  placeholder="New project"
-                  required
-                  value={draftProjectName}
-                />
-                <button
-                  aria-label="Create project"
-                  className="rail-submit"
-                  disabled={submitting}
-                  type="submit"
-                >
-                  <CirclePlus aria-hidden="true" size={16} />
-                </button>
-              </form>
-            )}
-          </div>
-        </div>
-
-        <div className="rail-foot">
-          <DropdownMenu>
-            <RailProfileButton
-              accountName={accountName}
-              collapsed={collapsed}
-            />
-            <DropdownMenuContent
-              align="start"
-              className="rail-profile-menu"
-              side="top"
-              sideOffset={8}
-            >
-              <DropdownMenuLabel>
-                <span className="rail-menu-org-name">
-                  {accountName || "Your account"}
-                </span>
-                {accountEmail && (
-                  <span className="rail-menu-eyebrow">{accountEmail}</span>
-                )}
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel>
-                <span className="rail-menu-eyebrow">Workspace</span>
-                <span className="rail-menu-org-name">{organizationName}</span>
-              </DropdownMenuLabel>
-              {organizations.length > 1 && (
-                <>
-                  <DropdownMenuSeparator />
-                  {organizations.map((organization) => (
-                    <DropdownMenuItem
-                      data-organization-id={organization.organizationId}
-                      key={organization.organizationId}
-                      onSelect={selectOrganizationFromMenu}
-                    >
-                      <span className="rail-menu-org-mark">
-                        {organization.name.slice(0, 1).toUpperCase()}
-                      </span>
-                      <span className="rail-menu-org-label">
-                        {organization.name}
-                      </span>
-                      {organization.organizationId === organizationId && (
-                        <Check
-                          aria-hidden="true"
-                          className="rail-menu-check"
-                          size={15}
-                        />
-                      )}
-                    </DropdownMenuItem>
-                  ))}
-                </>
+        {pinnedConversations.length > 0 && (
+          <div className="rail-block rail-pinned-block">
+            <div className="rail-label rail-pinned-label">Pinned</div>
+            <ul aria-label="Pinned conversations" className="rail-pinned-list">
+              {pinnedConversations.map(
+                ({ conversation, projectId: targetProjectId, projectName }) => (
+                  <ConversationTreeItem
+                    conversation={conversation}
+                    conversationId={conversationId}
+                    isPinned
+                    key={conversation.buildSessionId}
+                    onMenuAction={selectConversationMenuAction}
+                    onPin={pinConversationFromButton}
+                    onSelect={selectConversationFromButton}
+                    projectId={targetProjectId}
+                    projectName={projectName}
+                    selectedProjectId={projectId}
+                  />
+                )
               )}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={onSettings}>
-                <SettingsIcon aria-hidden="true" />
-                Settings
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={onSignOut} variant="destructive">
-                <LogOut aria-hidden="true" />
-                Sign out
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+            </ul>
+          </div>
+        )}
 
-        <ChatPicker
-          conversations={sortedConversations}
-          onConversationSelect={onConversationSelect}
-          onNewConversation={onNewConversation}
-          onOpenChange={setChatPickerOpen}
-          open={chatPickerOpen}
-        />
-        <ProjectPicker
-          draftProjectName={draftProjectName}
-          errorMessage={errorMessage}
-          onOpenChange={setProjectPickerOpen}
-          onProjectNameChange={onProjectNameChange}
-          onProjectSelect={selectProjectFromPicker}
-          onProjectSubmit={onProjectSubmit}
-          open={projectPickerOpen}
-          projectId={projectId}
-          projects={projects}
-          submitting={submitting}
-        />
-      </aside>
-    </TooltipProvider>
+        <div className="rail-block rail-project-block">
+          <div className="rail-label rail-project-label">
+            <span>Projects</span>
+            <button
+              aria-label="Create a project"
+              className="rail-label-action"
+              onClick={onCreateProject}
+              title="Create a project"
+              type="button"
+            >
+              <Plus aria-hidden="true" size={16} />
+            </button>
+          </div>
+          <button
+            aria-label="Browse projects"
+            className="rail-collapsed-projects"
+            onClick={openProjectPicker}
+            title="Browse projects"
+            type="button"
+          >
+            <FolderClosed aria-hidden="true" size={19} />
+          </button>
+
+          <ul aria-label="Projects and conversations" className="rail-tree">
+            {projects.map((project) => (
+              <ProjectTreeItem
+                conversationId={conversationId}
+                conversations={conversationsByProject[project.projectId]}
+                expanded={expandedProjects.includes(project.projectId)}
+                failed={failedConversationProjects.includes(project.projectId)}
+                key={project.projectId}
+                onConversationMenuAction={selectConversationMenuAction}
+                onConversationPin={pinConversationFromButton}
+                onConversationSelect={selectConversationFromButton}
+                onCreateConversation={createConversationFromButton}
+                onProjectMenuAction={selectProjectMenuAction}
+                onProjectSelect={selectProjectFromButton}
+                onToggleProject={toggleProjectFromButton}
+                pinnedConversationIds={pinnedConversationIds}
+                project={project}
+                selectedProjectId={projectId}
+              />
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      <div className="rail-foot">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              aria-label={`Open account menu${accountName ? ` for ${accountName}` : ""}`}
+              className="rail-profile"
+              title="Profile menu"
+              type="button"
+            >
+              <span className="rail-profile-mark">
+                <UserRound aria-hidden="true" size={18} />
+              </span>
+              <span className="rail-text">{accountName || "Profile"}</span>
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="start"
+            className="rail-profile-menu"
+            side="top"
+            sideOffset={8}
+          >
+            <DropdownMenuLabel>
+              <span className="rail-menu-org-name">
+                {accountName || "Your account"}
+              </span>
+              {accountEmail && (
+                <span className="rail-menu-eyebrow">{accountEmail}</span>
+              )}
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>
+              <span className="rail-menu-eyebrow">Workspace</span>
+              <span className="rail-menu-org-name">{organizationName}</span>
+            </DropdownMenuLabel>
+            {organizations.length > 0 && (
+              <>
+                <DropdownMenuSeparator />
+                {organizations.map((organization) => (
+                  <DropdownMenuItem
+                    data-organization-id={organization.organizationId}
+                    key={organization.organizationId}
+                    onSelect={selectOrganizationFromMenu}
+                  >
+                    <span className="rail-menu-org-mark">
+                      {organization.name.slice(0, 1).toUpperCase()}
+                    </span>
+                    <span className="rail-menu-org-label">
+                      {organization.name}
+                    </span>
+                    {organization.organizationId === organizationId && (
+                      <Check
+                        aria-hidden="true"
+                        className="rail-menu-check"
+                        size={15}
+                      />
+                    )}
+                  </DropdownMenuItem>
+                ))}
+              </>
+            )}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onCreateWorkspace}>
+              <Plus aria-hidden="true" />
+              Create workspace
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onSettings}>
+              <SettingsIcon aria-hidden="true" />
+              Settings
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onSignOut} variant="destructive">
+              <LogOut aria-hidden="true" />
+              Sign out
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+
+      <ChatPicker
+        conversations={sortedConversations}
+        onConversationSelect={onConversationSelect}
+        onNewConversation={onNewConversation}
+        onOpenChange={setChatPickerOpen}
+        open={chatPickerOpen}
+      />
+      <ProjectPicker
+        errorMessage={errorMessage}
+        onCreateProject={onCreateProject}
+        onOpenChange={setProjectPickerOpen}
+        onProjectSelect={selectProjectFromPicker}
+        open={projectPickerOpen}
+        projectId={projectId}
+        projects={projects}
+      />
+    </aside>
   );
 }

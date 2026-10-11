@@ -33,8 +33,10 @@ function sessionsResolving(result: unknown): SessionRepository {
     createSession: () => {
       throw new Error("not used");
     },
+    listUserSessions: async () => [],
     resolveSession: async () => result as never,
     revokeAllUserSessions: async () => 0,
+    revokeOwnedSession: async () => false,
     revokeSession: async () => false,
     rotateSession: async () => undefined,
   };

@@ -1,0 +1,81 @@
+{
+  "date": "2026-10-10",
+  "source": "https://bklit.com/docs/components",
+  "light": {
+    "accent": "#ebebeb",
+    "accent-foreground": "#182034",
+    "background": "#f5f5f5",
+    "border": "#e4e4e4",
+    "card": "#fff",
+    "card-foreground": "#090b0c",
+    "destructive": "#e33f57",
+    "foreground": "#090b0c",
+    "input": "#f1f1f1",
+    "muted": "#eaeaea",
+    "muted-foreground": "#757575",
+    "popover": "#fff",
+    "popover-foreground": "#090b0c",
+    "primary": "#3e3e3e",
+    "primary-foreground": "#ececec",
+    "ring": "#000",
+    "secondary": "#f8f8fa",
+    "secondary-foreground": "#18181b"
+  },
+  "dark": {
+    "accent": "#292b34",
+    "accent-foreground": "#f9fbfb",
+    "background": "#08090b",
+    "border": "#6f748033",
+    "card": "#0e0f12",
+    "card-foreground": "#f9fbfb",
+    "destructive": "#ff6568",
+    "foreground": "#f9fbfb",
+    "input": "#545b6a33",
+    "muted": "#2b2d37",
+    "muted-foreground": "#818694",
+    "popover": "#18181b",
+    "popover-foreground": "#f9fbfb",
+    "primary": "#e3e7e8",
+    "primary-foreground": "#161b1d",
+    "ring": "#67787c",
+    "secondary": "#22242b",
+    "secondary-foreground": "#f9fbfb"
+  },
+  "assertions": {
+    "all18SourceTokensMatchInBothThemes": true,
+    "lightReloadRetainsPreference": true,
+    "directAuthRouteRetainsLightAndDark": true,
+    "mobile390NoHorizontalOverflowBothThemes": true
+  },
+  "surfaces": {
+    "light": {
+      "body": "rgb(245, 245, 245)",
+      "overflow": false,
+      "pane": "rgb(255, 255, 255)",
+      "theme": "light",
+      "tokens": {
+        "background": "#f5f5f5",
+        "border": "#e4e4e4",
+        "card": "#fff",
+        "foreground": "#090b0c",
+        "muted": "#eaeaea",
+        "primary": "#3e3e3e",
+        "primary-foreground": "#ececec"
+      }
+    },
+    "dark": {
+      "body": "rgb(8, 9, 11)",
+      "pane": "rgb(14, 15, 18)",
+      "theme": "dark",
+      "tokens": {
+        "background": "#08090b",
+        "border": "#6f748033",
+        "card": "#0e0f12",
+        "foreground": "#f9fbfb",
+        "muted": "#2b2d37",
+        "primary": "#e3e7e8",
+        "primary-foreground": "#161b1d"
+      }
+    }
+  }
+}

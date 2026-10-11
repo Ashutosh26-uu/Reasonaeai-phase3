@@ -67,6 +67,8 @@ import {
   AUTH_TOKEN_MIGRATION_SQL,
 } from "./auth-schema.js";
 import { createConversationHistory } from "./conversation-history.js";
+import { createIdentityRepository } from "./identity.js";
+import { IDENTITY_MIGRATION_SQL } from "./identity-schema.js";
 import {
   createMagicLinkRepository,
   type MagicLinkRepository,
@@ -416,6 +418,13 @@ export interface ProjectStateStore {
     ttlMs: number;
   }) => Promise<RunLease | undefined>;
   close: () => Promise<void>;
+  completeOnboarding: (input: {
+    audit: AuditEvent;
+    displayName: string;
+    organizationId: OrganizationId;
+    userId: UserId;
+    workspaceName: string;
+  }) => Promise<boolean>;
   /**
    * Creates an organization and its owner membership, and records the audit
    * event that describes it, in one transaction: a tenant without an owner, or
@@ -427,6 +436,7 @@ export interface ProjectStateStore {
    */
   createOrganizationWithOwner: (input: {
     audit: AuditEvent;
+    ensureFirst?: boolean;
     name: string;
     userId: UserId;
   }) => Promise<CreateOrganizationResponse>;
@@ -471,6 +481,7 @@ export interface ProjectStateStore {
     runId: RunId;
   }) => Promise<RunRecord | undefined>;
   history: ReturnType<typeof createConversationHistory>;
+  identity: ReturnType<typeof createIdentityRepository>;
   /** Reads the durable cancellation request while a worker holds the run. */
   isRunCancellationRequested: (runId: RunId) => Promise<boolean>;
   listArtifacts: (scope: TenantScope) => Promise<ArtifactRecord[]>;
@@ -788,6 +799,41 @@ export function createProjectStateStore(config: {
   }
 
   const usage = createUsageRepository(pool, { withTransaction });
+  const identity = createIdentityRepository(pool, withTransaction);
+
+  async function completeOnboarding(input: {
+    audit: AuditEvent;
+    displayName: string;
+    organizationId: OrganizationId;
+    userId: UserId;
+    workspaceName: string;
+  }): Promise<boolean> {
+    return await withTransaction(async (client) => {
+      await client.query(
+        "select user_id from users where user_id = $1 for update",
+        [input.userId]
+      );
+      const membership = await client.query(
+        "select 1 from organization_memberships where user_id = $1 and organization_id = $2 and role = 'owner' and status = 'active' for update",
+        [input.userId, input.organizationId]
+      );
+      if (membership.rowCount !== 1) {
+        return false;
+      }
+      const updated = await client.query(
+        "update users set display_name = $2, onboarding_completed_at = now() where user_id = $1 and onboarding_completed_at is null returning user_id",
+        [input.userId, input.displayName]
+      );
+      if (updated.rowCount === 1) {
+        await client.query(
+          "update organizations set name = $2 where organization_id = $1",
+          [input.organizationId, input.workspaceName]
+        );
+        await recordWith(client, input.audit);
+      }
+      return true;
+    });
+  }
   const history = createConversationHistory({
     appendQueued: async (client, runId, command) => {
       await insertRunEvent(client, {
@@ -1915,10 +1961,35 @@ export function createProjectStateStore(config: {
    */
   async function createOrganizationWithOwner(input: {
     audit: AuditEvent;
+    ensureFirst?: boolean;
     name: string;
     userId: UserId;
   }): Promise<CreateOrganizationResponse> {
     return await withTransaction(async (client) => {
+      if (input.ensureFirst) {
+        await client.query(
+          "select user_id from users where user_id = $1 for update",
+          [input.userId]
+        );
+        const existing = await client.query<{
+          organization_id: string;
+          name: string;
+          role: string;
+        }>(
+          `select o.organization_id, o.name, m.role from organizations o
+           join organization_memberships m on m.organization_id = o.organization_id
+           where m.user_id = $1 and m.status = 'active' order by o.organization_id limit 1`,
+          [input.userId]
+        );
+        const [row] = existing.rows;
+        if (row) {
+          return CreateOrganizationResponseSchema.parse({
+            membershipRole: row.role,
+            name: row.name,
+            organizationId: row.organization_id,
+          });
+        }
+      }
       const organizationId =
         input.audit.organizationId ?? OrganizationIdSchema.parse(randomUUID());
 
@@ -2465,12 +2536,14 @@ export function createProjectStateStore(config: {
       await rateLimiter.close();
       await pool.end();
     },
+    completeOnboarding,
     createOrganizationWithOwner,
     createProject,
     finishRun,
     getBuildSession,
     getRun,
     history,
+    identity,
     isRunCancellationRequested,
     listArtifacts,
     listConversationEvents,
@@ -2510,6 +2583,7 @@ export function createProjectStateStore(config: {
             // Both reference the organization, project, and user tables above,
             // so they are applied after them in this same transaction.
             await client.query(AUTH_TOKEN_MIGRATION_SQL);
+            await client.query(IDENTITY_MIGRATION_SQL);
             await client.query(AUDIT_MIGRATION_SQL);
           });
         } catch (error) {
