@@ -343,13 +343,6 @@ export default function Skeleton() {
 
   return (
     <div className="sk-app" data-rail={rail}>
-      <div aria-hidden="true" className="dossier-orbs">
-        <div className="dossier-orb dossier-orb-1" />
-        <div className="dossier-orb dossier-orb-2" />
-        <div className="dossier-orb dossier-orb-3" />
-      </div>
-      <div aria-hidden="true" className="dossier-grain dossier-scanline" />
-
       <aside className="sk-rail">
         <div className="sk-rail-top">
           <span className="sk-mark" />

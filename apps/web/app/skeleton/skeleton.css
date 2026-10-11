@@ -308,10 +308,17 @@ body {
   display: inline-flex;
   gap: 6px;
   align-items: center;
+  max-width: 140px;
   font-size: 13px;
   font-weight: 500;
   color: var(--ink-3);
   transition: color 140ms var(--ease);
+}
+
+.sk-breadcrumb-project span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sk-breadcrumb-project:hover {
@@ -995,8 +1002,10 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sk-row[data-state="running"] .sk-row-state {
-    animation: none;
+  .sk-row[data-state="running"] .sk-row-state,
+  .sk-status-beacon {
+    transform: none !important;
+    animation: none !important;
   }
 }
 

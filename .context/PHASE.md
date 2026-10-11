@@ -29,6 +29,15 @@ October 10 integration saved the repairs in `5c6398c`, merged the newer main-bra
 
 ### Completed
 
+- Hardened and polished DOSSIER PRO MAX design system across web workspace and layout:
+  - Relocated foundational atmospheric layers (`.dossier-orbs`, `.dossier-orb-1/2/3`, `.dossier-grain`, `@keyframes dossierOrbFloat1/2/3`) into `@reasonateai/ui/src/styles/globals.css`, ensuring seamless multi-route inheritance under `RootLayout` and eradicating duplicate stacked GPU layers in `/skeleton`.
+  - Enforced strict zero box-shadow invariant across all keyframe animations, replacing non-compliant `box-shadow` in `cyanBeaconPulse`, `live-dot`, and `stream-caret` with `filter: brightness()` and SVG glow.
+  - Complete `@media (prefers-reduced-motion: reduce)` accessibility coverage across floating orbs, glowing beacons, tool chevrons, and spring transitions with `animation: none !important; transform: none !important;`.
+  - Eradicated native OS tooltip collisions across `apps/web/components/workspace/rail.tsx` and `conversation-header.tsx`, adding Radix tooltips to header tools and collapsed user profile while properly wiring `aria-disabled` for accessible tooltip display when disabled.
+  - Modularized `Rail` by extracting `RailHeadActions`, `RailNewButton`, `RailProjectActions`, and `RailProfileButton`, eliminating excessive cognitive complexity and satisfying Biome complexity thresholds.
+  - Injected tactile spring micro-interactions (`active:scale-[0.97]`, hover lift `translateY(-0.5px)`, and `springFadeIn`) across `.workspace-tab`, `.workspace-tab-close`, `.workspace-view-choices button`, and `.activity-trigger`.
+  - Added narrow-viewport breadcrumb constraints (`max-width: 80px` on mobile `@media (max-width: 600px)`), preserving conversation title visibility.
+
 - Elevated micro-interactions, breadcrumb hierarchy, floating tooltips, border glows, beacon pulses, and motion physics across DOSSIER PRO MAX:
   - Integrated Radix-backed tooltips (`TooltipProvider`, `Tooltip`, `TooltipTrigger`, `TooltipContent`) into `apps/web/components/workspace/rail.tsx` for search, collapse toggle, new conversation, project creation, and collapsed project switchers with full keyboard navigation and screen-reader accessibility.
   - Implemented sleek modern breadcrumb hierarchy (`.pane-breadcrumbs`, `.pane-breadcrumb-project`, `.pane-breadcrumb-separator`, `.pane-title`) with live glowing status indicator beacon pulse (`.pane-status-pill`, `.pane-status-beacon`, `limeBeaconPulse`) in `apps/web/components/workspace/conversation-header.tsx` and `apps/web/app/skeleton/page.tsx`.

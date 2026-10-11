@@ -738,6 +738,190 @@ function ProjectTreeItem({
   );
 }
 
+function RailHeadActions({
+  collapsed,
+  onOpenChatPicker,
+  onToggle,
+}: {
+  collapsed: boolean;
+  onOpenChatPicker: () => void;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="rail-head-actions">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            aria-label="Search conversations"
+            className="rail-icon-button"
+            onClick={onOpenChatPicker}
+            type="button"
+          >
+            <Search aria-hidden="true" size={19} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Search conversations</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className="rail-icon-button rail-desktop-toggle"
+            onClick={onToggle}
+            type="button"
+          >
+            {collapsed ? (
+              <ChevronsRight aria-hidden="true" size={18} />
+            ) : (
+              <ChevronsLeft aria-hidden="true" size={18} />
+            )}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">
+          {collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        </TooltipContent>
+      </Tooltip>
+    </div>
+  );
+}
+
+function RailNewButton({
+  collapsed,
+  disabled,
+  onStart,
+}: {
+  collapsed: boolean;
+  disabled: boolean;
+  onStart: () => void;
+}) {
+  if (collapsed) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            aria-disabled={disabled}
+            aria-label="New conversation"
+            className="rail-new"
+            onClick={disabled ? undefined : onStart}
+            type="button"
+          >
+            <SquarePen aria-hidden="true" size={17} />
+            <span className="rail-text">New conversation</span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">
+          {disabled ? "Select a project first" : "New conversation"}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <button
+      aria-label="New conversation"
+      className="rail-new"
+      disabled={disabled}
+      onClick={onStart}
+      type="button"
+    >
+      <SquarePen aria-hidden="true" size={17} />
+      <span className="rail-text">New conversation</span>
+    </button>
+  );
+}
+
+function RailProjectActions({
+  collapsed,
+  onOpenProjectPicker,
+  onToggleProjectCreation,
+}: {
+  collapsed: boolean;
+  onOpenProjectPicker: () => void;
+  onToggleProjectCreation: () => void;
+}) {
+  return (
+    <>
+      <div className="rail-label rail-project-label">
+        <span>Projects</span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              aria-label="Create a project"
+              className="rail-label-action"
+              onClick={onToggleProjectCreation}
+              type="button"
+            >
+              <Plus aria-hidden="true" size={16} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top">Create project</TooltipContent>
+        </Tooltip>
+      </div>
+      {collapsed ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              aria-label="Browse projects"
+              className="rail-collapsed-projects"
+              onClick={onOpenProjectPicker}
+              type="button"
+            >
+              <FolderClosed aria-hidden="true" size={19} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">Browse projects</TooltipContent>
+        </Tooltip>
+      ) : (
+        <button
+          aria-label="Browse projects"
+          className="rail-collapsed-projects"
+          onClick={onOpenProjectPicker}
+          type="button"
+        >
+          <FolderClosed aria-hidden="true" size={19} />
+        </button>
+      )}
+    </>
+  );
+}
+
+function RailProfileButton({
+  accountName,
+  collapsed,
+}: {
+  accountName: string;
+  collapsed: boolean;
+}) {
+  const trigger = (
+    <button
+      aria-label={`Open account menu${accountName ? ` for ${accountName}` : ""}`}
+      className="rail-profile"
+      type="button"
+    >
+      <span className="rail-profile-mark">
+        <UserRound aria-hidden="true" size={18} />
+      </span>
+      <span className="rail-text">{accountName || "Profile"}</span>
+    </button>
+  );
+
+  if (collapsed) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="right">
+          {accountName || "Account menu"}
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  return <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>;
+}
+
 export function Rail({
   accountEmail,
   accountName,
@@ -1013,45 +1197,11 @@ export function Rail({
           <span className="rail-brand">
             reasonate<span className="rail-ai">AI</span>
           </span>
-          <div className="rail-head-actions">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  aria-label="Search conversations"
-                  className="rail-icon-button"
-                  onClick={openChatPicker}
-                  title="Search conversations"
-                  type="button"
-                >
-                  <Search aria-hidden="true" size={19} />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                Search conversations
-              </TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  aria-expanded={!collapsed}
-                  aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-                  className="rail-icon-button rail-desktop-toggle"
-                  onClick={toggle}
-                  title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-                  type="button"
-                >
-                  {collapsed ? (
-                    <ChevronsRight aria-hidden="true" size={18} />
-                  ) : (
-                    <ChevronsLeft aria-hidden="true" size={18} />
-                  )}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right">
-                {collapsed ? "Expand sidebar" : "Collapse sidebar"}
-              </TooltipContent>
-            </Tooltip>
-          </div>
+          <RailHeadActions
+            collapsed={collapsed}
+            onOpenChatPicker={openChatPicker}
+            onToggle={toggle}
+          />
         </div>
 
         <button
@@ -1069,23 +1219,11 @@ export function Rail({
         </button>
 
         <div className="rail-body">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                className="rail-new"
-                disabled={!projectId}
-                onClick={startNewConversation}
-                title={collapsed ? "New conversation" : undefined}
-                type="button"
-              >
-                <SquarePen aria-hidden="true" size={17} />
-                <span className="rail-text">New conversation</span>
-              </button>
-            </TooltipTrigger>
-            {collapsed && (
-              <TooltipContent side="right">New conversation</TooltipContent>
-            )}
-          </Tooltip>
+          <RailNewButton
+            collapsed={collapsed}
+            disabled={!projectId}
+            onStart={startNewConversation}
+          />
 
           {pinnedConversations.length > 0 && (
             <div className="rail-block rail-pinned-block">
@@ -1119,39 +1257,11 @@ export function Rail({
           )}
 
           <div className="rail-block rail-project-block">
-            <div className="rail-label rail-project-label">
-              <span>Projects</span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    aria-label="Create a project"
-                    className="rail-label-action"
-                    onClick={toggleProjectCreation}
-                    title="Create a project"
-                    type="button"
-                  >
-                    <Plus aria-hidden="true" size={16} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top">Create project</TooltipContent>
-              </Tooltip>
-            </div>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  aria-label="Browse projects"
-                  className="rail-collapsed-projects"
-                  onClick={openProjectPicker}
-                  title="Browse projects"
-                  type="button"
-                >
-                  <FolderClosed aria-hidden="true" size={19} />
-                </button>
-              </TooltipTrigger>
-              {collapsed && (
-                <TooltipContent side="right">Browse projects</TooltipContent>
-              )}
-            </Tooltip>
+            <RailProjectActions
+              collapsed={collapsed}
+              onOpenProjectPicker={openProjectPicker}
+              onToggleProjectCreation={toggleProjectCreation}
+            />
 
             <ul aria-label="Projects and conversations" className="rail-tree">
               {projects.map((project) => (
@@ -1207,19 +1317,10 @@ export function Rail({
 
         <div className="rail-foot">
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                aria-label={`Open account menu${accountName ? ` for ${accountName}` : ""}`}
-                className="rail-profile"
-                title="Profile menu"
-                type="button"
-              >
-                <span className="rail-profile-mark">
-                  <UserRound aria-hidden="true" size={18} />
-                </span>
-                <span className="rail-text">{accountName || "Profile"}</span>
-              </button>
-            </DropdownMenuTrigger>
+            <RailProfileButton
+              accountName={accountName}
+              collapsed={collapsed}
+            />
             <DropdownMenuContent
               align="start"
               className="rail-profile-menu"

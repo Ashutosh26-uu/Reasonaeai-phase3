@@ -156,15 +156,113 @@ body {
   }
 }
 
+/* Dossier Pro Max Atmospheric Layers */
+.dossier-orbs {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.dossier-orb {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 9999px;
+  will-change: transform;
+}
+
+@keyframes dossierOrbFloat1 {
+  0% {
+    transform: translate(-50%, -50%) scale(1) translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate(-46%, -54%) scale(1.08) translate3d(35px, -25px, 0);
+  }
+  100% {
+    transform: translate(-54%, -46%) scale(0.94) translate3d(-25px, 30px, 0);
+  }
+}
+
+@keyframes dossierOrbFloat2 {
+  0% {
+    transform: translate(-50%, -50%) scale(1) translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate(-55%, -45%) scale(0.92) translate3d(-40px, 25px, 0);
+  }
+  100% {
+    transform: translate(-45%, -55%) scale(1.06) translate3d(30px, -35px, 0);
+  }
+}
+
+@keyframes dossierOrbFloat3 {
+  0% {
+    transform: translate(-50%, -50%) scale(1) translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate(-52%, -53%) scale(1.1) translate3d(25px, -30px, 0);
+  }
+  100% {
+    transform: translate(-48%, -47%) scale(0.96) translate3d(-30px, 20px, 0);
+  }
+}
+
+.dossier-orb-1 {
+  top: 25%;
+  left: 20%;
+  width: 400px;
+  height: 400px;
+  background: var(--lime);
+  opacity: 0.55;
+  filter: blur(100px);
+  transform: translate(-50%, -50%);
+  animation: dossierOrbFloat1 24s ease-in-out infinite alternate;
+}
+
+.dossier-orb-2 {
+  top: 60%;
+  left: 80%;
+  width: 500px;
+  height: 500px;
+  background: var(--cyan);
+  opacity: 0.45;
+  filter: blur(120px);
+  transform: translate(-50%, -50%);
+  animation: dossierOrbFloat2 30s ease-in-out infinite alternate;
+}
+
+.dossier-orb-3 {
+  top: 85%;
+  left: 50%;
+  width: 350px;
+  height: 350px;
+  background: var(--orange);
+  opacity: 0.35;
+  filter: blur(90px);
+  transform: translate(-50%, -50%);
+  animation: dossierOrbFloat3 26s ease-in-out infinite alternate;
+}
+
+.dossier-grain {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0.04;
+}
+
 @keyframes limeBeaconPulse {
   0%,
   100% {
     opacity: 1;
     transform: scale(1);
+    filter: brightness(1.2);
   }
   50% {
     opacity: 0.4;
-    transform: scale(0.85);
+    transform: scale(0.82);
+    filter: brightness(0.8);
   }
 }
 
@@ -173,12 +271,12 @@ body {
   100% {
     opacity: 1;
     transform: scale(1);
-    box-shadow: 0 0 10px rgba(0, 255, 240, 0.6);
+    filter: brightness(1.25);
   }
   50% {
-    opacity: 0.45;
-    transform: scale(0.85);
-    box-shadow: 0 0 4px rgba(0, 255, 240, 0.2);
+    opacity: 0.4;
+    transform: scale(0.82);
+    filter: brightness(0.8);
   }
 }
 
@@ -190,5 +288,15 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+
+  .dossier-orb,
+  .pane-status-beacon,
+  .activity-status-beacon,
+  .sk-status-beacon,
+  .live-dot,
+  .stream-caret {
+    transform: none !important;
+    animation: none !important;
   }
 }
