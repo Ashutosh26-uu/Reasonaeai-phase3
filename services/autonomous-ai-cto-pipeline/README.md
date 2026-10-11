@@ -140,6 +140,9 @@ docker compose down
 | `CTO_UI_STYLE` | `auto` | Force `site` (website) or `app` (dashboard). |
 | `CTO_AI_DESIGN` | `1` | Set to `0` to skip the AI design brief for websites. |
 | `CTO_AI_DESIGN_TIMEOUT` | `300` | Seconds to wait for the AI design brief. |
+| `CTO_SITE_ENGINE` | `static` | `static` builds websites as plain HTML in seconds. `react` uses the older React site builder. |
+| `CTO_DASH_ENGINE` | `new` | `new` builds one dashboard, or one per role, depending on the idea. `legacy` uses the classic sidebar layout. |
+| `CTO_REDESIGN` | not set | By default a website reuses its saved design (`site_brief.json`). Set any non-empty value (for example `1`) to ask the model for a fresh design. |
 
 PowerShell example:
 

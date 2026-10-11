@@ -35,6 +35,8 @@ from modules.m02_requirements.engine import generate_requirements
 from modules.m03_architect.architect import generate_architecture
 from modules.m03_architect.frontend_spec import generate_frontend_spec
 from site_builder import should_use_site, write_site
+from site_engine import write_static_site
+from dashboard_engine import write_dashboards
 
 ROOT = Path(__file__).resolve().parent
 M06_DIR = ROOT / "modules" / "m06_devops"
@@ -399,12 +401,23 @@ def run_pipeline_core(
         resolved_idea_text = idea_file.read_text(encoding="utf-8")
     ui_style = os.environ.get("CTO_UI_STYLE", "auto").lower()
     if ui_style == "site" or (ui_style == "auto" and should_use_site(resolved_idea_text, requirements)):
-        site_info = write_site(project_dir, resolved_idea_text, requirements, frontend_spec)
+        # "static" (default): plain HTML design system, builds in seconds. "react": the older React site.
+        if os.environ.get("CTO_SITE_ENGINE", "static").lower() == "react":
+            site_info = write_site(project_dir, resolved_idea_text, requirements, frontend_spec)
+        else:
+            site_info = write_static_site(project_dir, resolved_idea_text, requirements, frontend_spec)
+        ui_kind = "site"
         print(f"UI style: website '{site_info['name']}' (AI design: {site_info['ai']}; {site_info['look']}; sections: {site_info['sections']})")
     else:
-        write_app_jsx(project_dir, frontend_spec)
+        ui_kind = "app"
+        if os.environ.get("CTO_DASH_ENGINE", "new").lower() == "legacy":
+            write_app_jsx(project_dir, frontend_spec)
+            dash_note = "classic sidebar"
+        else:  # one dashboard, or one per role, depending on the user's words
+            dash_info = write_dashboards(project_dir, frontend_spec, resolved_idea_text)
+            dash_note = f"{dash_info['mode']} dashboard(s): {', '.join(dash_info['dashboards'])}"
         theme = apply_dashboard_theme(project_dir, resolved_idea_text)
-        print(f"UI style: app dashboard (colour theme: {theme or 'default purple'})")
+        print(f"UI style: app dashboard ({dash_note}; colour theme: {theme or 'default purple'})")
     write_docker_compose(project_dir, backend_port, frontend_port)
     print(f"Project assembled at: {project_dir}")
 
@@ -436,6 +449,7 @@ def run_pipeline_core(
         "pages": [p["name"] for p in frontend_spec["pages"]],
         "backend_url": backend_url,
         "frontend_url": frontend_url,
+        "ui_style": ui_kind,
     }
 
 
