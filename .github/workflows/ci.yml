@@ -124,8 +124,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # gitleaks scans the commits this branch adds, so it needs the base
-          # history rather than the default single-commit checkout.
+          # Keep the full ancestry of the checked-out main/PR merge commit.
+          # Other fetched branches are excluded by the scanner's HEAD option.
           fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
@@ -149,8 +149,10 @@ jobs:
         working-directory: services/build-sandbox/templates/next-shadcn
         run: npm audit --audit-level high
 
-      # Scan for committed secrets across git history
+      # Scan the checked-out commit's complete ancestry, including merged PRs.
+      # Gitleaks otherwise scans all fetched refs and lets an unmerged branch
+      # break unrelated main/PR runs. Do not suppress findings or truncate history.
       - name: Scan for committed secrets
         run: |
           docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
-            detect --source /repo --no-banner --redact --verbose
+            detect --source /repo --log-opts=HEAD --no-banner --redact --verbose
