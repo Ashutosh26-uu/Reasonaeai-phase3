@@ -5,29 +5,26 @@
  * product surface; nothing here is wired to a run or a stream.
  */
 :root {
-  --bg: #050507;
-  --bg-soft: #0a0a0d;
-  --text: #edede9;
-  --lime: #d6ff57;
-  --cyan: #00fff0;
-  --orange: #ff4d00;
-  --shell: #050507;
-  --surface: rgba(10, 10, 13, 0.75);
-  --raised: rgba(255, 255, 255, 0.06);
-  --raised-hover: rgba(255, 255, 255, 0.09);
-  --glass: rgba(255, 255, 255, 0.06);
-  --glass-strong: rgba(255, 255, 255, 0.09);
-  --bubble: rgba(255, 255, 255, 0.06);
-  --line: rgba(255, 255, 255, 0.08);
-  --line-strong: rgba(255, 255, 255, 0.15);
-  --ink: #edede9;
-  --ink-2: rgba(237, 237, 233, 0.5);
-  --ink-3: rgba(237, 237, 233, 0.25);
-  --ink-4: rgba(237, 237, 233, 0.18);
-  --add: #d6ff57;
-  --remove: #ff4d00;
-  --radius-control: 100px;
-  --radius-surface: 24px;
+  --bg: var(--background);
+  --bg-soft: var(--card);
+  --text: var(--foreground);
+  --shell: var(--background);
+  --surface: var(--card);
+  --raised: var(--popover);
+  --raised-hover: var(--accent);
+  --glass: var(--secondary);
+  --glass-strong: var(--muted);
+  --bubble: var(--secondary);
+  --line: var(--border);
+  --line-strong: var(--input);
+  --ink: var(--foreground);
+  --ink-2: color-mix(in srgb, var(--foreground) 90%, transparent);
+  --ink-3: var(--muted-foreground);
+  --ink-4: color-mix(in srgb, var(--muted-foreground) 75%, transparent);
+  --add: var(--primary);
+  --remove: var(--destructive);
+  --radius-control: 8px;
+  --radius-surface: 12px;
   --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
 }

@@ -21,6 +21,10 @@ The model policy in `.context/SPEC.md` is binding: paid frontier-model APIs are 
 
 ## Scope
 
+### Palette and identity integration — October 11, 2026
+
+PR #45's authentication and organization onboarding remains the active broad delivery. During integration with merged PR #49, restore the user-approved Bklit palette captured in `docs/design/bklit-palette.json` for both color schemes; PR #49's DOSSIER lime/cyan/orange palette and forced-dark shell are superseded. Keep compatible preview/runtime changes from main and preserve modal project/workspace creation and organization switching. October 11 frozen install, check, typecheck, full local integration suite, production build, and high-severity dependency audit passed after synchronization with main; exact results are recorded in `docs/operations/authentication.md`. Post-sync browser reacceptance is still pending because the user has asked to run the development server themselves, so leave it stopped. Company email and Google identity credentials are not configured yet; provider adapters and setup documentation must remain ready, and those live-provider paths stay visibly in progress until credentials exist.
+
 ### Preview regression repair — October 9, 2026
 
 PR #46 merged into main as `1e33da3` on October 10 after both hosted PR jobs passed (run `38051938310`). The subsequent main run `38062084136` passed application gates, including tests and runtime smoke, but its secret scan failed on an entry in unmerged documentation commit `faae083` from a sibling branch. Follow-up `codex/ci-secret-scan-history` repairs the scanner scope to the checked-out commit's full ancestry, preserving detection in historical and merged commits without adding an ignore. Real Docker regression checks passed for unrelated, selected, deleted historical and merged findings; scanning main's 96 patch-bearing commits passed with no leaks. Hosted follow-up CI and review remain in progress; separate-origin preview isolation and deployment topology remain release blockers.

@@ -16,6 +16,24 @@
   color: inherit;
   text-decoration: none;
 }
+.auth-theme-toggle {
+  position: fixed;
+  top: 20px;
+  right: 22px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  color: var(--foreground);
+  cursor: pointer;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.auth-theme-toggle:hover {
+  background: var(--accent);
+}
 .auth-story {
   position: relative;
   display: flex;
@@ -488,6 +506,10 @@
   }
 }
 @media (max-width: 760px) {
+  .auth-theme-toggle {
+    top: 16px;
+    right: 16px;
+  }
   .auth-page {
     display: block;
   }

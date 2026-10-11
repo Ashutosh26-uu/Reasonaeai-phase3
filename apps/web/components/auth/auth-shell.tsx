@@ -3,12 +3,15 @@
 import {
   Check,
   Layers,
+  Moon,
   MoveUpRight,
   ShieldCheck,
   Sparkles,
+  Sun,
 } from "lucide-react";
 import Image from "next/image";
-import type { ReactNode } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { applyThemePreference, readThemePreference } from "@/lib/theme";
 import "./auth.css";
 
 export function AuthShell({
@@ -18,8 +21,34 @@ export function AuthShell({
   children: ReactNode;
   stage?: number;
 }) {
+  const [theme, setTheme] = useState<"light" | "dark">("dark");
+  useEffect(() => {
+    applyThemePreference(readThemePreference());
+    setTheme(
+      document.documentElement.dataset.theme === "light" ? "light" : "dark"
+    );
+  }, []);
+  const toggleTheme = useCallback(() => {
+    const nextTheme =
+      document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    applyThemePreference(nextTheme);
+    setTheme(nextTheme);
+  }, []);
+
   return (
     <main className="auth-page">
+      <button
+        aria-label={`Switch to ${theme === "light" ? "dark" : "light"} theme`}
+        className="auth-theme-toggle"
+        onClick={toggleTheme}
+        type="button"
+      >
+        {theme === "light" ? (
+          <Moon aria-hidden="true" size={17} />
+        ) : (
+          <Sun aria-hidden="true" size={17} />
+        )}
+      </button>
       <section aria-label="About ReasonateAI" className="auth-story">
         <a className="auth-brand" href="/">
           <Image
