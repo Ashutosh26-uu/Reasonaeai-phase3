@@ -1,0 +1,10 @@
+@"
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+dist/
+.env
+*.db
+.integration_tmp/
+"@ | Set-Content .gitignore -Encoding utf8

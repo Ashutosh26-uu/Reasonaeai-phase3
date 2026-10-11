@@ -1,0 +1,134 @@
+{
+  "project_name": "movie_wishlist",
+  "pages": [
+    {
+      "name": "UserSignupPage",
+      "description": "Creates a new user account with a hashed password",
+      "calls_api": {
+        "method": "POST",
+        "path": "/auth/signup",
+        "base_url": "http://127.0.0.1:8000",
+        "request_body": {
+          "email": "string",
+          "password": "string"
+        },
+        "response_body": {
+          "id": "string",
+          "email": "string"
+        }
+      }
+    },
+    {
+      "name": "UserLoginPage",
+      "description": "Logs in a user and returns a JWT access token",
+      "calls_api": {
+        "method": "POST",
+        "path": "/auth/login",
+        "base_url": "http://127.0.0.1:8000",
+        "request_body": {
+          "email": "string",
+          "password": "string"
+        },
+        "response_body": {
+          "access_token": "string",
+          "token_type": "string"
+        }
+      }
+    },
+    {
+      "name": "UserProfilePage",
+      "description": "Returns the currently logged-in user's information",
+      "calls_api": {
+        "method": "GET",
+        "path": "/users/me",
+        "base_url": "http://127.0.0.1:8000",
+        "response_body": {
+          "id": "uuid",
+          "email": "string"
+        }
+      }
+    },
+    {
+      "name": "CreateMoviePage",
+      "description": "Creates a new movie",
+      "calls_api": {
+        "method": "POST",
+        "path": "/movies",
+        "base_url": "http://127.0.0.1:8000",
+        "request_body": {
+          "title": "string",
+          "watched": "boolean"
+        },
+        "response_body": {
+          "id": "uuid",
+          "title": "string",
+          "watched": "boolean"
+        }
+      }
+    },
+    {
+      "name": "MovieListPage",
+      "description": "Lists movies with pagination",
+      "calls_api": {
+        "method": "GET",
+        "path": "/movies",
+        "base_url": "http://127.0.0.1:8000",
+        "query_params": {
+          "limit": "int",
+          "offset": "int"
+        },
+        "response_body": "array of {id, title, watched}"
+      }
+    },
+    {
+      "name": "CreateUserMoviePage",
+      "description": "Adds a movie to the user's watchlist",
+      "calls_api": {
+        "method": "POST",
+        "path": "/user_movies",
+        "base_url": "http://127.0.0.1:8000",
+        "request_body": {
+          "user_id": "string",
+          "movie_id": "string"
+        },
+        "response_body": {
+          "id": "uuid",
+          "user_id": "string",
+          "movie_id": "string"
+        }
+      }
+    },
+    {
+      "name": "UserMovieListPage",
+      "description": "Lists movies in the user's watchlist with pagination",
+      "calls_api": {
+        "method": "GET",
+        "path": "/user_movies",
+        "base_url": "http://127.0.0.1:8000",
+        "query_params": {
+          "limit": "int",
+          "offset": "int"
+        },
+        "response_body": "array of {id, user_id, movie_id}"
+      }
+    },
+    {
+      "name": "UpdateUserMoviePage",
+      "description": "Updates the watched status of a movie in the user's watchlist Only changed fields need to be sent - fields left unchanged on the backend are preserved.",
+      "calls_api": {
+        "method": "PUT",
+        "path": "/user_movies/{id}",
+        "base_url": "http://127.0.0.1:8000",
+        "request_body": {
+          "user_id": "string",
+          "movie_id": "string"
+        },
+        "response_body": {
+          "id": "uuid",
+          "user_id": "string",
+          "movie_id": "string"
+        }
+      }
+    }
+  ]
+}
