@@ -168,6 +168,20 @@ body {
   }
 }
 
+@keyframes cyanBeaconPulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 10px rgba(0, 255, 240, 0.6);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.85);
+    box-shadow: 0 0 4px rgba(0, 255, 240, 0.2);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

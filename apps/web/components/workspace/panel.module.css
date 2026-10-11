@@ -21,22 +21,28 @@
   cursor: pointer;
   background: transparent;
   border: 0;
-  border-radius: 5px;
+  border-radius: 6px;
+  transition: all 160ms var(--ease);
 }
 
 .control:hover {
   color: var(--ink);
   background: var(--raised-hover);
+  transform: translateY(-0.5px);
+}
+
+.control:active {
+  transform: scale(0.92);
 }
 
 .control:disabled {
   cursor: default;
   opacity: 0.35;
+  transform: none;
 }
 
-.control:focus-visible,
-.address:focus-visible {
-  outline: 2px solid var(--ink-3);
+.control:focus-visible {
+  outline: 1px solid var(--lime);
   outline-offset: 2px;
 }
 
@@ -56,7 +62,13 @@
   color: var(--ink-2);
   background: var(--raised);
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: 6px;
+  transition: border-color 160ms var(--ease);
+}
+
+.address:focus-visible {
+  outline: none;
+  border-color: var(--lime);
 }
 
 .filePath {

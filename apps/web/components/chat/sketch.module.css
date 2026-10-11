@@ -129,7 +129,7 @@
     #facc15,
     #22c55e,
     #06b6d4,
-    #3478f6,
+    #00fff0,
     #a855f7,
     #ef4444
   );
@@ -330,15 +330,17 @@
   font-weight: 600;
   color: #050507;
   background: var(--lime);
+  border: 0;
   border-radius: 100px;
   box-shadow: none;
-  transition:
-    transform 0.4s var(--ease),
-    opacity 0.4s var(--ease);
+  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-.editor .attach:hover {
-  opacity: 0.92;
-  transform: scale(0.98);
+.editor .attach:hover:not(:disabled) {
+  filter: brightness(1.08);
+  transform: translateY(-1px) scale(1.04);
+}
+.editor .attach:active:not(:disabled) {
+  transform: scale(0.94);
 }
 .editor .attach:disabled {
   color: var(--text-faint);
