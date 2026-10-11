@@ -59,7 +59,7 @@ export function NetworkBanner() {
               )}
             </span>
             <button
-              className="ml-1 flex cursor-pointer items-center gap-1 rounded-full bg-neutral-800 px-2 py-0.5 text-neutral-300 transition-all hover:bg-neutral-700 hover:text-white active:scale-95"
+              className="ml-1 flex cursor-pointer items-center gap-1 rounded-md bg-neutral-800 px-2 py-0.5 text-neutral-300 transition-colors hover:bg-neutral-700 hover:text-white"
               disabled={isReconnecting}
               onClick={handleRetry}
               type="button"

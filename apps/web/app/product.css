@@ -259,11 +259,6 @@
 .rail-toggle:hover {
   color: var(--ink);
   background: var(--raised-hover);
-  transform: scale(1.05);
-}
-
-.rail-toggle:active {
-  transform: scale(0.94);
 }
 
 .rail-body {
@@ -294,12 +289,6 @@
 
 .rail-org:hover {
   background: var(--raised-hover);
-  border-color: var(--border-strong);
-  transform: translateY(-0.5px);
-}
-
-.rail-org:active {
-  transform: scale(0.98);
 }
 
 .rail-org-mark {
@@ -356,14 +345,7 @@
 }
 
 .rail-new:hover {
-  color: var(--ink);
   background: var(--raised-hover);
-  border-color: var(--border-strong);
-  transform: translateY(-1px) scale(1.01);
-}
-
-.rail-new:active {
-  transform: scale(0.97);
 }
 
 .rail-see-all {
@@ -380,8 +362,7 @@
 
 .rail-see-all:hover {
   color: var(--ink);
-  background: var(--raised-hover);
-  transform: translateX(1.5px);
+  background: var(--raised);
 }
 
 .rail-block {
@@ -423,11 +404,6 @@
 .rail-row:hover {
   color: var(--ink);
   background: var(--raised);
-  transform: translateX(2px);
-}
-
-.rail-row:active {
-  transform: scale(0.98);
 }
 
 .rail-row[data-active] {
@@ -539,12 +515,6 @@
 .rail-profile:hover {
   color: var(--ink);
   background: var(--raised);
-  border-color: var(--border);
-  transform: translateY(-0.5px);
-}
-
-.rail-profile:active {
-  transform: scale(0.98);
 }
 
 .rail-profile-mark {
@@ -711,11 +681,6 @@
 .rail-chat-close:hover {
   color: var(--ink);
   background: var(--raised-hover);
-  transform: rotate(90deg) scale(1.1);
-}
-
-.rail-chat-close:active {
-  transform: scale(0.92);
 }
 
 .rail-chat-list-pane {
@@ -788,14 +753,7 @@
 }
 
 .rail-chat-result:hover {
-  color: var(--ink);
-  background: var(--raised-hover);
-  border-color: var(--border);
-  transform: translateX(2px);
-}
-
-.rail-chat-result:active {
-  transform: scale(0.98);
+  background: var(--bubble);
 }
 
 .rail-chat-result span {
@@ -908,13 +866,13 @@
   height: 6px;
   background: var(--good);
   border-radius: 50%;
-  animation: limeBeaconPulse 2s ease-in-out infinite;
+  animation: statusBeaconPulse 2s ease-in-out infinite;
 }
 
 .pane-status-pill[data-status="working"] .pane-status-beacon,
 .pane-status-pill[data-status="running"] .pane-status-beacon {
   background: var(--primary);
-  animation: cyanBeaconPulse 2s ease-in-out infinite;
+  animation: activeBeaconPulse 2s ease-in-out infinite;
 }
 
 .pane-title {
@@ -954,11 +912,6 @@
 .pane-button:hover {
   color: var(--ink);
   background: var(--raised);
-  transform: translateY(-0.5px);
-}
-
-.pane-button:active {
-  transform: scale(0.96);
 }
 
 .pane-icon-button {
@@ -1007,11 +960,6 @@
 .activity-item[data-delegation]:hover {
   background: var(--raised);
   border-color: var(--border-strong);
-  transform: translateY(-0.5px);
-}
-
-.activity-item[data-delegation]:active {
-  transform: scale(0.99);
 }
 
 .activity-trigger {
@@ -1031,10 +979,6 @@
 .activity-trigger:hover {
   color: var(--ink);
   background: rgba(255, 255, 255, 0.04);
-}
-
-.activity-trigger:active {
-  transform: scale(0.985);
 }
 
 .activity-icon {
@@ -1125,7 +1069,7 @@
   height: 6px;
   background: var(--primary);
   border-radius: 50%;
-  animation: cyanBeaconPulse 1.8s ease-in-out infinite;
+  animation: activeBeaconPulse 1.8s ease-in-out infinite;
 }
 
 .activity-status[data-status="input-available"] svg {
@@ -1625,12 +1569,6 @@
 .message-action:hover {
   color: var(--ink);
   background: var(--raised-hover);
-  border-color: var(--border-strong);
-  transform: translateY(-0.5px);
-}
-
-.message-action:active {
-  transform: scale(0.95);
 }
 
 .message-actions.msg-user-actions {
@@ -1727,11 +1665,6 @@
 }
 .message-edit button:hover {
   background: var(--raised-hover);
-  border-color: var(--border-strong);
-  transform: translateY(-0.5px);
-}
-.message-edit button:active {
-  transform: scale(0.97);
 }
 .message-edit button[type="submit"] {
   font-weight: 600;
@@ -1976,7 +1909,7 @@
   height: 6px;
   background: var(--good);
   border-radius: 50%;
-  animation: limeBeaconPulse 1.8s ease-in-out infinite;
+  animation: statusBeaconPulse 1.8s ease-in-out infinite;
 }
 
 .rail-conversation .live-dot {
@@ -2196,11 +2129,6 @@
 .panel-tab:hover {
   color: var(--ink);
   background: rgba(255, 255, 255, 0.05);
-  transform: translateY(-0.5px);
-}
-
-.panel-tab:active {
-  transform: scale(0.97);
 }
 
 .panel-tab[data-active] {
@@ -2342,11 +2270,6 @@
 .files-row:hover {
   color: var(--ink);
   background: var(--raised);
-  transform: translateX(2px);
-}
-
-.files-row:active {
-  transform: none;
 }
 
 .files-row[data-active] {
@@ -2728,33 +2651,21 @@
 @keyframes enter {
   from {
     opacity: 0;
-    transform: translateY(8px) scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(6px);
   }
 }
 
 @keyframes expand {
   from {
     opacity: 0;
-    transform: translateY(-6px) scale(0.99);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
+    transform: translateY(-4px);
   }
 }
 
 @keyframes slide-in {
   from {
     opacity: 0;
-    transform: translateX(16px) scale(0.99);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0) scale(1);
+    transform: translateX(14px);
   }
 }
 
@@ -4200,11 +4111,6 @@
   color: var(--text);
   background: var(--glass-strong);
   border-color: var(--border-strong);
-  transform: translateY(-1px);
-}
-
-.settings-theme-option:active {
-  transform: none;
 }
 
 .settings-theme-option[aria-checked="true"] {
@@ -5184,7 +5090,6 @@
   color: var(--ink);
   background: var(--raised-hover);
   border-color: var(--line);
-  transform: translateY(-0.5px);
 }
 .workspace-tab[data-active] {
   color: var(--ink);
@@ -5204,9 +5109,6 @@
   background: none;
   border: 0;
   transition: all 160ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-.workspace-tab-select:active {
-  transform: scale(0.97);
 }
 .workspace-tab-select :where(span) {
   overflow: hidden;
@@ -5230,10 +5132,6 @@
 .workspace-tab-close:hover {
   color: var(--ink);
   background: var(--raised-hover);
-  transform: scale(1.08);
-}
-.workspace-tab-close:active {
-  transform: scale(0.92);
 }
 .workspace-tab-content {
   display: flex;
@@ -5285,10 +5183,6 @@
 .workspace-view-choices button:hover {
   background: var(--bubble);
   border-color: var(--line-strong);
-  transform: translateY(-1px);
-}
-.workspace-view-choices button:active {
-  transform: none;
 }
 .workspace-view-choices strong {
   display: block;
