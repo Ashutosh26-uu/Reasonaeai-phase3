@@ -67,13 +67,19 @@ const statusLabels: Record<ToolPart["state"], string> = {
 };
 
 const statusIcons: Record<ToolPart["state"], ReactNode> = {
-  "approval-requested": <ClockIcon className="size-4 text-yellow-600" />,
-  "approval-responded": <CheckCircleIcon className="size-4 text-blue-600" />,
-  "input-available": <ClockIcon className="size-4 animate-pulse" />,
-  "input-streaming": <CircleIcon className="size-4" />,
-  "output-available": <CheckCircleIcon className="size-4 text-green-600" />,
-  "output-denied": <XCircleIcon className="size-4 text-orange-600" />,
-  "output-error": <XCircleIcon className="size-4 text-red-600" />,
+  "approval-requested": <ClockIcon className="size-4 text-[var(--orange)]" />,
+  "approval-responded": (
+    <CheckCircleIcon className="size-4 text-[var(--cyan)]" />
+  ),
+  "input-available": (
+    <ClockIcon className="size-4 animate-pulse text-[var(--cyan)]" />
+  ),
+  "input-streaming": (
+    <CircleIcon className="size-4 animate-pulse text-[var(--cyan)]" />
+  ),
+  "output-available": <CheckCircleIcon className="size-4 text-[var(--lime)]" />,
+  "output-denied": <XCircleIcon className="size-4 text-[var(--orange)]" />,
+  "output-error": <XCircleIcon className="size-4 text-[var(--orange)]" />,
 };
 
 function hasPrefix(name: string, prefixes: string[]): boolean {
@@ -146,7 +152,7 @@ export const ToolHeader = ({
         <span className="font-medium text-sm">{title ?? derivedName}</span>
         {getStatusBadge(state)}
       </div>
-      <ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+      <ChevronDownIcon className="size-4 text-muted-foreground transition-transform duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] group-data-[state=open]:rotate-180" />
     </CollapsibleTrigger>
   );
 };

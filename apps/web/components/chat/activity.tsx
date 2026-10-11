@@ -156,7 +156,11 @@ function Status({ tool }: { tool: ToolEntry }) {
       : label;
   return (
     <span className="activity-status" data-status={tool.state}>
-      <Icon aria-hidden="true" size={14} />
+      {tool.state === "input-available" ? (
+        <span aria-hidden="true" className="activity-status-beacon" />
+      ) : (
+        <Icon aria-hidden="true" size={14} />
+      )}
       {visibleLabel}
     </span>
   );

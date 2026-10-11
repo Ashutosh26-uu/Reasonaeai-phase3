@@ -102,24 +102,28 @@
   gap: 4px;
   align-items: center;
   min-height: 27px;
-  padding: 4px 7px;
+  padding: 4px 9px;
   font-size: 11px;
   color: var(--ink-2);
   cursor: pointer;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-control, 100px);
+  transition: all 160ms var(--ease);
 }
 
 .queuedActions button:hover,
 .compact .queueButton:hover {
+  color: var(--ink);
   background: var(--raised);
+  transform: translateY(-0.5px);
 }
 
 .queuedActions button:disabled,
 .compact .queueButton:disabled {
   cursor: default;
   opacity: 0.45;
+  transform: none;
 }
 
 .queueMenu {
@@ -146,12 +150,12 @@
 .queueEditor textarea {
   width: 100%;
   min-height: 65px;
-  padding: 8px;
+  padding: 10px 12px;
   color: var(--ink);
   resize: vertical;
   background: var(--composer-surface);
   border: 1px solid var(--line-strong);
-  border-radius: 8px;
+  border-radius: 14px;
 }
 
 .compact .surface[class~="prompt"] {
@@ -160,6 +164,14 @@
   background: var(--composer-surface);
   border-color: var(--composer-line);
   border-radius: 24px;
+  transition:
+    border-color 200ms var(--ease),
+    background 200ms var(--ease);
+}
+
+.compact .surface[class~="prompt"]:focus-within {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(214, 255, 87, 0.4);
 }
 
 .compact .textRow[class~="prompt-top"] {
@@ -195,6 +207,20 @@
   height: 32px;
   color: var(--ink-2);
   border-color: transparent;
+  border-radius: 100px;
+  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.compact .attach[class~="prompt-mic"]:hover,
+.compact .microphone[class~="prompt-mic"]:hover {
+  color: var(--ink);
+  background: var(--raised-hover);
+  transform: translateY(-1px) scale(1.05);
+}
+
+.compact .attach[class~="prompt-mic"]:active,
+.compact .microphone[class~="prompt-mic"]:active {
+  transform: scale(0.92);
 }
 
 .compact .attach[data-state="open"] {
@@ -211,8 +237,21 @@
   color: var(--ink);
   background: var(--composer-tray);
   border: 1px solid var(--line-strong);
-  border-radius: 22px;
-  box-shadow: 0 12px 36px #0003;
+  border-radius: 24px;
+  box-shadow: none;
+  backdrop-filter: blur(32px);
+  animation: menuSpringIn 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes menuSpringIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
 }
 
 .addMenu .addMenuLabel {
@@ -230,11 +269,18 @@
   color: var(--ink-2);
   cursor: pointer;
   border-radius: 16px;
+  transition: all 140ms var(--ease);
 }
 
-.addMenu .addMenuItem[data-highlighted] {
+.addMenu .addMenuItem[data-highlighted],
+.addMenu .addMenuItem:hover {
   color: var(--ink);
   background: var(--raised-hover);
+  transform: translateX(2px);
+}
+
+.addMenu .addMenuItem:active {
+  transform: scale(0.98);
 }
 
 :where(.addMenu .addMenuItem) svg {
@@ -262,24 +308,57 @@
 .compact .voiceMode[class~="prompt-send"] {
   width: 34px;
   height: 34px;
-  color: #ffffff;
-  background: #3478f6;
+  color: #050507;
+  background: var(--lime);
   border-color: transparent;
+  border-radius: 100px;
+  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .compact button[class~="prompt-send"] {
-  color: #ffffff;
-  background: #3478f6;
+  color: #050507;
+  background: var(--lime);
+  border: 0;
+  border-radius: 100px;
+  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .compact button[class~="prompt-send"]:hover:not(:disabled) {
-  background: #2468df;
+  background: var(--lime);
+  filter: brightness(1.08);
+  transform: translateY(-1px) scale(1.02);
+}
+
+.compact button[class~="prompt-send"]:active:not(:disabled) {
+  transform: scale(0.93) translateY(0);
 }
 
 .compact button[class~="prompt-send"]:disabled {
-  color: #dce8ff;
-  background: #355991;
-  opacity: 1;
+  color: var(--text-faint);
+  cursor: default;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  opacity: 0.6;
+  transform: none;
+}
+
+.compact button[class~="prompt-send"][data-working]:not(:disabled),
+.compact button[class~="prompt-send"][data-status="streaming"] {
+  color: #ffffff;
+  background: var(--orange);
+  animation: streamingPulse 1.8s var(--ease) infinite;
+}
+
+@keyframes streamingPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    filter: brightness(1.12);
+  }
+  50% {
+    transform: scale(0.95);
+    filter: brightness(0.85);
+  }
 }
 
 .compact .model[class~="prompt-chip"] {
@@ -322,12 +401,13 @@
 .compact .context [class~="prompt-chip"] {
   max-width: 100%;
   height: 32px;
-  padding: 0 8px;
+  padding: 0 10px;
   font-size: 14px;
   color: var(--ink-2);
   background: transparent;
   border-color: transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-control, 100px);
+  transition: all 160ms var(--ease);
 }
 
 .compact .context [class~="project-picker"] {
@@ -361,8 +441,8 @@
 
 .compact button:focus-visible,
 .compact textarea:focus-visible {
-  outline: 2px solid var(--ink-3);
-  outline-offset: 3px;
+  outline: 1px solid var(--lime);
+  outline-offset: 2px;
 }
 
 @media (max-width: 600px) {

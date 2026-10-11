@@ -20,6 +20,12 @@ import {
   DropdownMenuTrigger,
 } from "@reasonateai/ui/components/dropdown-menu";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@reasonateai/ui/components/tooltip";
+import {
   Archive,
   Copy,
   ExternalLink,
@@ -360,16 +366,20 @@ function ConversationMenu({
   const hasConversation = Boolean(conversationId);
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          aria-label="Conversation options"
-          className="pane-button pane-icon-button"
-          title="Conversation options"
-          type="button"
-        >
-          <MoreHorizontal aria-hidden="true" size={20} />
-        </button>
-      </DropdownMenuTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <button
+              aria-label="Conversation options"
+              className="pane-button pane-icon-button"
+              type="button"
+            >
+              <MoreHorizontal aria-hidden="true" size={20} />
+            </button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Conversation options</TooltipContent>
+      </Tooltip>
       <DropdownMenuContent
         align="end"
         className="conversation-menu"
@@ -497,55 +507,97 @@ export function ConversationHeader(props: HeaderProps) {
   );
   return (
     <>
-      <header className="pane-head">
-        <FolderClosed aria-hidden="true" className="pane-folder" size={20} />
-        <h1 className="pane-title" title={props.heading}>
-          {props.heading}
-        </h1>
-        <div className="pane-tools">
-          {props.selectedProject && (
-            <ConversationMenu
-              busy={busy || props.working}
-              canManage={props.canManage}
-              conversationId={props.conversationId}
-              isPinned={props.isPinned}
-              onArchive={archive}
-              onArchived={showArchived}
-              onCopy={copy}
-              onNewConversation={props.onNewConversation}
-              onPin={props.onPin}
-              onRefresh={props.onRefresh}
-              onRename={showRename}
-            />
-          )}
-          {props.conversationId && (
-            <>
-              <button
-                aria-controls={summaryId}
-                aria-expanded={summaryOpen}
-                aria-label="Toggle summary"
-                aria-pressed={summaryOpen}
-                className="pane-button pane-icon-button"
-                onClick={toggleSummary}
-                title="Toggle summary"
-                type="button"
-              >
-                <ListFilter aria-hidden="true" size={20} />
-              </button>
-              <span aria-hidden="true" className="pane-tool-divider" />
-              <button
-                aria-label="New workspace tab"
-                className="pane-button pane-icon-button"
-                onClick={props.onOpenPanel}
-                title="New workspace tab"
-                type="button"
-              >
-                <Plus aria-hidden="true" size={20} />
-              </button>
-            </>
-          )}
-        </div>
-      </header>
+      <TooltipProvider delayDuration={250}>
+        <header className="pane-head">
+          <div className="pane-breadcrumbs">
+            {props.projectName ? (
+              <>
+                <span className="pane-breadcrumb-project">
+                  <FolderClosed
+                    aria-hidden="true"
+                    className="pane-folder"
+                    size={16}
+                  />
+                  <span className="pane-breadcrumb-project-name">
+                    {props.projectName}
+                  </span>
+                </span>
+                <span aria-hidden="true" className="pane-breadcrumb-separator">
+                  /
+                </span>
+              </>
+            ) : (
+              <FolderClosed
+                aria-hidden="true"
+                className="pane-folder"
+                size={16}
+              />
+            )}
+            <h1 className="pane-title" title={props.heading}>
+              {props.heading}
+            </h1>
+            {props.status && (
+              <span className="pane-status-pill" data-status={props.status}>
+                <span aria-hidden="true" className="pane-status-beacon" />
+                <span>{props.status}</span>
+              </span>
+            )}
+          </div>
+          <div className="pane-tools">
+            {props.selectedProject && (
+              <ConversationMenu
+                busy={busy || props.working}
+                canManage={props.canManage}
+                conversationId={props.conversationId}
+                isPinned={props.isPinned}
+                onArchive={archive}
+                onArchived={showArchived}
+                onCopy={copy}
+                onNewConversation={props.onNewConversation}
+                onPin={props.onPin}
+                onRefresh={props.onRefresh}
+                onRename={showRename}
+              />
+            )}
+            {props.conversationId && (
+              <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      aria-controls={summaryId}
+                      aria-expanded={summaryOpen}
+                      aria-label="Toggle summary"
+                      aria-pressed={summaryOpen}
+                      className="pane-button pane-icon-button"
+                      onClick={toggleSummary}
+                      type="button"
+                    >
+                      <ListFilter aria-hidden="true" size={20} />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">Toggle summary</TooltipContent>
+                </Tooltip>
+                <span aria-hidden="true" className="pane-tool-divider" />
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      aria-label="New workspace tab"
+                      className="pane-button pane-icon-button"
+                      onClick={props.onOpenPanel}
+                      type="button"
+                    >
+                      <Plus aria-hidden="true" size={20} />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    New workspace tab
+                  </TooltipContent>
+                </Tooltip>
+              </>
+            )}
+          </div>
+        </header>
+      </TooltipProvider>
       {summaryOpen && (
         <section
           aria-label="Conversation summary"

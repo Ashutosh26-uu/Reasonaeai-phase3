@@ -25,41 +25,41 @@ export function NetworkBanner() {
       role="status"
     >
       <div
-        className={`pointer-events-auto flex items-center gap-2.5 rounded-full border px-3.5 py-1.5 font-medium text-xs shadow-lg backdrop-blur-md transition-colors ${
+        className={`pointer-events-auto flex items-center gap-2.5 rounded-full border px-4 py-1.5 font-medium font-sans text-xs shadow-none backdrop-blur-xl transition-colors ${
           isRestored
-            ? "border-emerald-800 bg-emerald-950/80 text-emerald-200"
-            : "border-neutral-800 bg-neutral-900/90 text-neutral-200"
+            ? "border-[rgba(214,255,87,0.3)] bg-[#0a0a0d]/95 text-[#d6ff57]"
+            : "border-[rgba(255,77,0,0.3)] bg-[#0a0a0d]/95 text-[#edede9]"
         }`}
       >
         {isRestored ? (
           <>
             <span className="relative flex h-2 w-2">
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-[#d6ff57]" />
             </span>
-            <Check className="h-3.5 w-3.5 text-emerald-400" />
+            <Check className="h-3.5 w-3.5 text-[#d6ff57]" />
             <span>Connection restored</span>
           </>
         ) : (
           <>
             <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-400" />
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#ff4d00] opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-[#ff4d00]" />
             </span>
-            <WifiOff className="h-3.5 w-3.5 text-amber-400" />
+            <WifiOff className="h-3.5 w-3.5 text-[#ff4d00]" />
             <span>
               {isReconnecting ? (
                 "Reconnecting…"
               ) : (
                 <>
                   Offline • Retrying in{" "}
-                  <span className="font-semibold text-amber-300 tabular-nums">
+                  <span className="font-semibold text-[#ff4d00] tabular-nums">
                     {secondsLeft}s
                   </span>
                 </>
               )}
             </span>
             <button
-              className="ml-1 flex cursor-pointer items-center gap-1 rounded-full bg-neutral-800 px-2 py-0.5 text-neutral-300 transition-all hover:bg-neutral-700 hover:text-white active:scale-95"
+              className="ml-1 flex cursor-pointer items-center gap-1 rounded-full border border-[rgba(255,255,255,0.1)] bg-[rgba(255,255,255,0.06)] px-2.5 py-0.5 text-[#edede9] text-xs transition-all hover:border-[#d6ff57] hover:text-[#d6ff57] active:scale-95"
               disabled={isReconnecting}
               onClick={handleRetry}
               type="button"
