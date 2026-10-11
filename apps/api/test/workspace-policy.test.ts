@@ -1,12 +1,34 @@
+import { randomUUID } from "node:crypto";
+import { RequestContext } from "@mastra/core/request-context";
 import { DEFAULT_BUILD_SANDBOX_IMAGE } from "@reasonateai/contracts/sandbox";
+import { readRunScope, runScopeKeys } from "@reasonateai/cto-runtime/run-scope";
 import { describe, expect, it } from "vitest";
 import {
+  buildSandboxFor,
+  releaseBuildSandbox,
   resolveBuildSandboxCacheVolume,
   resolveBuildSandboxImage,
   resolveBuildSandboxNetworkMode,
 } from "../src/mastra/workspace.js";
 
 describe("API build sandbox workspace policy", () => {
+  it("reuses and releases one sandbox adapter per build session", () => {
+    const requestContext = new RequestContext();
+    for (const key of Object.values(runScopeKeys)) {
+      requestContext.setRaw(key, randomUUID());
+    }
+    const scope = readRunScope(requestContext);
+    const adapter = buildSandboxFor(scope);
+
+    try {
+      expect(buildSandboxFor(scope)).toBe(adapter);
+      releaseBuildSandbox(scope);
+      expect(buildSandboxFor(scope)).not.toBe(adapter);
+    } finally {
+      releaseBuildSandbox(scope);
+    }
+  });
+
   it("uses the preloaded build image and validates operator overrides", () => {
     expect(resolveBuildSandboxImage({})).toBe(DEFAULT_BUILD_SANDBOX_IMAGE);
     expect(

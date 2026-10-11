@@ -200,6 +200,29 @@ export function createBuildSandbox(scope: RunScope) {
   return new MastraWorkspaceSandboxAdapter({ config, sandbox });
 }
 
+const buildSandboxAdapters = new Map<string, MastraWorkspaceSandboxAdapter>();
+
+export function buildSandboxFor(
+  scope: RunScope
+): MastraWorkspaceSandboxAdapter {
+  const sandboxId = sandboxIdFor(scope);
+  const existing = buildSandboxAdapters.get(sandboxId);
+  if (existing) {
+    return existing;
+  }
+
+  const sandbox = createBuildSandbox(scope);
+  buildSandboxAdapters.set(sandboxId, sandbox);
+  return sandbox;
+}
+
+/** Drop only this build session's process-local adapter after its sandbox ends. */
+export function releaseBuildSandbox(scope: RunScope): void {
+  const sandboxId = sandboxIdFor(scope);
+  reasonateBuildWorkspace.clearSandboxCache(sandboxId);
+  buildSandboxAdapters.delete(sandboxId);
+}
+
 export async function attachBuildSandbox(scope: RunScope) {
   const config = createBuildSandboxConfig(scope);
   const sandbox = new DockerSandbox(config, config.id);
@@ -213,14 +236,14 @@ export const reasonateBuildWorkspace = new Workspace({
     return new SandboxFilesystem({
       id: `${sandboxId}-filesystem`,
       root: "/workspace",
-      sandbox: createBuildSandbox(scope),
+      sandbox: buildSandboxFor(scope),
     });
   },
   id: "reasonate-build-workspace",
   name: "ReasonateAI Build Workspace",
   sandbox: ({ requestContext }) => {
     const scope = readRunScope(requestContext);
-    return createBuildSandbox(scope);
+    return buildSandboxFor(scope);
   },
   sandboxCacheKey: ({ requestContext }) =>
     sandboxIdFor(readRunScope(requestContext)),

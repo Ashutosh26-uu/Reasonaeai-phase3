@@ -77,6 +77,10 @@
       "types": "./src/tools/read-snapshots.ts",
       "import": "./dist/tools/read-snapshots.js"
     },
+    "./tools/run-preview": {
+      "types": "./src/tools/run-preview.ts",
+      "import": "./dist/tools/run-preview.js"
+    },
     "./tools/browser-verification": {
       "types": "./src/tools/browser-verification.ts",
       "import": "./dist/tools/browser-verification.js"

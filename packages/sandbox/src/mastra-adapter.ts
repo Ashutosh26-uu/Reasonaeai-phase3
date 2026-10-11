@@ -174,8 +174,10 @@ export class MastraWorkspaceSandboxAdapter implements WorkspaceSandbox {
       : undefined;
 
     const runResult = await this.sandbox.runCommand({
-      args,
-      command,
+      // Mastra's tool supplies a complete shell program with no argv. Internal
+      // callers with explicit argv retain literal executable/argument semantics.
+      args: args.length === 0 ? ["-c", command] : args,
+      command: args.length === 0 ? "/bin/sh" : command,
       cwd: options?.cwd,
       env,
       timeoutMs: options?.timeout,

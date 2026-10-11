@@ -46,6 +46,49 @@ describe("preview service - persistence and restart recovery", () => {
     vi.restoreAllMocks();
   });
 
+  it("releases the shared sandbox once when sibling previews retire concurrently", async () => {
+    const store = createInMemoryPreviewRepository();
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const sandbox: ISandbox = {
+      destroy,
+      getState: vi.fn(),
+      id: SandboxIdSchema.parse(`shared-${randomUUID()}`),
+      readFile: vi.fn().mockResolvedValue(JSON.stringify({ port: 5173 })),
+      runCommand: vi.fn(),
+      writeFile: vi.fn(),
+    };
+    const ids = [
+      PreviewIdSchema.parse(randomUUID()),
+      PreviewIdSchema.parse(randomUUID()),
+    ];
+    await Promise.all(
+      ids.map((previewId) =>
+        store.record({
+          buildSessionId: sessionId,
+          containerName: `reasonate-sbx-${sandbox.id}`,
+          hostPort: 39_002,
+          organizationId: orgId,
+          previewId,
+          projectId: projId,
+          runId,
+          sandboxId: sandbox.id,
+          status: "ready",
+        })
+      )
+    );
+    const service = createPreviewService({
+      attachRunSandbox: async () => sandbox,
+      previewStore: store,
+    });
+    await Promise.all(ids.map((id) => service.target(id)));
+    await service.disposeAll();
+    expect(await store.listActive()).toEqual([]);
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(
+      await Promise.all(ids.map(async (id) => (await store.get(id))?.status))
+    ).toEqual(["stopped", "stopped"]);
+  });
+
   it("records preview lifecycle transitions in the persistent store", async () => {
     const store = createInMemoryPreviewRepository();
     const service = createPreviewService({
@@ -74,7 +117,8 @@ describe("preview service - persistence and restart recovery", () => {
     expect(stored?.buildSessionId).toBe(sessionId);
     expect(stored?.organizationId).toBe(orgId);
     expect(stored?.projectId).toBe(projId);
-    expect(stored?.status).toBe("starting");
+    expect(stored?.status).toBe("failed");
+    expect(stored?.detail).toContain("sandbox is no longer available");
 
     // Manually mark ready in store to simulate successful container boot
     await store.update(view.previewId, {
@@ -140,7 +184,7 @@ describe("preview service - persistence and restart recovery", () => {
     const statusReport = await service.status(previewId);
     expect(statusReport).toBeDefined();
     expect(statusReport?.view.previewId).toBe(previewId);
-    expect(statusReport?.view.port).toBe(39_001);
+    expect(statusReport?.view.port).toBeNull();
     expect(statusReport?.view.status).toBe("ready");
 
     fetchSpy.mockRestore();

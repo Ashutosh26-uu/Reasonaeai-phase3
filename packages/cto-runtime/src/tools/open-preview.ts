@@ -132,7 +132,7 @@ export function createOpenPreviewTool(
 ) {
   return createTool({
     description:
-      "Start the intended web app inside this run's sandbox, then select its exact HTTP localhost URL with an explicit port (1024–65535 except reserved 18080) and optional route. Verify that exact listener and save the selected host/port in .reasonate/preview.json. The App preview attaches to this same sandbox immediately; it does not wait for a checkpoint, launch another container, or select a different port on failure. A successful request is not readiness or browser verification. URLs cannot contain credentials, queries, or fragments. External URLs and browser-use sessions require their separate tools.",
+      "Start the intended web app inside this run's sandbox, then select its exact HTTP localhost URL with an explicit port (1024–65535 except reserved 18080) and optional route. Verify that exact listener and save the selected host/port in .reasonate/preview.json. The App preview attaches to this same sandbox immediately; it does not wait for a checkpoint, launch another container, or select a different port on failure. A successful request is not readiness or browser verification. URLs cannot contain credentials, queries, or fragments. After selecting the app, use browser_verify on this localhost URL or its sandbox-private address; the tool routes only this run's selected app or relay port through its preview gateway. External URLs and interactive browser-use sessions require separate tools.",
     execute: async ({ url, script }, context) => {
       const scope = readRunScope(context.requestContext);
       context.abortSignal?.throwIfAborted();

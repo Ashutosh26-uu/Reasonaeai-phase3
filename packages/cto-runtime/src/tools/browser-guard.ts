@@ -209,6 +209,144 @@ function resolvePort(parsed: URL): number {
   return parsed.protocol === "https:" ? 443 : 80;
 }
 
+export interface RunSandboxPreviewTarget {
+  appPort: number;
+  baseUrl: string;
+  previewId: string;
+  relayPort: number;
+}
+
+function rejectProtocolRelativeUrl(trimmed: string): void {
+  if (
+    trimmed.startsWith("//") ||
+    trimmed.startsWith("/\\") ||
+    trimmed.startsWith("\\\\")
+  ) {
+    throw new BrowserSecurityError(
+      "Protocol-relative URLs are forbidden for browser verification."
+    );
+  }
+}
+
+function parseRunSandboxTarget(inputUrl: string): URL {
+  const parsed = parseAndVerifyUrl(inputUrl, {});
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new BrowserSecurityError(
+      `Protocol "${parsed.protocol}" is forbidden. Browser verification only supports http: and https:.`
+    );
+  }
+  if (parsed.username || parsed.password) {
+    throw new BrowserSecurityError(
+      "URLs with embedded credentials (userinfo) are forbidden."
+    );
+  }
+  const port = resolvePort(parsed);
+  if (FORBIDDEN_PORTS.has(port)) {
+    throw new BrowserSecurityError(
+      `Port ${port} is restricted for browser verification (forbidden infrastructure service port).`
+    );
+  }
+  if (isMetadataAddress(parsed.hostname)) {
+    throw new BrowserSecurityError(
+      `Access to cloud metadata address "${parsed.hostname}" is strictly blocked.`
+    );
+  }
+  return parsed;
+}
+
+function parseRunPreviewGateway(preview: RunSandboxPreviewTarget): URL {
+  const gateway = new URL(preview.baseUrl);
+  if (
+    gateway.protocol !== "http:" ||
+    gateway.username ||
+    gateway.password ||
+    !isLoopbackAddress(gateway.hostname) ||
+    !gateway.port ||
+    FORBIDDEN_PORTS.has(Number(gateway.port))
+  ) {
+    throw new BrowserSecurityError(
+      "The run-scoped preview gateway address is invalid."
+    );
+  }
+  return gateway;
+}
+
+function assertRequestedPreview(
+  preview: RunSandboxPreviewTarget,
+  requestedPreviewId?: string
+): void {
+  if (requestedPreviewId && requestedPreviewId !== preview.previewId) {
+    throw new BrowserSecurityError(
+      "The requested preview does not belong to this run."
+    );
+  }
+}
+
+/** Return true only for URLs that need the current run's sandbox gateway. */
+export function isRunSandboxPreviewUrl(inputUrl: string): boolean {
+  const trimmed = inputUrl.trim();
+  rejectProtocolRelativeUrl(trimmed);
+  if (trimmed.startsWith("/")) {
+    return true;
+  }
+  const parsed = parseRunSandboxTarget(trimmed);
+  return (
+    isLoopbackAddress(parsed.hostname) ||
+    isPrivateNetworkAddress(parsed.hostname)
+  );
+}
+
+/**
+ * Map a URL emitted by the current run's sandbox onto that run's authorized
+ * preview gateway. The original private address is never contacted. Public
+ * URLs return undefined and continue through the ordinary browser policy.
+ */
+export function resolveRunSandboxPreviewTargetUrl(
+  inputUrl: string,
+  preview: RunSandboxPreviewTarget | undefined,
+  requestedPreviewId?: string
+): URL | undefined {
+  const trimmed = inputUrl.trim();
+  rejectProtocolRelativeUrl(trimmed);
+  if (trimmed.startsWith("/")) {
+    if (!preview) {
+      throw new BrowserSecurityError(
+        "This run has no ready app preview. Open the sandbox app preview and try again."
+      );
+    }
+    assertRequestedPreview(preview, requestedPreviewId);
+    return new URL(trimmed, parseRunPreviewGateway(preview));
+  }
+
+  const parsed = parseRunSandboxTarget(trimmed);
+  const port = resolvePort(parsed);
+  if (
+    !(
+      isLoopbackAddress(parsed.hostname) ||
+      isPrivateNetworkAddress(parsed.hostname)
+    )
+  ) {
+    return undefined;
+  }
+  if (!preview) {
+    throw new BrowserSecurityError(
+      "This run has no ready app preview. Open the sandbox app preview and try again."
+    );
+  }
+  assertRequestedPreview(preview, requestedPreviewId);
+  if (port !== preview.appPort && port !== preview.relayPort) {
+    throw new BrowserSecurityError(
+      `Port ${port} is not the app port selected for this run (port ${preview.appPort}). Open that sandbox app with open_preview first.`
+    );
+  }
+
+  const gateway = parseRunPreviewGateway(preview);
+  gateway.pathname = parsed.pathname;
+  gateway.search = parsed.search;
+  gateway.hash = parsed.hash;
+  return gateway;
+}
+
 function resolveRelativeTarget(
   trimmed: string,
   options: ValidateTargetUrlOptions

@@ -478,6 +478,42 @@ export const runLiveTopic = (runId: string): string =>
 
 export const runCommandTopic = "reasonateai.run.commands";
 
+/** Bounded source browsing; live reads are observations, never recovery state. */
+export const WORKSPACE_READ_EXCLUDED_SEGMENTS = [
+  ".git",
+  ".npm",
+  ".cache",
+  ".reasonate",
+  "node_modules",
+  ".next",
+  ".venv",
+  "__pycache__",
+] as const;
+
+export const WorkspaceTreeSchema = z.strictObject({
+  checkpointId: z.string().max(512),
+  commit: z.string().max(128),
+  files: z
+    .array(
+      z.strictObject({
+        bytes: z.number().int().nonnegative(),
+        kind: z.enum(["directory", "file"]),
+        path: z.string().min(1).max(4096),
+      })
+    )
+    .max(5000),
+  source: z.enum(["checkpoint", "live"]).default("checkpoint"),
+  truncated: z.boolean(),
+});
+
+export const WorkspaceFileSchema = z.strictObject({
+  binary: z.boolean(),
+  bytes: z.number().int().nonnegative(),
+  path: z.string().min(1).max(1024),
+  text: z.string().max(256 * 1024),
+  truncated: z.boolean().default(false),
+});
+
 /**
  * A reconnect may only resume from a sequence the run has actually produced.
  * Sequence zero is the "deliver everything retained" cursor.

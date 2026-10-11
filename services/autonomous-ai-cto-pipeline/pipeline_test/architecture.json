@@ -1,0 +1,120 @@
+{
+  "project_name": "movie_wishlist",
+  "db_tables": [
+    {
+      "table_name": "users",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid"
+        },
+        {
+          "name": "email",
+          "type": "string"
+        },
+        {
+          "name": "hashed_password",
+          "type": "string"
+        }
+      ],
+      "is_auth_table": true
+    },
+    {
+      "table_name": "movies",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid"
+        },
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "watched",
+          "type": "boolean"
+        }
+      ]
+    },
+    {
+      "table_name": "user_movies",
+      "columns": [
+        {
+          "name": "id",
+          "type": "uuid"
+        },
+        {
+          "name": "user_id",
+          "type": "string",
+          "foreign_key": "users.id"
+        },
+        {
+          "name": "movie_id",
+          "type": "string",
+          "foreign_key": "movies.id"
+        }
+      ]
+    }
+  ],
+  "api_routes": [
+    {
+      "method": "POST",
+      "path": "/auth/signup",
+      "table": "users",
+      "is_signup_route": true,
+      "description": "Creates a new user account with a hashed password"
+    },
+    {
+      "method": "POST",
+      "path": "/auth/login",
+      "table": "users",
+      "is_login_route": true,
+      "description": "Logs in a user and returns a JWT access token"
+    },
+    {
+      "method": "GET",
+      "path": "/users/me",
+      "table": "users",
+      "requires_auth": true,
+      "description": "Returns the currently logged-in user's information"
+    },
+    {
+      "method": "POST",
+      "path": "/movies",
+      "table": "movies",
+      "description": "Creates a new movie"
+    },
+    {
+      "method": "GET",
+      "path": "/movies",
+      "table": "movies",
+      "query_params": {
+        "limit": "int",
+        "offset": "int"
+      },
+      "description": "Lists movies with pagination"
+    },
+    {
+      "method": "POST",
+      "path": "/user_movies",
+      "table": "user_movies",
+      "description": "Adds a movie to the user's watchlist"
+    },
+    {
+      "method": "GET",
+      "path": "/user_movies",
+      "table": "user_movies",
+      "query_params": {
+        "limit": "int",
+        "offset": "int"
+      },
+      "description": "Lists movies in the user's watchlist with pagination"
+    },
+    {
+      "method": "PUT",
+      "path": "/user_movies/{id}",
+      "table": "user_movies",
+      "description": "Updates the watched status of a movie in the user's watchlist"
+    }
+  ]
+}

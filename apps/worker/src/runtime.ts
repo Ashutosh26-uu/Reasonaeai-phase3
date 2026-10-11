@@ -6,13 +6,19 @@ import type {
 import type { RequestContext } from "@mastra/core/request-context";
 import { PostgresStore } from "@mastra/pg";
 import {
+  APP_PREVIEW_RELAY_PORT,
   type BuildSessionId,
+  type PreviewId,
   PreviewIdSchema,
   type PromptAttachment,
 } from "@reasonateai/contracts/execution";
 import { type RunId, RunIdSchema } from "@reasonateai/contracts/identity";
 import { createReasonateCtoRuntime } from "@reasonateai/cto-runtime";
-import { sandboxIdFor } from "@reasonateai/cto-runtime/run-scope";
+import { readRunScope, sandboxIdFor } from "@reasonateai/cto-runtime/run-scope";
+import {
+  type RunSandboxPreviewTarget,
+  waitForRunSandboxPreview,
+} from "@reasonateai/cto-runtime/tools/run-preview";
 import type {
   ProjectStateStore,
   TenantScope,
@@ -97,17 +103,43 @@ export function createCtoRuntimeFactory(input: {
     id: "reasonate-worker-storage",
   });
   return () => {
+    const previewSelections = new Map<
+      RunId,
+      { appPort: number; previewId: PreviewId }
+    >();
     const runtime = createReasonateCtoRuntime({
       ...buildSandboxEnvironment,
+      browserVerification: {
+        resolveRunSandboxPreview: (
+          requestContext
+        ): Promise<RunSandboxPreviewTarget | undefined> => {
+          const scope = readRunScope(requestContext);
+          const selection = previewSelections.get(scope.runId);
+          if (!selection) {
+            return Promise.resolve(undefined);
+          }
+          return waitForRunSandboxPreview({
+            loadPreview: (previewId) => input.store.previews.get(previewId),
+            relayPort: APP_PREVIEW_RELAY_PORT,
+            scope,
+            selection,
+          });
+        },
+      },
       enableBrowserVerification: true,
       enableTestRunner: true,
       model: input.model,
       registerPreview: async ({ appPort, ...scope }) => {
-        if (await input.store.previews.getByRun(scope.runId)) {
+        const existing = await input.store.previews.getByRun(scope.runId);
+        if (existing) {
+          previewSelections.set(scope.runId, {
+            appPort,
+            previewId: existing.previewId,
+          });
           return;
         }
         const sandboxId = sandboxIdFor(scope);
-        await input.store.previews.record({
+        const preview = await input.store.previews.record({
           buildSessionId: scope.buildSessionId,
           containerName: sandboxId,
           detail: `Selected app port ${appPort}`,
@@ -117,6 +149,10 @@ export function createCtoRuntimeFactory(input: {
           runId: scope.runId,
           sandboxId,
           status: "starting",
+        });
+        previewSelections.set(scope.runId, {
+          appPort,
+          previewId: preview.previewId,
         });
       },
       storage,

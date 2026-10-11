@@ -134,13 +134,23 @@ const DENIAL_BY_REASON: Record<string, ApiErrorCode> = {
   UNAUTHENTICATED: "unauthenticated",
 };
 
-export interface PreviewRouteDeps {
-  /** Configured application origin, never inferred from a browser request. */
-  frameOrigin?: string | undefined;
-  previews: PreviewService;
+export interface PreviewAuthorizationDeps {
+  previews: Pick<PreviewService, "target">;
   resolvePrincipal: (input: {
     cookieHeader: string | undefined;
   }) => Promise<UserPrincipal | undefined>;
+  store: () => {
+    memberships: Pick<
+      ProjectStateStore["memberships"],
+      "getOrganizationMembership" | "getProjectMembership"
+    >;
+  };
+}
+
+export interface PreviewRouteDeps extends PreviewAuthorizationDeps {
+  /** Configured application origin, never inferred from a browser request. */
+  frameOrigin?: string | undefined;
+  previews: PreviewService;
   /**
    * Resolved per request so the store is created only when the authoritative
    * database is configured, and so tests can inject their own.
@@ -164,16 +174,16 @@ export type PreviewHandlerContext = HandlerContext & {
 };
 
 /** A request already authorized for one preview, and the preview it names. */
-interface AuthorizedPreview {
+export interface AuthorizedPreview {
   readonly previewId: PreviewId;
   readonly target: PreviewTarget;
 }
 
-type PreviewAccess = { readonly refusal: Response } | AuthorizedPreview;
+export type PreviewAccess = { readonly refusal: Response } | AuthorizedPreview;
 
 async function authorizeProjectAction(input: {
   action: Permission;
-  deps: PreviewRouteDeps;
+  deps: PreviewAuthorizationDeps;
   organizationId: OrganizationId;
   principal: UserPrincipal;
   projectId: ProjectId;
@@ -214,20 +224,21 @@ async function authorizeProjectAction(input: {
  * from the URL, and not from the caller — so a preview id cannot be used to
  * reach another tenant's project.
  */
-async function authorizePreviewRequest(input: {
-  context: PreviewHandlerContext;
-  deps: PreviewRouteDeps;
+export async function authorizePreviewAccess(input: {
+  deps: PreviewAuthorizationDeps;
+  previewId: unknown;
+  cookieHeader: string | undefined;
   requestId: string;
 }): Promise<PreviewAccess> {
   const principal = await input.deps.resolvePrincipal({
-    cookieHeader: input.context.req.header("cookie"),
+    cookieHeader: input.cookieHeader,
   });
   if (!principal) {
     return { refusal: unauthenticatedResponse(input.requestId) };
   }
 
   const params = PreviewParamsSchema.safeParse({
-    previewId: input.context.req.param("previewId"),
+    previewId: input.previewId,
   });
   if (!params.success) {
     return {
@@ -268,6 +279,19 @@ async function authorizePreviewRequest(input: {
   }
 
   return { previewId: params.data.previewId, target };
+}
+
+function authorizePreviewRequest(input: {
+  context: PreviewHandlerContext;
+  deps: PreviewRouteDeps;
+  requestId: string;
+}): Promise<PreviewAccess> {
+  return authorizePreviewAccess({
+    cookieHeader: input.context.req.header("cookie"),
+    deps: input.deps,
+    previewId: input.context.req.param("previewId"),
+    requestId: input.requestId,
+  });
 }
 
 /**

@@ -1,0 +1,28 @@
+services:
+  backend:
+    build: ./backend/generated_backend
+    ports:
+      - "8000:8000"
+    container_name: ai_cto_backend
+    environment:
+      - SECRET_KEY=${SECRET_KEY}
+      - DATABASE_URL=sqlite:////data/app.db
+    volumes:
+      - backend_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    container_name: ai_cto_frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  backend_data:

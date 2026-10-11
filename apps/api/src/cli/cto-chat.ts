@@ -30,6 +30,7 @@ import { frontierModel } from "../mastra/model.js";
 import {
   buildSandboxEnvironment,
   reasonateBuildWorkspace,
+  releaseBuildSandbox,
   SANDBOX_WORKING_DIRECTORY,
 } from "../mastra/workspace.js";
 import { describeFailure, reportControllerRun } from "./run-report.js";
@@ -183,8 +184,12 @@ async function releaseWorkspace(
   sandbox: WorkspaceSandbox,
   scope: RunScope
 ): Promise<void> {
-  await sandbox.destroy?.();
-  await removeWorkspaceVolume(scope);
+  try {
+    await sandbox.destroy?.();
+    await removeWorkspaceVolume(scope);
+  } finally {
+    releaseBuildSandbox(scope);
+  }
 }
 
 async function checkpointAndRelease(input: {
@@ -213,13 +218,17 @@ async function checkpointAndRelease(input: {
     // Order matters: the workspace is only reclaimable once its bytes are in
     // the store, so a failed checkpoint keeps the volume instead of dropping
     // the only copy of the run's work.
-    await input.sandbox.destroy?.();
-    if (checkpointed) {
-      await removeWorkspaceVolume(input.scope);
-    } else {
-      stdout.write(
-        `The workspace volume ${workspaceVolumeName(input.scope)} was kept because the checkpoint failed.\n`
-      );
+    try {
+      await input.sandbox.destroy?.();
+      if (checkpointed) {
+        await removeWorkspaceVolume(input.scope);
+      } else {
+        stdout.write(
+          `The workspace volume ${workspaceVolumeName(input.scope)} was kept because the checkpoint failed.\n`
+        );
+      }
+    } finally {
+      releaseBuildSandbox(input.scope);
     }
   }
 }

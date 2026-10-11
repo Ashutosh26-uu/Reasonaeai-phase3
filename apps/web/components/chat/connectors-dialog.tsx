@@ -174,10 +174,10 @@ function ConnectorCard({ connector, onSelect }: ConnectorCardProps) {
   }, [connector, onSelect]);
 
   return (
-    <div className="group relative flex flex-col justify-between rounded-xl border border-border bg-card p-4 shadow-xs transition-all hover:border-border/80 hover:bg-accent/20 hover:shadow-sm">
+    <div className="group relative flex flex-col justify-between rounded-[20px] border border-[var(--border)] bg-[rgba(255,255,255,0.06)] p-5 shadow-none backdrop-blur-[24px] transition-all hover:border-[var(--border-strong)] hover:bg-[rgba(255,255,255,0.09)]">
       <div>
         <div className="mb-3 flex items-start justify-between gap-2">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-muted/50 text-foreground shadow-xs">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] border border-[var(--border)] bg-transparent text-foreground shadow-none">
             <IconComponent className="size-5 text-foreground" />
           </div>
           <div className="flex items-center gap-1.5">
@@ -390,7 +390,7 @@ export function ConnectorsDialog({
     <>
       <Dialog onOpenChange={handleOpenChange} open={open}>
         <DialogContent
-          className="flex max-h-[85vh] flex-col gap-0 overflow-hidden border-border bg-background p-0 shadow-2xl sm:max-w-3xl md:max-w-4xl"
+          className="flex max-h-[85vh] flex-col gap-0 overflow-hidden border-border bg-background p-0 shadow-none sm:max-w-3xl md:max-w-4xl"
           onCloseAutoFocus={handleCloseAutoFocus}
         >
           <DialogHeader className="sticky top-0 z-10 space-y-4 border-border border-b bg-background/95 p-6 pb-4 text-left backdrop-blur-md">

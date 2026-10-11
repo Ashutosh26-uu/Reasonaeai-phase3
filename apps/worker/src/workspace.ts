@@ -39,6 +39,7 @@ export const SANDBOX_WORKING_DIRECTORY = "/workspace";
 
 /** Named volume the build workspace mounts, so a launch has to remove it too. */
 const WORKSPACE_VOLUME_SUFFIX = "-workspace";
+const buildSandboxAdapters = new Map<string, MastraWorkspaceSandboxAdapter>();
 
 /**
  * What the agent's tools actually execute in.
@@ -151,6 +152,20 @@ function createBuildSandbox(scope: RunScope) {
   return new MastraWorkspaceSandboxAdapter({ config, sandbox });
 }
 
+export function buildSandboxFor(
+  scope: RunScope
+): MastraWorkspaceSandboxAdapter {
+  const sandboxId = sandboxIdFor(scope);
+  const existing = buildSandboxAdapters.get(sandboxId);
+  if (existing) {
+    return existing;
+  }
+
+  const sandbox = createBuildSandbox(scope);
+  buildSandboxAdapters.set(sandboxId, sandbox);
+  return sandbox;
+}
+
 export const reasonateBuildWorkspace = new Workspace({
   filesystem: ({ requestContext }) => {
     const scope = readRunScope(requestContext);
@@ -158,14 +173,14 @@ export const reasonateBuildWorkspace = new Workspace({
     return new SandboxFilesystem({
       id: `${sandboxId}-filesystem`,
       root: SANDBOX_WORKING_DIRECTORY,
-      sandbox: createBuildSandbox(scope),
+      sandbox: buildSandboxFor(scope),
     });
   },
   id: "reasonate-build-workspace",
   name: "ReasonateAI Build Workspace",
   sandbox: ({ requestContext }) => {
     const scope = readRunScope(requestContext);
-    return createBuildSandbox(scope);
+    return buildSandboxFor(scope);
   },
   sandboxCacheKey: ({ requestContext }) =>
     sandboxIdFor(readRunScope(requestContext)),
@@ -203,7 +218,9 @@ export async function resolveBuildSandbox(input: {
 
 /** A destroyed sandbox cannot serve a later turn in the same build session. */
 export function releaseBuildSandbox(scope: RunScope): void {
-  reasonateBuildWorkspace.clearSandboxCache(sandboxIdFor(scope));
+  const sandboxId = sandboxIdFor(scope);
+  reasonateBuildWorkspace.clearSandboxCache(sandboxId);
+  buildSandboxAdapters.delete(sandboxId);
 }
 
 /** The build workspace names its volume after the run's scope; nothing else is touched. */

@@ -47,23 +47,33 @@ const MOCKS: { id: Mock; label: string }[] = [
 
 function ActivityGroup({
   children,
+  defaultOpen = true,
   meta,
   title,
   tone = "plain",
 }: {
   children: React.ReactNode;
+  defaultOpen?: boolean;
   meta?: React.ReactNode;
   title: string;
   tone?: "plain" | "thinking";
 }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const toggle = useCallback(() => setOpen((prev) => !prev), []);
+
   return (
-    <div className="sk-group" data-tone={tone}>
-      <div className="sk-group-head">
+    <div className="sk-group" data-open={open || undefined} data-tone={tone}>
+      <button
+        aria-expanded={open}
+        className="sk-group-head"
+        onClick={toggle}
+        type="button"
+      >
         <ChevronRight aria-hidden="true" className="sk-chevron" size={13} />
         <span className="sk-group-title">{title}</span>
         {meta}
-      </div>
-      <div className="sk-group-body">{children}</div>
+      </button>
+      {open && <div className="sk-group-body">{children}</div>}
     </div>
   );
 }
@@ -265,19 +275,26 @@ function WorkspacePanel() {
             <ExternalLink aria-hidden="true" size={12} />
           </div>
           <div className="sk-preview">
-            <div className="sk-preview-card">
-              <h3>Todos</h3>
-              <p className="sk-preview-note">
-                The generated app runs here in its own sandbox origin.
-              </p>
-              <div className="sk-preview-row">
-                <span className="sk-preview-box" /> Buy milk
+            <BorderBeam
+              brightness={1.5}
+              colorVariant="ice"
+              size="md"
+              strength={0.8}
+            >
+              <div className="sk-preview-card">
+                <h3>Todos</h3>
+                <p className="sk-preview-note">
+                  The generated app runs here in its own sandbox origin.
+                </p>
+                <div className="sk-preview-row">
+                  <span className="sk-preview-box" /> Buy milk
+                </div>
+                <div className="sk-preview-row">
+                  <span className="sk-preview-box" data-done="true" /> Ship the
+                  todo app
+                </div>
               </div>
-              <div className="sk-preview-row">
-                <span className="sk-preview-box" data-done="true" /> Ship the
-                todo app
-              </div>
-            </div>
+            </BorderBeam>
           </div>
         </>
       )}
@@ -395,13 +412,21 @@ export default function Skeleton() {
 
       <main className="sk-main">
         <header className="sk-head">
-          <div>
-            <div className="sk-title">
+          <div className="sk-head-breadcrumbs">
+            <span className="sk-breadcrumb-project">
+              <FolderClosed aria-hidden="true" size={15} />
+              <span>A small app</span>
+            </span>
+            <span aria-hidden="true" className="sk-breadcrumb-sep">
+              /
+            </span>
+            <span className="sk-title">
               Build a small todo html app single file
-            </div>
-            <div className="sk-sub">
-              A small app · <span data-state="ready">Ready</span>
-            </div>
+            </span>
+            <span className="sk-status-pill" data-state="ready">
+              <span aria-hidden="true" className="sk-status-beacon" />
+              <span>Ready</span>
+            </span>
           </div>
           <div className="sk-head-tools">
             <button className="sk-ghost" type="button">

@@ -7,6 +7,7 @@ import {
   ProjectViewSchema,
   type SessionView,
 } from "@reasonateai/contracts/auth";
+import { BorderBeam } from "border-beam";
 import { FolderClosed } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
@@ -298,134 +299,145 @@ export function Onboarding({ onComplete, session }: OnboardingProps) {
 
   return (
     <div className="onboarding">
-      <div className="onb-inner">
-        {step === "welcome" && (
-          <div className="onb-hero">
-            <ThinkingOrb size={64} state="connecting" theme="auto" />
-          </div>
-        )}
-        {step === "next" && (
-          <div className="onb-hero">
-            <AsciiFigure />
-          </div>
-        )}
+      <BorderBeam
+        brightness={1.6}
+        colorVariant="colorful"
+        saturation={1.4}
+        size="md"
+        strength={0.85}
+      >
+        <div className="onb-inner">
+          {step === "welcome" && (
+            <div className="onb-hero">
+              <ThinkingOrb size={64} state="connecting" theme="auto" />
+            </div>
+          )}
+          {step === "next" && (
+            <div className="onb-hero">
+              <AsciiFigure />
+            </div>
+          )}
 
-        <p className="onb-progress">
-          Step {stepNumber} of {steps.length}
-        </p>
-        <h2 aria-live="polite" className="onb-title">
-          {step === "project" && openProject !== undefined
-            ? "Choose a project"
-            : copy.title}
-        </h2>
-        <p className="onb-lede">
-          {step === "project" && openProject !== undefined
-            ? "This workspace already has projects. Choose the one the CTO should work in."
-            : copy.lede}
-        </p>
+          <p className="onb-progress">
+            <span aria-hidden="true" className="onb-progress-beacon" />
+            Step {stepNumber} of {steps.length}
+          </p>
+          <h2 aria-live="polite" className="onb-title">
+            {step === "project" && openProject !== undefined
+              ? "Choose a project"
+              : copy.title}
+          </h2>
+          <p className="onb-lede">
+            {step === "project" && openProject !== undefined
+              ? "This workspace already has projects. Choose the one the CTO should work in."
+              : copy.lede}
+          </p>
 
-        {error.length > 0 && (
-          <div className="onb-banner is-error" role="alert">
-            <span>{error}</span>
-          </div>
-        )}
-        {note.length > 0 && (
-          <div className="onb-banner" role="status">
-            <span>{note}</span>
-          </div>
-        )}
+          {error.length > 0 && (
+            <div className="onb-banner is-error" role="alert">
+              <span>{error}</span>
+            </div>
+          )}
+          {note.length > 0 && (
+            <div className="onb-banner" role="status">
+              <span>{note}</span>
+            </div>
+          )}
 
-        <form className="onb-form" onSubmit={submitStep}>
-          <div className="onb-step" key={step}>
-            {step === "workspace" && (
-              <div className="onb-field">
-                <label className="onb-label" htmlFor="onb-workspace">
-                  Workspace name
-                </label>
-                <input
-                  className="onb-input"
-                  disabled={busy}
-                  id="onb-workspace"
-                  maxLength={120}
-                  onChange={updateWorkspaceName}
-                  placeholder="Northwind"
-                  ref={inputRef}
-                  required
-                  value={workspaceName}
-                />
-              </div>
-            )}
+          <form className="onb-form" onSubmit={submitStep}>
+            <div className="onb-step" key={step}>
+              {step === "workspace" && (
+                <div className="onb-field">
+                  <label className="onb-label" htmlFor="onb-workspace">
+                    Workspace name
+                  </label>
+                  <input
+                    className="onb-input"
+                    disabled={busy}
+                    id="onb-workspace"
+                    maxLength={120}
+                    onChange={updateWorkspaceName}
+                    placeholder="Northwind"
+                    ref={inputRef}
+                    required
+                    value={workspaceName}
+                  />
+                </div>
+              )}
 
-            {step === "project" && openProject !== undefined && (
-              <ul className="onb-projects">
-                {projects.map((item) => (
-                  <li key={item.projectId}>
-                    <button
-                      aria-pressed={item.projectId === projectId}
-                      className="onb-project"
-                      data-active={item.projectId === projectId || undefined}
-                      onClick={chooseProject}
-                      type="button"
-                      value={item.projectId}
-                    >
-                      <FolderClosed aria-hidden="true" size={14} />
-                      <span className="onb-project-name">{item.name}</span>
-                    </button>
+              {step === "project" && openProject !== undefined && (
+                <ul className="onb-projects">
+                  {projects.map((item) => (
+                    <li key={item.projectId}>
+                      <button
+                        aria-pressed={item.projectId === projectId}
+                        className="onb-project"
+                        data-active={item.projectId === projectId || undefined}
+                        onClick={chooseProject}
+                        type="button"
+                        value={item.projectId}
+                      >
+                        <FolderClosed aria-hidden="true" size={14} />
+                        <span className="onb-project-name">{item.name}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {step === "project" && openProject === undefined && (
+                <div className="onb-field">
+                  <label className="onb-label" htmlFor="onb-project">
+                    Project name
+                  </label>
+                  <input
+                    className="onb-input"
+                    disabled={busy}
+                    id="onb-project"
+                    maxLength={120}
+                    onChange={updateProjectName}
+                    placeholder="Invoice tracker"
+                    ref={inputRef}
+                    required
+                    value={projectName}
+                  />
+                </div>
+              )}
+
+              {step === "next" && (
+                <ol className="onb-loop">
+                  <li>
+                    You describe the product, or the change you want next.
                   </li>
-                ))}
-              </ul>
-            )}
+                  <li>The CTO reads the project and plans the work.</li>
+                  <li>It builds and runs the app in an isolated sandbox.</li>
+                  <li>It verifies the result against what you asked for.</li>
+                  <li>You see what it built, and ask for the next change.</li>
+                </ol>
+              )}
+            </div>
 
-            {step === "project" && openProject === undefined && (
-              <div className="onb-field">
-                <label className="onb-label" htmlFor="onb-project">
-                  Project name
-                </label>
-                <input
-                  className="onb-input"
-                  disabled={busy}
-                  id="onb-project"
-                  maxLength={120}
-                  onChange={updateProjectName}
-                  placeholder="Invoice tracker"
-                  ref={inputRef}
-                  required
-                  value={projectName}
-                />
-              </div>
-            )}
-
-            {step === "next" && (
-              <ol className="onb-loop">
-                <li>You describe the product, or the change you want next.</li>
-                <li>The CTO reads the project and plans the work.</li>
-                <li>It builds and runs the app in an isolated sandbox.</li>
-                <li>It verifies the result against what you asked for.</li>
-                <li>You see what it built, and ask for the next change.</li>
-              </ol>
-            )}
-          </div>
-
-          <div className="onb-actions">
-            <button
-              className="onb-primary"
-              disabled={!canSubmit}
-              ref={primaryRef}
-              type="submit"
-            >
-              {primaryLabelFor(step, openProject?.name)}
-            </button>
-            <button
-              className="onb-skip"
-              disabled={busy}
-              onClick={skipSetup}
-              type="button"
-            >
-              Skip setup
-            </button>
-          </div>
-        </form>
-      </div>
+            <div className="onb-actions">
+              <button
+                className="onb-primary"
+                disabled={!canSubmit}
+                ref={primaryRef}
+                type="submit"
+              >
+                {primaryLabelFor(step, openProject?.name)}
+              </button>
+              <button
+                className="onb-skip"
+                disabled={busy}
+                onClick={skipSetup}
+                type="button"
+              >
+                Skip setup
+              </button>
+            </div>
+          </form>
+        </div>
+      </BorderBeam>
     </div>
   );
 }

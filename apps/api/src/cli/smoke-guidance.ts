@@ -23,6 +23,7 @@ import { frontierModel } from "../mastra/model.js";
 import {
   buildSandboxEnvironment,
   reasonateBuildWorkspace,
+  releaseBuildSandbox,
   SANDBOX_WORKING_DIRECTORY,
 } from "../mastra/workspace.js";
 
@@ -191,7 +192,7 @@ async function main(): Promise<void> {
     await exec("docker", ["rm", "-f", sandboxIdFor(scope)]);
     await exec("docker", ["volume", "rm", `${sandboxIdFor(scope)}-workspace`]);
     await rm(resourcesRoot, { force: true, recursive: true });
-    reasonateBuildWorkspace.clearSandboxCache(sandboxIdFor(scope));
+    releaseBuildSandbox(scope);
   }
 }
 

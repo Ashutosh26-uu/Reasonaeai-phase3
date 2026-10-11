@@ -132,6 +132,7 @@ export interface PreviewServiceDeps {
     projectId: ProjectId;
     runId: RunId;
   }) => Promise<ISandbox | undefined>;
+  isBuildSessionActive?: (scope: PreviewRequest) => Promise<boolean>;
   isRunActive?: (runId: RunId) => Promise<boolean>;
   /** Isolates preview containers for independent development deployments. */
   namespace?: string | undefined;
@@ -285,6 +286,8 @@ export function createPreviewService(
 
   const byId = new Map<PreviewId, PreviewRecord>();
   const bySession = new Map<BuildSessionId, PreviewRecord>();
+  const persistedTouches = new Map<PreviewId, number>();
+  const retirements = new Map<BuildSessionId, Promise<void>>();
 
   let previewStoreInstance: PreviewRepository | undefined;
   const getPreviewStore = (): PreviewRepository => {
@@ -322,9 +325,19 @@ export function createPreviewService(
 
   const touched = (record: PreviewRecord): PreviewRecord => {
     record.lastUsedAtMs = nowMs();
-    getPreviewStore()
-      .touch(record.previewId)
-      .catch(() => undefined);
+    // Asset/HMR requests may arrive in bursts. Keep the idle clock precise in
+    // memory without making every asset wait on a separate database write.
+    if (
+      record.lastUsedAtMs - (persistedTouches.get(record.previewId) ?? 0) >=
+      30_000
+    ) {
+      persistedTouches.set(record.previewId, record.lastUsedAtMs);
+      getPreviewStore()
+        .touch(record.previewId)
+        .catch(() => {
+          persistedTouches.delete(record.previewId);
+        });
+    }
     return record;
   };
 
@@ -334,7 +347,7 @@ export function createPreviewService(
       port:
         record.status === "stopped" || record.status === "failed"
           ? null
-          : (record.appPort ?? record.hostPort),
+          : record.appPort,
       previewId: record.previewId,
       status: record.status,
       url: `${PREVIEW_PUBLIC_PATH_PREFIX}/${record.previewId}/`,
@@ -365,6 +378,30 @@ export function createPreviewService(
   };
 
   const destroySandbox = async (record: PreviewRecord): Promise<void> => {
+    if (
+      record.runId &&
+      deps.isBuildSessionActive &&
+      (await deps.isBuildSessionActive({
+        buildSessionId: record.buildSessionId,
+        organizationId: record.organizationId,
+        projectId: record.projectId,
+        runId: record.runId,
+      }))
+    ) {
+      return;
+    }
+    // Preview records from successive turns share the conversation's sandbox.
+    // Retiring an old record must not destroy a newer preview's running app.
+    const siblings = await getPreviewStore().listActive();
+    if (
+      siblings.some(
+        (item) =>
+          item.buildSessionId === record.buildSessionId &&
+          item.previewId !== record.previewId
+      )
+    ) {
+      return;
+    }
     if (record.runId !== null && deps.isRunActive) {
       try {
         if (await deps.isRunActive(record.runId)) {
@@ -387,6 +424,33 @@ export function createPreviewService(
       } catch {
         // Teardown is best effort: the exit hook and Docker's own orphan cleanup
         // are the backstops, and a sandbox that is already gone is not a failure.
+      }
+    }
+  };
+
+  const retireSandbox = async (
+    record: PreviewRecord,
+    detail?: string
+  ): Promise<void> => {
+    const preceding =
+      retirements.get(record.buildSessionId) ?? Promise.resolve();
+    const operation = preceding
+      .catch(() => undefined)
+      .then(async () => {
+        // Publish retirement before checking siblings, serializing simultaneous
+        // retirements so the last owner releases the shared sandbox exactly once.
+        await getPreviewStore().update(record.previewId, {
+          status: "stopped",
+          ...(detail === undefined ? {} : { detail }),
+        });
+        await destroySandbox(record);
+      });
+    retirements.set(record.buildSessionId, operation);
+    try {
+      await operation;
+    } finally {
+      if (retirements.get(record.buildSessionId) === operation) {
+        retirements.delete(record.buildSessionId);
       }
     }
   };
@@ -453,14 +517,15 @@ export function createPreviewService(
     return { appPort, hostPort, sandbox };
   };
 
-  /** A failed preview has nothing left to serve, so its sandbox goes with it. */
+  /** Preserve the shared app and workspace when only preview routing fails. */
   const fail = async (record: PreviewRecord, detail: string): Promise<void> => {
     record.status = "failed";
     record.detail = detail.slice(0, DETAIL_MAX_LENGTH);
     record.hostPort = null;
     record.appPort = null;
-    await destroySandbox(record);
-    getPreviewStore()
+    // A failed relay/app probe does not own the conversation filesystem or
+    // other app processes. Leave them available for repair and retry.
+    await getPreviewStore()
       .update(record.previewId, {
         detail: record.detail,
         hostPort: null,
@@ -469,21 +534,24 @@ export function createPreviewService(
       .catch(() => undefined);
   };
 
-  const teardown = async (record: PreviewRecord): Promise<void> => {
+  const teardown = async (
+    record: PreviewRecord,
+    releaseSandbox = true
+  ): Promise<void> => {
     if (byId.get(record.previewId) === record) {
       byId.delete(record.previewId);
     }
+    persistedTouches.delete(record.previewId);
     if (bySession.get(record.buildSessionId) === record) {
       bySession.delete(record.buildSessionId);
     }
     record.hostPort = null;
     record.appPort = null;
-    await destroySandbox(record);
-    getPreviewStore()
-      .update(record.previewId, {
-        status: "stopped",
-      })
-      .catch(() => undefined);
+    if (releaseSandbox) {
+      await retireSandbox(record);
+    } else {
+      await getPreviewStore().update(record.previewId, { status: "stopped" });
+    }
   };
   /** Connects the relay to the exact app port selected by `open_preview`. */
   const begin = async (record: PreviewRecord): Promise<void> => {
@@ -590,11 +658,11 @@ export function createPreviewService(
       return undefined;
     }
     const sandbox = await attachSandbox(item);
-    await sandbox?.destroy().catch(() => undefined);
-    await previewRepo.update(item.previewId, {
-      detail: "Preview retired after idle expiration during service restart.",
-      status: "stopped",
-    });
+    const record = await recoveredRecord(item, sandbox, item.hostPort, "ready");
+    await retireSandbox(
+      record,
+      "Preview retired after idle expiration during service restart."
+    );
     return {
       outcome: "retired",
       previewId: item.previewId,
@@ -695,11 +763,8 @@ export function createPreviewService(
     );
 
     const attached = await attachSandbox(item);
-    const runIsActive = item.runId
-      ? await deps.isRunActive?.(item.runId).catch(() => true)
-      : false;
     const probe = await probePreview(hostPort);
-    if (runIsActive && probe !== "serving" && attached) {
+    if (item.status === "starting" && probe !== "serving" && attached) {
       await previewRepo.touch(previewId);
       if (hostPort !== item.hostPort) {
         await previewRepo.update(previewId, { hostPort, status: "starting" });
@@ -782,6 +847,7 @@ export function createPreviewService(
           bySession.set(res.record.buildSessionId, res.record);
           recoveredContainers.add(res.containerName);
           recoveredCount += 1;
+          launch(res.record);
           if (deps.onPreviewRecovered) {
             deps.onPreviewRecovered(res.previewId, res.hostPort ?? 0);
           }
@@ -847,7 +913,8 @@ export function createPreviewService(
   const start = async (request: PreviewRequest): Promise<PreviewView> => {
     await sweepOrphans();
     const persisted = await getPreviewStore().getByRun(request.runId);
-    let existing = persisted ? byId.get(persisted.previewId) : undefined;
+    const existingId = persisted?.previewId;
+    let existing = existingId === undefined ? undefined : byId.get(existingId);
     if (existing === undefined) {
       try {
         const dbExisting = persisted;
@@ -885,7 +952,7 @@ export function createPreviewService(
         launch(existing);
         return viewOf(touched(existing));
       }
-      await teardown(existing);
+      await teardown(existing, false);
     }
 
     const previewId = PreviewIdSchema.parse(randomUUID());
@@ -1083,15 +1150,17 @@ export function createPreviewService(
                 }
               }
               const sandbox = await attachSandbox(item);
-              if (sandbox) {
-                await sandbox.destroy().catch(() => undefined);
-              } else if (item.runId === null) {
+              if (item.runId === null) {
                 await execFileAsync("docker", [
                   "rm",
                   "-f",
                   "-v",
                   item.containerName,
                 ]).catch(() => undefined);
+              } else {
+                await retireSandbox(
+                  await recoveredRecord(item, sandbox, item.hostPort, "ready")
+                );
               }
               await getPreviewStore().update(item.previewId, {
                 status: "stopped",

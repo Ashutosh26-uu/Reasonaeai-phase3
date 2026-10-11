@@ -360,6 +360,7 @@ export class ScriptedSession implements RunSession {
   }): Promise<void> => {
     this.lastResumeData = input.resumeData;
     this.lastResumedToolCallId = input.toolCallId;
+    this.#markStarted();
     return new Promise<void>((resolve, reject) => {
       this.#finish = resolve;
       this.#fail = reject;

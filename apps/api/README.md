@@ -63,7 +63,7 @@ pnpm --filter "@reasonateai/api^..." build
 cd apps/api
 node --env-file=.env --input-type=module -e "import { createProjectStateStore } from '@reasonateai/project-state/postgres'; const store = createProjectStateStore({ connectionString: process.env.DATABASE_URL }); try { await store.migrate(); console.log('Migration complete'); } finally { await store.close(); }"
 cd ../..
-pnpm --filter @reasonateai/api dev -- --env .env
+pnpm --filter @reasonateai/api dev
 ```
 
 In another terminal, build the worker and run it from `apps/worker` with
@@ -108,4 +108,6 @@ The authenticated API provides `GET /v1/projects?organizationId=...`, `GET /v1/p
 
 ## Current boundary
 
-The product routes support real conversation creation, history, turns, and run events. Browser verification, controlled network brokerage, preview routing, approval decisions, and the production deployment provider remain separate work.
+Files reads bounded live source from the authorized conversation's existing active or preview-retained sandbox, with saved-checkpoint fallback. The browser renders an expandable folder tree and polls while the Files tab is visible. Changes remains a saved checkpoint diff. Preview viewing renews its idle lease after turn completion, while the worker still publishes the final checkpoint. See [workspace verification and recovery](../../docs/operations/conversation-workspace.md).
+
+The product routes support real conversation creation, history, turns, run events, and authenticated app previews. The API tunnels WebSocket upgrades to the selected app port through the existing same-sandbox relay; it does not allocate another sandbox or expose arbitrary ports. Preview traffic still shares the product origin, so it is not safe for deployed untrusted apps until the separate preview-origin and browser-isolation boundary is implemented. The relay remains Docker-specific; AWS placement is undecided.

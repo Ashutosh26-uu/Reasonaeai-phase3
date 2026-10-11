@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatSandboxPreviewAddress,
   movePreviewHistory,
   observedPreviewPath,
   parsePreviewPath,
+  parseSandboxPreviewAddress,
   previewRoot,
   previewTransportUrl,
   recordPreviewPath,
@@ -13,6 +15,27 @@ const origin = "https://app.example";
 const root = `${origin}/v1/previews/preview-one/`;
 
 describe("preview project paths", () => {
+  it("shows the sandbox URL and routes only its selected localhost port", () => {
+    expect(formatSandboxPreviewAddress(4173, "/tasks")).toBe(
+      "http://localhost:4173/tasks"
+    );
+    expect(
+      parseSandboxPreviewAddress(
+        "http://localhost:4173/tasks?filter=open",
+        4173
+      )
+    ).toBe("/tasks?filter=open");
+    expect(parseSandboxPreviewAddress("http://127.0.0.1:4173/", 4173)).toBe(
+      "/"
+    );
+    expect(
+      parseSandboxPreviewAddress("http://localhost:3000/", 4173)
+    ).toBeNull();
+    expect(
+      parseSandboxPreviewAddress("http://example.com:4173/", 4173)
+    ).toBeNull();
+  });
+
   it("displays project routes while preserving the authenticated proxy transport", () => {
     expect(
       previewRoot("/v1/previews/preview-one/", "preview-one", origin)
@@ -74,7 +97,6 @@ describe("preview project paths", () => {
       "https://other.example/v1/previews/preview-one/settings",
       `${origin}/v1/previews/preview-two/settings`,
       `${origin}/v1/previews/preview-one-extra/settings`,
-      `${origin}/v1/previews/preview-one`,
       `${origin}/v1/auth/session`,
       `${root}%252e%252e/status`,
       "about:blank",
@@ -90,6 +112,22 @@ describe("preview project paths", () => {
       "/workspace/src/app.tsx"
     );
   });
+});
+
+it("recognizes the same preview root after ingress strips a trailing slash", () => {
+  const fixtureRoot = "http://localhost:3219/v1/previews/fixture/";
+  expect(
+    observedPreviewPath(
+      fixtureRoot,
+      "http://localhost:3219/v1/previews/fixture"
+    )
+  ).toBe("/");
+  expect(
+    observedPreviewPath(
+      fixtureRoot,
+      "http://localhost:3219/v1/previews/fixture-other"
+    )
+  ).toBeNull();
 });
 
 describe("bounded preview history", () => {

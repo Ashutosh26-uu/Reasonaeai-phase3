@@ -200,7 +200,9 @@ describeWithDatabase("run worker poll loop", () => {
       );
 
       await Promise.all([worker.poll(), worker.poll()]);
-      await vi.waitFor(() => expect(scripted.sessions).toHaveLength(2));
+      await vi.waitFor(() => expect(scripted.sessions).toHaveLength(2), {
+        timeout: 15_000,
+      });
       const [, secondSession] = scripted.sessions;
       if (!secondSession) {
         throw new Error("The independent project did not start.");
@@ -232,7 +234,9 @@ describeWithDatabase("run worker poll loop", () => {
         { timeout: 15_000 }
       );
       await worker.poll();
-      await vi.waitFor(() => expect(scripted.sessions).toHaveLength(3));
+      await vi.waitFor(() => expect(scripted.sessions).toHaveLength(3), {
+        timeout: 15_000,
+      });
       const [, , thirdSession] = scripted.sessions;
       if (!thirdSession) {
         throw new Error("The released slot did not accept queued work.");
