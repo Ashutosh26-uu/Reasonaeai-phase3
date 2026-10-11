@@ -21,28 +21,24 @@
   cursor: pointer;
   background: transparent;
   border: 0;
-  border-radius: var(--radius-control, 100px);
-  transition: all 160ms var(--ease);
+  border-radius: 6px;
+  transition:
+    color 150ms var(--ease),
+    background 150ms var(--ease);
 }
 
 .control:hover {
   color: var(--ink);
   background: var(--raised-hover);
-  transform: translateY(-0.5px);
-}
-
-.control:active {
-  transform: scale(0.92);
 }
 
 .control:disabled {
   cursor: default;
   opacity: 0.35;
-  transform: none;
 }
 
 .control:focus-visible {
-  outline: 1px solid var(--lime);
+  outline: 2px solid var(--primary, #2563eb);
   outline-offset: 2px;
 }
 
@@ -56,19 +52,20 @@
   width: 100%;
   min-width: 0;
   height: 28px;
-  padding: 0 12px;
+  padding: 0 10px;
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 12px;
   color: var(--ink-2);
   background: var(--raised);
   border: 1px solid var(--line);
-  border-radius: var(--radius-control, 100px);
-  transition: border-color 160ms var(--ease);
+  border-radius: 6px;
+  transition: border-color 150ms var(--ease);
 }
 
 .address:focus-visible {
-  outline: none;
-  border-color: var(--lime);
+  outline: 2px solid var(--primary, #2563eb);
+  outline-offset: 1px;
+  border-color: var(--line-strong);
 }
 
 .filePath {
@@ -144,19 +141,17 @@
   cursor: pointer;
   background: var(--raised);
   border: 1px solid var(--line);
-  border-radius: var(--radius-control, 100px);
-  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  border-radius: 6px;
+  transition:
+    color 150ms var(--ease),
+    background 150ms var(--ease),
+    border-color 150ms var(--ease);
 }
 
 .exportButton:hover:not(:disabled) {
-  color: var(--lime);
-  background: rgba(214, 255, 87, 0.08);
-  border-color: var(--lime);
-  transform: translateY(-1px);
-}
-
-.exportButton:active:not(:disabled) {
-  transform: scale(0.97);
+  color: var(--ink);
+  background: var(--raised-hover);
+  border-color: var(--line-hover, var(--line));
 }
 
 .exportButton:disabled {
@@ -165,7 +160,7 @@
 }
 
 .exportButton:focus-visible {
-  outline: 2px solid var(--ink-3);
+  outline: 2px solid var(--primary, #2563eb);
   outline-offset: 2px;
 }
 

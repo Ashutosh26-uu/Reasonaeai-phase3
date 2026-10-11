@@ -4,7 +4,7 @@ import { Slot } from "radix-ui";
 import type * as React from "react";
 
 const buttonVariants = cva(
-  "inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-full font-medium font-sans text-sm tracking-normal outline-none transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-[1px] hover:scale-[1.01] active:translate-y-0 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40 [&_svg:not([class*='size-'])]:size-3.5 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+  "inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md font-medium text-sm outline-none transition-all focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-2 aria-invalid:ring-destructive [&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0",
   {
     defaultVariants: {
       size: "default",
@@ -12,27 +12,26 @@ const buttonVariants = cva(
     },
     variants: {
       size: {
-        default: "h-9 px-4 py-2 has-[>svg]:px-3.5",
-        icon: "size-9 rounded-full",
-        "icon-lg": "size-10 rounded-full",
-        "icon-sm": "size-8 rounded-full",
-        "icon-xs": "size-6 rounded-full [&_svg:not([class*='size-'])]:size-3",
-        lg: "h-11 px-6 py-2.5 has-[>svg]:px-5",
-        sm: "h-8 gap-1.5 px-3 text-xs has-[>svg]:px-2.5",
-        xs: "h-6 gap-1 px-2 text-[11px] has-[>svg]:px-1.5 [&_svg:not([class*='size-'])]:size-3",
+        default: "h-9 px-4 py-2 has-[>svg]:px-3",
+        icon: "size-9 rounded-md",
+        "icon-lg": "size-10 rounded-md",
+        "icon-sm": "size-8 rounded-md",
+        "icon-xs": "size-6 rounded-md [&_svg:not([class*='size-'])]:size-3",
+        lg: "h-10 rounded-md px-6 has-[>svg]:px-4",
+        sm: "h-8 gap-1.5 rounded-md px-3 has-[>svg]:px-2.5",
+        xs: "h-6 gap-1 rounded-md px-2 text-xs has-[>svg]:px-1.5 [&_svg:not([class*='size-'])]:size-3",
       },
       variant: {
-        default:
-          "border border-transparent bg-[var(--lime)] font-semibold text-[#050507] hover:bg-[#d6ff57] hover:brightness-105 active:scale-[0.97]",
+        default: "bg-primary text-primary-foreground hover:bg-primary/90",
         destructive:
-          "border border-[var(--orange)] bg-transparent text-[var(--orange)] hover:bg-[var(--orange)]/15 active:scale-[0.97]",
+          "bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive dark:bg-destructive dark:focus-visible:ring-destructive dark:hover:bg-destructive/90",
         ghost:
-          "bg-transparent text-[var(--text)] hover:bg-[rgba(255,255,255,0.06)] hover:text-white active:scale-[0.97]",
-        link: "text-[var(--lime)] underline-offset-4 hover:scale-100 hover:underline",
+          "hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50",
+        link: "text-primary underline-offset-4 hover:underline",
         outline:
-          "border border-[var(--border)] bg-[rgba(255,255,255,0.06)] text-[var(--text)] backdrop-blur-[24px] hover:border-[var(--border-strong)] hover:bg-[rgba(255,255,255,0.09)] active:scale-[0.97]",
+          "border border-border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
         secondary:
-          "border border-[var(--border)] bg-[rgba(255,255,255,0.04)] text-[var(--text)] hover:border-[var(--border-strong)] hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.97]",
+          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
       },
     },
   }
