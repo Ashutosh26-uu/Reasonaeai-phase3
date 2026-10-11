@@ -34,6 +34,9 @@
 }
 
 .onb-progress {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
   margin: 0 0 6px;
   font-family: var(--font-sans);
   font-size: 11px;
@@ -41,6 +44,14 @@
   color: var(--lime);
   text-transform: uppercase;
   letter-spacing: 0.06em;
+}
+
+.onb-progress-beacon {
+  width: 6px;
+  height: 6px;
+  background: var(--lime);
+  border-radius: 50%;
+  animation: limeBeaconPulse 2s ease-in-out infinite;
 }
 
 .onb-title {
@@ -83,12 +94,12 @@
 }
 
 .onb-input {
-  height: 38px;
-  padding: 0 14px;
+  height: 42px;
+  padding: 0 16px;
   font-size: 13.5px;
   background: var(--raised);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-control, 100px);
   transition: border-color 180ms var(--ease);
 }
 
@@ -121,15 +132,15 @@
   gap: 8px;
   align-items: center;
   width: 100%;
-  min-height: 34px;
-  padding: 0 12px;
+  min-height: 38px;
+  padding: 0 14px;
   font-size: 13.5px;
   color: var(--ink-2);
   text-align: left;
   cursor: pointer;
   background: var(--raised);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-control, 100px);
   transition: all 160ms var(--ease);
 }
 
@@ -244,14 +255,14 @@
 }
 
 .onb-banner {
-  padding: 9px 14px;
+  padding: 10px 16px;
   margin-bottom: 16px;
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.55;
   color: var(--ink-2);
   background: var(--glass);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 16px;
   backdrop-filter: blur(24px);
 }
 

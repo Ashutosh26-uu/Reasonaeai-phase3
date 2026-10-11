@@ -21,7 +21,7 @@
   cursor: pointer;
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-control, 100px);
   transition: all 160ms var(--ease);
 }
 
@@ -56,13 +56,13 @@
   width: 100%;
   min-width: 0;
   height: 28px;
-  padding: 0 9px;
+  padding: 0 12px;
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 12px;
   color: var(--ink-2);
   background: var(--raised);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius-control, 100px);
   transition: border-color 160ms var(--ease);
 }
 

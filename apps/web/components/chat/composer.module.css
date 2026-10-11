@@ -102,24 +102,28 @@
   gap: 4px;
   align-items: center;
   min-height: 27px;
-  padding: 4px 7px;
+  padding: 4px 9px;
   font-size: 11px;
   color: var(--ink-2);
   cursor: pointer;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-control, 100px);
+  transition: all 160ms var(--ease);
 }
 
 .queuedActions button:hover,
 .compact .queueButton:hover {
+  color: var(--ink);
   background: var(--raised);
+  transform: translateY(-0.5px);
 }
 
 .queuedActions button:disabled,
 .compact .queueButton:disabled {
   cursor: default;
   opacity: 0.45;
+  transform: none;
 }
 
 .queueMenu {
@@ -146,12 +150,12 @@
 .queueEditor textarea {
   width: 100%;
   min-height: 65px;
-  padding: 8px;
+  padding: 10px 12px;
   color: var(--ink);
   resize: vertical;
   background: var(--composer-surface);
   border: 1px solid var(--line-strong);
-  border-radius: 8px;
+  border-radius: 14px;
 }
 
 .compact .surface[class~="prompt"] {
@@ -342,6 +346,19 @@
 .compact button[class~="prompt-send"][data-status="streaming"] {
   color: #ffffff;
   background: var(--orange);
+  animation: streamingPulse 1.8s var(--ease) infinite;
+}
+
+@keyframes streamingPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    filter: brightness(1.12);
+  }
+  50% {
+    transform: scale(0.95);
+    filter: brightness(0.85);
+  }
 }
 
 .compact .model[class~="prompt-chip"] {
@@ -384,12 +401,13 @@
 .compact .context [class~="prompt-chip"] {
   max-width: 100%;
   height: 32px;
-  padding: 0 8px;
+  padding: 0 10px;
   font-size: 14px;
   color: var(--ink-2);
   background: transparent;
   border-color: transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-control, 100px);
+  transition: all 160ms var(--ease);
 }
 
 .compact .context [class~="project-picker"] {

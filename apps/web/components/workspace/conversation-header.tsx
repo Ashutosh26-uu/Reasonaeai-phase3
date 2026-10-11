@@ -498,10 +498,40 @@ export function ConversationHeader(props: HeaderProps) {
   return (
     <>
       <header className="pane-head">
-        <FolderClosed aria-hidden="true" className="pane-folder" size={20} />
-        <h1 className="pane-title" title={props.heading}>
-          {props.heading}
-        </h1>
+        <div className="pane-breadcrumbs">
+          {props.projectName ? (
+            <>
+              <span className="pane-breadcrumb-project">
+                <FolderClosed
+                  aria-hidden="true"
+                  className="pane-folder"
+                  size={16}
+                />
+                <span className="pane-breadcrumb-project-name">
+                  {props.projectName}
+                </span>
+              </span>
+              <span aria-hidden="true" className="pane-breadcrumb-separator">
+                /
+              </span>
+            </>
+          ) : (
+            <FolderClosed
+              aria-hidden="true"
+              className="pane-folder"
+              size={16}
+            />
+          )}
+          <h1 className="pane-title" title={props.heading}>
+            {props.heading}
+          </h1>
+          {props.status && (
+            <span className="pane-status-pill" data-status={props.status}>
+              <span aria-hidden="true" className="pane-status-beacon" />
+              <span>{props.status}</span>
+            </span>
+          )}
+        </div>
         <div className="pane-tools">
           {props.selectedProject && (
             <ConversationMenu

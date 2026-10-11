@@ -968,6 +968,81 @@
   border-bottom: 1px solid var(--line);
 }
 
+.pane-breadcrumbs {
+  display: flex;
+  flex: 1;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.pane-breadcrumb-project {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 6px;
+  align-items: center;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ink-3);
+  transition: color 140ms var(--ease);
+}
+
+.pane-breadcrumb-project:hover {
+  color: var(--ink);
+}
+
+.pane-breadcrumb-project-name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-breadcrumb-separator {
+  flex-shrink: 0;
+  font-size: 13px;
+  color: var(--ink-4);
+  user-select: none;
+}
+
+.pane-status-pill {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 6px;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--lime);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: rgba(214, 255, 87, 0.1);
+  border: 1px solid rgba(214, 255, 87, 0.3);
+  border-radius: var(--radius-control);
+}
+
+.pane-status-pill[data-status="working"],
+.pane-status-pill[data-status="running"] {
+  color: var(--cyan);
+  background: rgba(0, 255, 240, 0.1);
+  border-color: rgba(0, 255, 240, 0.3);
+}
+
+.pane-status-beacon {
+  width: 6px;
+  height: 6px;
+  background: var(--lime);
+  border-radius: 50%;
+  animation: limeBeaconPulse 2s ease-in-out infinite;
+}
+
+.pane-status-pill[data-status="working"] .pane-status-beacon,
+.pane-status-pill[data-status="running"] .pane-status-beacon {
+  background: var(--cyan);
+  animation: cyanBeaconPulse 2s ease-in-out infinite;
+}
+
 .pane-title {
   flex: 1;
   min-width: 0;
@@ -999,14 +1074,17 @@
   background: none;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
-  transition:
-    background 140ms var(--ease),
-    color 140ms var(--ease);
+  transition: all 180ms var(--ease);
 }
 
 .pane-button:hover {
   color: var(--ink);
   background: var(--raised);
+  transform: translateY(-0.5px);
+}
+
+.pane-button:active {
+  transform: scale(0.96);
 }
 
 .pane-icon-button {
@@ -1157,6 +1235,14 @@
 
 .activity-status[data-status="input-available"] {
   color: var(--cyan);
+}
+
+.activity-status-beacon {
+  width: 6px;
+  height: 6px;
+  background: var(--cyan);
+  border-radius: 50%;
+  animation: cyanBeaconPulse 1.8s ease-in-out infinite;
 }
 
 .activity-status[data-status="input-available"] svg {
@@ -2140,18 +2226,40 @@
 .question-form textarea {
   width: 100%;
   min-height: 76px;
-  padding: 10px;
+  padding: 12px 14px;
   color: var(--ink);
   resize: vertical;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 16px;
+  transition: border-color 160ms var(--ease);
+}
+
+.question-form textarea:focus-visible {
+  outline: none;
+  border-color: var(--lime);
 }
 
 .question-form button {
   justify-self: end;
-  padding: 8px 14px;
-  border-radius: 8px;
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #050507;
+  cursor: pointer;
+  background: var(--lime);
+  border: 0;
+  border-radius: var(--radius-control);
+  transition: all 180ms var(--ease);
+}
+
+.question-form button:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px) scale(1.02);
+}
+
+.question-form button:active {
+  transform: scale(0.96);
 }
 
 .composer {
