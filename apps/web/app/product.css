@@ -119,6 +119,42 @@
   will-change: transform;
 }
 
+@keyframes dossierOrbFloat1 {
+  0% {
+    transform: translate(-50%, -50%) scale(1) translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate(-46%, -54%) scale(1.08) translate3d(35px, -25px, 0);
+  }
+  100% {
+    transform: translate(-54%, -46%) scale(0.94) translate3d(-25px, 30px, 0);
+  }
+}
+
+@keyframes dossierOrbFloat2 {
+  0% {
+    transform: translate(-50%, -50%) scale(1) translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate(-55%, -45%) scale(0.92) translate3d(-40px, 25px, 0);
+  }
+  100% {
+    transform: translate(-45%, -55%) scale(1.06) translate3d(30px, -35px, 0);
+  }
+}
+
+@keyframes dossierOrbFloat3 {
+  0% {
+    transform: translate(-50%, -50%) scale(1) translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate(-52%, -53%) scale(1.1) translate3d(25px, -30px, 0);
+  }
+  100% {
+    transform: translate(-48%, -47%) scale(0.96) translate3d(-30px, 20px, 0);
+  }
+}
+
 .dossier-orb-1 {
   top: 25%;
   left: 20%;
@@ -128,6 +164,7 @@
   opacity: 0.55;
   filter: blur(100px);
   transform: translate(-50%, -50%);
+  animation: dossierOrbFloat1 24s ease-in-out infinite alternate;
 }
 
 .dossier-orb-2 {
@@ -139,6 +176,7 @@
   opacity: 0.45;
   filter: blur(120px);
   transform: translate(-50%, -50%);
+  animation: dossierOrbFloat2 30s ease-in-out infinite alternate;
 }
 
 .dossier-orb-3 {
@@ -150,6 +188,7 @@
   opacity: 0.35;
   filter: blur(90px);
   transform: translate(-50%, -50%);
+  animation: dossierOrbFloat3 26s ease-in-out infinite alternate;
 }
 
 .dossier-grain {
@@ -1610,13 +1649,32 @@
   margin-top: 12px;
 }
 .message-edit button {
-  padding: 8px 12px;
+  padding: 8px 16px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
   border: 1px solid var(--border);
   border-radius: 999px;
+  transition: all 180ms var(--ease);
+}
+.message-edit button:hover {
+  background: var(--raised-hover);
+  border-color: var(--border-strong);
+  transform: translateY(-0.5px);
+}
+.message-edit button:active {
+  transform: scale(0.97);
 }
 .message-edit button[type="submit"] {
-  color: white;
-  background: #3478f6;
+  font-weight: 600;
+  color: #050507;
+  background: var(--lime);
+  border-color: transparent;
+}
+.message-edit button[type="submit"]:hover {
+  background: var(--lime);
+  filter: brightness(1.06);
 }
 
 .msg-user-actions .message-action:hover {
@@ -1935,14 +1993,18 @@
   border-radius: var(--radius-control);
   -webkit-backdrop-filter: blur(24px);
   backdrop-filter: blur(24px);
-  transition: all 0.4s var(--ease);
+  transition: all 180ms var(--ease);
 }
 
 .starter:hover {
   color: var(--lime);
   background: rgba(214, 255, 87, 0.08);
   border-color: var(--lime);
-  transform: scale(0.98);
+  transform: translateY(-1.5px) scale(1.01);
+}
+
+.starter:active {
+  transform: scale(0.97) translateY(0);
 }
 
 /* Composer --------------------------------------------------------------- */
@@ -2022,25 +2084,33 @@
   gap: 7px;
   align-items: center;
   height: 32px;
-  padding: 0 12px;
-  font-size: 13.5px;
+  padding: 0 14px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
   color: var(--ink-3);
   cursor: pointer;
   background: none;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: var(--radius-control);
-  transition:
-    background 140ms var(--ease),
-    color 140ms var(--ease);
+  transition: all 180ms var(--ease);
 }
 
 .panel-tab:hover {
   color: var(--ink);
+  background: rgba(255, 255, 255, 0.05);
+  transform: translateY(-0.5px);
+}
+
+.panel-tab:active {
+  transform: scale(0.97);
 }
 
 .panel-tab[data-active] {
-  color: var(--ink);
-  background: var(--raised-hover);
+  font-weight: 600;
+  color: #050507;
+  background: var(--lime);
+  border-color: transparent;
 }
 
 .panel-close {
@@ -2053,11 +2123,17 @@
   background: none;
   border: 0;
   border-radius: var(--radius-control);
+  transition: all 180ms var(--ease);
 }
 
 .panel-close:hover {
   color: var(--ink);
   background: var(--raised);
+  transform: rotate(90deg) scale(1.05);
+}
+
+.panel-close:active {
+  transform: scale(0.94);
 }
 
 .panel-body {
@@ -2156,23 +2232,32 @@
   height: 28px;
   padding: 0 7px;
   overflow: hidden;
+  font-family: var(--font-sans);
   font-size: 13px;
   color: var(--ink-2);
   text-align: left;
   cursor: pointer;
   background: none;
   border: 0;
-  border-radius: var(--radius-control);
+  border-radius: 8px;
+  transition: all 140ms var(--ease);
 }
 
 .files-row:hover {
   color: var(--ink);
   background: var(--raised);
+  transform: translateX(2px);
+}
+
+.files-row:active {
+  transform: scale(0.98);
 }
 
 .files-row[data-active] {
-  color: var(--ink);
-  background: var(--raised-hover);
+  padding-left: 5px;
+  color: var(--lime);
+  background: rgba(214, 255, 87, 0.08);
+  border-left: 2px solid var(--lime);
 }
 
 .files-row[data-kind="directory"] {
@@ -2488,13 +2573,16 @@
   background: var(--lime);
   border: 0;
   border-radius: 100px;
-  transition:
-    transform 0.4s var(--ease),
-    opacity 0.4s var(--ease);
+  transition: all 180ms var(--ease);
 }
 
 .gate-submit:hover:not(:disabled) {
-  transform: scale(0.98);
+  filter: brightness(1.06);
+  transform: translateY(-1px) scale(1.01);
+}
+
+.gate-submit:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 .gate-submit:disabled {
@@ -3893,14 +3981,16 @@
   background: var(--lime);
   border: 1px solid var(--lime);
   border-radius: var(--radius-control);
-  transition:
-    transform 0.4s var(--ease),
-    opacity 0.4s var(--ease);
+  transition: all 180ms var(--ease);
 }
 
 .settings-primary:hover {
-  opacity: 0.92;
-  transform: scale(0.98);
+  filter: brightness(1.06);
+  transform: translateY(-1px) scale(1.01);
+}
+
+.settings-primary:active {
+  transform: scale(0.97);
 }
 
 .settings-danger {
@@ -3921,14 +4011,16 @@
   background: transparent;
   border: 1px solid var(--orange);
   border-radius: var(--radius-control);
-  transition:
-    transform 0.4s var(--ease),
-    background 0.4s var(--ease);
+  transition: all 180ms var(--ease);
 }
 
 .settings-danger:hover {
-  background: rgba(255, 77, 0, 0.1);
-  transform: scale(0.98);
+  background: rgba(255, 77, 0, 0.12);
+  transform: translateY(-1px);
+}
+
+.settings-danger:active {
+  transform: scale(0.97);
 }
 
 .settings-primary:disabled,
@@ -4338,7 +4430,8 @@
   cursor: pointer;
   background: transparent;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
+  transition: all 140ms var(--ease);
 }
 .rail-tree-conversation::before {
   position: absolute;
@@ -4348,10 +4441,10 @@
   content: "";
   border-top: 1px solid var(--line-strong);
 }
-.rail-tree-conversation:hover,
-.rail-tree-conversation[data-active] {
+.rail-tree-conversation:hover {
   color: var(--ink);
   background: var(--raised);
+  transform: translateX(1px);
 }
 .rail-tree-leaf {
   z-index: 1;
@@ -4362,18 +4455,36 @@
   background: var(--shell);
   border: 1px solid var(--ink-4);
   border-radius: 50%;
-}
-.rail-pinned-list .rail-tree-conversation {
-  padding-left: 9px;
-  background: var(--raised);
-}
-.rail-pinned-list .rail-tree-conversation:hover,
-.rail-pinned-list .rail-tree-conversation[data-active] {
-  background: var(--raised-hover);
+  transition:
+    background 140ms var(--ease),
+    border-color 140ms var(--ease);
 }
 .rail-pinned-list .rail-tree-conversation::before,
 .rail-pinned-list .rail-tree-leaf {
   display: none;
+}
+.rail-tree-conversation[data-active] {
+  color: var(--ink);
+  background: rgba(214, 255, 87, 0.08);
+}
+.rail-tree-conversation[data-active] .rail-tree-leaf {
+  background: var(--lime);
+  border-color: var(--lime);
+}
+.rail-pinned-list .rail-tree-conversation {
+  padding-left: 9px;
+  background: var(--raised);
+  border-radius: var(--radius-control);
+  transition: all 140ms var(--ease);
+}
+.rail-pinned-list .rail-tree-conversation:hover {
+  background: var(--raised-hover);
+  transform: translateY(-0.5px);
+}
+.rail-pinned-list .rail-tree-conversation[data-active] {
+  color: var(--ink);
+  background: rgba(214, 255, 87, 0.1);
+  border: 1px solid rgba(214, 255, 87, 0.25);
 }
 .rail-tree-conversation-title {
   flex: 1;

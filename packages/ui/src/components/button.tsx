@@ -4,7 +4,7 @@ import { Slot } from "radix-ui";
 import type * as React from "react";
 
 const buttonVariants = cva(
-  "inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-full font-medium font-sans text-sm tracking-normal outline-none transition-all duration-400 ease-[cubic-bezier(0.16,1,0.3,1)] hover:scale-[0.98] disabled:pointer-events-none disabled:opacity-40 [&_svg:not([class*='size-'])]:size-3.5 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+  "inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-full font-medium font-sans text-sm tracking-normal outline-none transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:-translate-y-[1px] hover:scale-[1.01] active:translate-y-0 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40 [&_svg:not([class*='size-'])]:size-3.5 [&_svg]:pointer-events-none [&_svg]:shrink-0",
   {
     defaultVariants: {
       size: "default",
@@ -23,16 +23,16 @@ const buttonVariants = cva(
       },
       variant: {
         default:
-          "border border-transparent bg-[var(--lime)] font-semibold text-[#050507] hover:bg-[#d6ff57]/90 active:scale-95",
+          "border border-transparent bg-[var(--lime)] font-semibold text-[#050507] hover:bg-[#d6ff57] hover:brightness-105 active:scale-[0.97]",
         destructive:
-          "border border-[var(--orange)] bg-transparent text-[var(--orange)] hover:bg-[var(--orange)]/10",
+          "border border-[var(--orange)] bg-transparent text-[var(--orange)] hover:bg-[var(--orange)]/15 active:scale-[0.97]",
         ghost:
-          "bg-transparent text-[var(--text)] hover:bg-[rgba(255,255,255,0.06)] hover:text-white",
-        link: "text-[var(--lime)] underline-offset-4 hover:underline",
+          "bg-transparent text-[var(--text)] hover:bg-[rgba(255,255,255,0.06)] hover:text-white active:scale-[0.97]",
+        link: "text-[var(--lime)] underline-offset-4 hover:scale-100 hover:underline",
         outline:
-          "border border-[var(--border)] bg-[rgba(255,255,255,0.06)] text-[var(--text)] backdrop-blur-[24px] hover:border-[var(--border-strong)] hover:bg-[rgba(255,255,255,0.09)]",
+          "border border-[var(--border)] bg-[rgba(255,255,255,0.06)] text-[var(--text)] backdrop-blur-[24px] hover:border-[var(--border-strong)] hover:bg-[rgba(255,255,255,0.09)] active:scale-[0.97]",
         secondary:
-          "border border-[var(--border)] bg-[rgba(255,255,255,0.04)] text-[var(--text)] hover:border-[var(--border-strong)] hover:bg-[rgba(255,255,255,0.08)]",
+          "border border-[var(--border)] bg-[rgba(255,255,255,0.04)] text-[var(--text)] hover:border-[var(--border-strong)] hover:bg-[rgba(255,255,255,0.08)] active:scale-[0.97]",
       },
     },
   }

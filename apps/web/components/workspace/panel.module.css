@@ -122,8 +122,9 @@
   gap: 6px;
   align-items: center;
   height: 28px;
-  padding: 0 8px;
+  padding: 0 10px;
   margin-left: auto;
+  font-family: var(--font-sans);
   font-size: 12px;
   font-weight: 500;
   color: var(--ink-2);
@@ -131,17 +132,19 @@
   cursor: pointer;
   background: var(--raised);
   border: 1px solid var(--line);
-  border-radius: var(--radius-control, 5px);
-  transition:
-    color 0.15s ease,
-    background 0.15s ease,
-    border-color 0.15s ease;
+  border-radius: var(--radius-control, 100px);
+  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .exportButton:hover:not(:disabled) {
-  color: var(--ink);
-  background: var(--raised-hover);
-  border-color: var(--line-hover, var(--line));
+  color: var(--lime);
+  background: rgba(214, 255, 87, 0.08);
+  border-color: var(--lime);
+  transform: translateY(-1px);
+}
+
+.exportButton:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 .exportButton:disabled {

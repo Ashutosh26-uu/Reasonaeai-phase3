@@ -84,11 +84,17 @@
 
 .onb-input {
   height: 38px;
-  padding: 0 11px;
+  padding: 0 14px;
   font-size: 13.5px;
   background: var(--raised);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 12px;
+  transition: border-color 180ms var(--ease);
+}
+
+.onb-input:focus-visible {
+  outline: none;
+  border-color: var(--lime);
 }
 
 .onb-input::placeholder {
@@ -116,19 +122,26 @@
   align-items: center;
   width: 100%;
   min-height: 34px;
-  padding: 0 10px;
+  padding: 0 12px;
   font-size: 13.5px;
   color: var(--ink-2);
   text-align: left;
   cursor: pointer;
   background: var(--raised);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 12px;
+  transition: all 160ms var(--ease);
 }
 
 .onb-project:hover {
   color: var(--ink);
   background: var(--raised-hover);
+  border-color: var(--border-strong);
+  transform: translateY(-0.5px);
+}
+
+.onb-project:active {
+  transform: scale(0.98);
 }
 
 .onb-project[data-active] {
@@ -190,13 +203,16 @@
   background: var(--lime);
   border: 0;
   border-radius: 100px;
-  transition:
-    transform 0.4s var(--ease),
-    opacity 0.4s var(--ease);
+  transition: all 180ms var(--ease);
 }
 
 .onb-primary:hover:not(:disabled) {
-  transform: scale(0.98);
+  filter: brightness(1.06);
+  transform: translateY(-1px) scale(1.01);
+}
+
+.onb-primary:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 .onb-primary:disabled {

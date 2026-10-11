@@ -69,20 +69,20 @@
   -webkit-backdrop-filter: blur(24px);
   backdrop-filter: blur(24px);
   transition:
-    transform 0.4s var(--ease),
-    background-color 0.4s var(--ease),
-    border-color 0.4s var(--ease);
+    transform 180ms var(--ease),
+    background-color 180ms var(--ease),
+    border-color 180ms var(--ease);
 }
 
 .bubble:hover {
   background: rgba(255, 255, 255, 0.09);
   border-color: var(--lime);
   box-shadow: none;
-  transform: translateY(-2px);
+  transform: translateY(-2.5px) scale(1.01);
 }
 
 .bubble:active {
-  transform: translateY(0) scale(0.98);
+  transform: scale(0.97) translateY(0);
 }
 
 .bubble:focus-visible {
