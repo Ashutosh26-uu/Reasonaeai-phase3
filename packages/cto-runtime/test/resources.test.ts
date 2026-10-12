@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -320,6 +320,70 @@ describe("run resource handlers", () => {
     await expect(
       router.resolve("artifact://abc", context(process.cwd()))
     ).rejects.toThrow("numeric");
+  });
+
+  it("serves a spilled artifact from the durable sink after the local copy is gone", async () => {
+    const root = await tempDir("reasonate-res-");
+    const resolved: (string | undefined)[] = [];
+    const { artifacts, router } = createRunResources({
+      cwd: process.cwd(),
+      // Stand-in for the wired store-backed sink: index N reads back what was
+      // written at N, resolved by the same deterministic artifact id.
+      durable: {
+        read: async (index) => resolved[index],
+        write: (input) => {
+          resolved[input.index] = input.content;
+          return Promise.resolve({
+            artifactId: `durable-${input.index}`,
+            digest: input.content.length.toString(16),
+            index: input.index,
+            key: `spills/${input.index}`,
+            size: input.content.length,
+          });
+        },
+      },
+      root,
+      scope,
+    });
+    const id = await artifacts.write("spilled body");
+
+    // Wipe the run's directory: the same failure a restarted or re-hosted run
+    // would see. The fallback must still resolve the same bytes.
+    await rm(runArtifactsDir(root, scope), { force: true, recursive: true });
+    expect(await artifacts.list()).toEqual([]);
+
+    const resource = await router.resolve(
+      `artifact://${id}`,
+      context(process.cwd())
+    );
+    expect(resource.content).toBe("spilled body");
+  });
+
+  it("keeps serving a spill locally when the durable pass-through fails", async () => {
+    const root = await tempDir("reasonate-res-");
+    const { artifacts, router } = createRunResources({
+      cwd: process.cwd(),
+      durable: {
+        read: () => {
+          throw new Error("sink unavailable");
+        },
+        write: () => {
+          throw new Error("sink unavailable");
+        },
+      },
+      root,
+      scope,
+    });
+    const id = await artifacts.write("spilled body");
+
+    // The durable write failing must not fail the spill: the local copy is
+    // what answers the read, and the outage is reported, not thrown.
+    expect(await artifacts.list()).toEqual([id]);
+    const resource = await router.resolve(
+      `artifact://${id}`,
+      context(process.cwd())
+    );
+    expect(resource.content).toBe("spilled body");
   });
 
   it("extracts one field from a worker's JSON result", async () => {

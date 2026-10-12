@@ -24,6 +24,7 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import type { DurableSpillSink } from "../durable-artifacts.js";
 import type { RunScope } from "../run-scope.js";
 
 /** Content read back from a store. The identifier is the caller's, not the stored value's. */
@@ -91,7 +92,8 @@ function normalizeExtension(extension: string | undefined): string {
  */
 export function createArtifactStore(
   root: string,
-  scope: RunScope
+  scope: RunScope,
+  durable?: DurableSpillSink
 ): ArtifactStore {
   const directory = runArtifactsDir(root, scope);
 
@@ -124,11 +126,31 @@ export function createArtifactStore(
 
     async read(id: number): Promise<StoredArtifact | undefined> {
       const match = (await listIds()).find((entry) => entry.id === id);
-      if (match === undefined) {
-        return undefined;
+      if (match !== undefined) {
+        const path = join(directory, match.name);
+        return { content: await readFile(path, "utf-8"), path };
       }
-      const path = join(directory, match.name);
-      return { content: await readFile(path, "utf-8"), path };
+
+      // Local miss: fall back to the durable record, so a spill survives the
+      // host directory being wiped (a restart, a retention pass) and a read
+      // the model issued after such a wipe still resolves the same bytes.
+      if (durable !== undefined) {
+        try {
+          const content = await durable.read(id);
+          if (content !== undefined) {
+            return {
+              content,
+              path: `${directory}/${id}.durable`,
+            };
+          }
+        } catch (error) {
+          console.warn(
+            `durable artifact read failed for spill ${id}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+
+      return undefined;
     },
 
     async write(content: string, extension?: string): Promise<number> {
@@ -144,6 +166,25 @@ export function createArtifactStore(
       const name = `${nextId}.${normalizeExtension(extension)}`;
 
       await writeFile(join(directory, name), content, "utf-8");
+
+      // Durable pass-through: the same text that answered this run's reads is
+      // also put through the immutable artifact store. A failure here is not a
+      // failure of the read the model is waiting on — the local copy already
+      // exists — so a durable write problem is reported, not thrown.
+      if (durable !== undefined) {
+        try {
+          await durable.write({
+            content,
+            extension: normalizeExtension(extension),
+            index: nextId,
+          });
+        } catch (error) {
+          console.warn(
+            `durable artifact write failed for spill ${nextId}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+
       return nextId;
     },
   };
