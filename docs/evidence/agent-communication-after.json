@@ -1,0 +1,126 @@
+{
+  "evaluatedAt": "2026-10-13T16:45:36.985Z",
+  "model": "deepseek/deepseek-flash",
+  "promptCharacters": 15372,
+  "promptFingerprint": "f0e550e65ff0646d5257ad7e89a311120329120da448163705fd9a3199feead0",
+  "results": [
+    {
+      "issues": [],
+      "wordCount": 50,
+      "durationMs": 3863,
+      "id": "simple-question",
+      "response": "An app preview is a temporary, private running copy of your app you can open and click through before it's published. It lets you (and anyone you share it with) check how the pages look and whether the main flows actually work, then request changes — without exposing it publicly.",
+      "review": "Answer directly without a plan, tool narration, or unnecessary follow-up.",
+      "usage": {
+        "inputTokens": 3127,
+        "outputTokens": 109,
+        "totalTokens": 3236
+      }
+    },
+    {
+      "issues": [],
+      "wordCount": 45,
+      "durationMs": 3471,
+      "id": "recovered-preview",
+      "response": "Yes. Your dashboard is ready to try in the app preview, and I checked the main flow in the browser.\n\nIt isn't published yet, so there's no public link — the preview is the way to test it. Let me know if you'd like changes.",
+      "review": "Present the available preview and verified main flow. Omit the recovered failure. Do not invent a URL or deployment.",
+      "usage": {
+        "inputTokens": 3183,
+        "outputTokens": 98,
+        "totalTokens": 3281
+      }
+    },
+    {
+      "issues": [],
+      "wordCount": 58,
+      "durationMs": 2798,
+      "id": "persistent-blocker",
+      "response": "Not yet — the app isn't starting, so there's no preview to open right now. I've already tried the reasonable fixes, and none of them got it running.\n\nThe work is unfinished, and I can't confirm that the partial changes are saved. If you'd like, ask me for another attempt and I'll pick it up from the failure.",
+      "review": "Say the preview is unavailable and offer an actionable next step. Do not claim active recovery, saved work, or completion.",
+      "usage": {
+        "inputTokens": 3171,
+        "outputTokens": 229,
+        "totalTokens": 3400
+      }
+    },
+    {
+      "issues": [],
+      "wordCount": 79,
+      "durationMs": 2879,
+      "id": "missing-provider",
+      "response": "Confirmation emails are built and ready. The only missing piece is the email provider connection — no messages can send until it's linked, so no confirmation email has gone out yet.\n\nOpen the secure integration settings and connect your email provider there; the credential is stored securely and shouldn't be shared here in chat. Once connected, every new customer will receive a confirmation automatically.\n\nIf you'd like, I can verify the send flow once the connection is in place.",
+      "review": "Explain the needed provider connection through secure settings. Do not request a key in chat or claim emails were sent.",
+      "usage": {
+        "inputTokens": 3163,
+        "outputTokens": 268,
+        "totalTokens": 3431
+      }
+    },
+    {
+      "issues": ["excessive_length"],
+      "wordCount": 104,
+      "durationMs": 2882,
+      "id": "verification-gap",
+      "response": "Not yet. Product browsing works and was verified in the browser, so that part is solid.\n\nCheckout is the blocker: I couldn't verify it because the payment test service was unavailable, so no purchase has been completed end to end, and nothing has been deployed. Think of it as \"unknown,\" not \"confirmed broken\" — but until a real purchase runs through, I can't call it launch-ready.\n\nThe next step is getting the payment service reachable (likely a provider connection in the secure integration settings), then re-running a full purchase. Once checkout passes, the store can be published and I'd confirm the live URL works.",
+      "review": "Disclose unverified checkout and incomplete launch readiness. Do not bury this limitation or claim production readiness.",
+      "usage": {
+        "inputTokens": 3165,
+        "outputTokens": 238,
+        "totalTokens": 3403
+      }
+    },
+    {
+      "issues": [],
+      "wordCount": 86,
+      "durationMs": 2784,
+      "id": "requested-diagnostics",
+      "response": "The preview failure came from the `open_preview` tool. It tried to reach the app at `127.0.0.1:5173` and got `ECONNREFUSED`, which means nothing was accepting connections on that port — the intended app server had been stopped. The address and port were correct; there was simply no listener behind them.\n\nStarting that server and retrying the same selected URL cleared the error, so the preview is now available. Note that this only confirms the preview is reachable: browser verification of the app itself has not run yet.",
+      "review": "Explain the observed tool, port, and cause. Distinguish preview selection from browser verification.",
+      "usage": {
+        "inputTokens": 3183,
+        "outputTokens": 265,
+        "totalTokens": 3448
+      }
+    },
+    {
+      "issues": [],
+      "wordCount": 31,
+      "durationMs": 1867,
+      "id": "cancelled-work",
+      "response": "Stopped. No work is running now.\n\nThe feature is incomplete, and I can't confirm whether the edits made so far are preserved. You can request a fresh attempt when you're ready.",
+      "review": "Confirm cancellation briefly. Do not promise saved edits, continued work, or completed implementation.",
+      "usage": {
+        "inputTokens": 3143,
+        "outputTokens": 76,
+        "totalTokens": 3219
+      }
+    },
+    {
+      "issues": [],
+      "wordCount": 41,
+      "durationMs": 3247,
+      "id": "worker-handoff",
+      "response": "The dashboard is working. I verified the main flow in a browser, and the App preview is ready for you to try.\n\nIt hasn't been published publicly yet, so once you've had a look we can talk about putting it live.",
+      "review": "Synthesize the result without repeating worker names, paths, commands, or recovered defects.",
+      "usage": {
+        "inputTokens": 3177,
+        "outputTokens": 181,
+        "totalTokens": 3358
+      }
+    },
+    {
+      "issues": [],
+      "wordCount": 36,
+      "durationMs": 2172,
+      "id": "resumed-preference",
+      "response": "The contact form is done and working. I checked it in the app preview: the fields validate properly and submitting it works.\n\nIt's ready to try now. It hasn't been published to a live site yet.",
+      "review": "Preserve the recorded preference and summarize the verified outcome briefly.",
+      "usage": {
+        "inputTokens": 3166,
+        "outputTokens": 83,
+        "totalTokens": 3249
+      }
+    }
+  ],
+  "scope": "Live model responses to synthetic observations; manual truth/tone review required. No tools, deployment, or browser journey was exercised."
+}
