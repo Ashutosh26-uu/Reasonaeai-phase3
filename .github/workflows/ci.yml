@@ -96,6 +96,9 @@ jobs:
       - name: Smoke sandbox checkpoints
         run: pnpm --filter @reasonateai/api smoke:checkpoint
 
+      - name: Smoke local development startup
+        run: pnpm smoke:dev
+
       # The built artifact is what deploys, so it is started and exercised
       # rather than only compiled. The health endpoint proves it serves, and the
       # raw Mastra agent route proves the ingress denial is still in place.

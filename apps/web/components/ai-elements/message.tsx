@@ -324,18 +324,35 @@ export type MessageResponseProps = Omit<
   "plugins" | "rehypePlugins" | "mermaid" | "linkSafety"
 >;
 
-const streamdownPlugins = {
-  code: createCodePlugin({ themes: ["github-light", "github-dark"] }),
-  math,
-  mermaid: createMermaidPlugin({
-    config: {
-      securityLevel: "strict",
-      startOnLoad: false,
-      suppressErrorRendering: true,
-      theme: "dark",
-    },
-  }),
-};
+const streamdownCode = createCodePlugin({
+  themes: ["github-light", "github-dark"],
+});
+
+function responsePlugins(light: boolean) {
+  return {
+    code: streamdownCode,
+    math,
+    mermaid: createMermaidPlugin({
+      config: {
+        securityLevel: "strict",
+        startOnLoad: false,
+        suppressErrorRendering: true,
+        theme: "base",
+        themeVariables: {
+          background: light ? "#ffffff" : "#0e0f12",
+          edgeLabelBackground: light ? "#ffffff" : "#0e0f12",
+          lineColor: light ? "#757575" : "#818694",
+          primaryBorderColor: light ? "#757575" : "#818694",
+          primaryColor: light ? "#f8f8fa" : "#22242b",
+          primaryTextColor: light ? "#090b0c" : "#f9fbfb",
+          secondaryColor: light ? "#ebebeb" : "#292b34",
+          tertiaryColor: light ? "#eaeaea" : "#2b2d37",
+          textColor: light ? "#090b0c" : "#f9fbfb",
+        },
+      },
+    }),
+  };
+}
 
 const { sanitize } = defaultRehypePlugins;
 if (!sanitize) {
@@ -359,18 +376,36 @@ const safeRehypePlugins: NonNullable<
 ];
 
 export const MessageResponse = memo(
-  ({ className, ...props }: MessageResponseProps) => (
-    <Streamdown
-      {...props}
-      className={cn(
-        "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-        className
-      )}
-      linkSafety={{ enabled: true }}
-      plugins={streamdownPlugins}
-      rehypePlugins={safeRehypePlugins}
-    />
-  )
+  ({ className, ...props }: MessageResponseProps) => {
+    const [light, setLight] = useState(false);
+    useEffect(() => {
+      const root = document.documentElement;
+      const update = () => setLight(root.dataset.theme === "light");
+      update();
+      const observer = new MutationObserver(update);
+      observer.observe(root, {
+        attributeFilter: ["data-theme"],
+        attributes: true,
+      });
+      return () => observer.disconnect();
+    }, []);
+    const plugins = useMemo(() => responsePlugins(light), [light]);
+    return (
+      <Streamdown
+        {...props}
+        className={cn(
+          "message-response size-full min-w-0 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+          className
+        )}
+        controls={{ code: { copy: true, download: false } }}
+        lineNumbers={false}
+        linkSafety={{ enabled: true }}
+        plugins={plugins}
+        rehypePlugins={safeRehypePlugins}
+        tableMaxHeight="none"
+      />
+    );
+  }
 );
 
 MessageResponse.displayName = "MessageResponse";

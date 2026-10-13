@@ -6,10 +6,11 @@
   "scripts": {
     "build": "turbo run build",
     "check": "ultracite check",
-    "dev": "node --env-file-if-exists=apps/api/.env node_modules/turbo/bin/turbo run dev --filter=@reasonateai/api --filter=@reasonateai/worker --filter=@reasonateai/web --env-mode=loose",
+    "dev": "node scripts/dev.mjs",
     "fix": "ultracite fix",
     "prepare": "lefthook install",
-    "test": "turbo run test --concurrency=1",
+    "smoke:dev": "node scripts/smoke-dev.mjs",
+    "test": "node --test scripts/dev.test.mjs && turbo run test --concurrency=1",
     "typecheck": "turbo run typecheck"
   },
   "devDependencies": {
