@@ -153,7 +153,7 @@ export function renderEnvironment(
     facts.provider === undefined
       ? `You are powered by the model with ID ${facts.model}.`
       : `You are powered by the model named ${facts.model}. The exact model ID is ${facts.provider}/${facts.model}.`,
-    "Here is useful information about the environment you are running in:",
+    "Internal execution facts for tool use. Do not narrate these in ordinary responses; explain only relevant technical details when explicitly requested:",
     "<env>",
     `  Working directory: ${facts.cwd}`,
     `  Workspace root folder: ${workspaceRoot}`,

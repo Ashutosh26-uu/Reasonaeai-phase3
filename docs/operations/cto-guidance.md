@@ -6,7 +6,15 @@ Decision recorded 2026-10-03. Applies to the run-scoped ReasonateAI CTO building
 
 Rules answer **what must hold**: scope, authority, secrets, data integrity, and honest completion. Skills answer **how to do relevant work**: discovery, implementation, verification/repair, security review, and release/recovery. Every role receives short policy; procedures load by name. Startup rule enumeration is unnecessary; an empty project-rule listing is normal.
 
-The core prompt covers seven phases and ownership. Worker prompts describe objectives and evidence. Resource/environment context comes from actual adapters. This document keeps research and evaluation detail outside mandatory context.
+The core prompt covers product persona, response style, selective progress, audience-aware disclosure, seven internal phases, and ownership. Worker prompts report internally to the CTO, which synthesizes evidence into user-facing outcomes. Resource/environment context comes from actual adapters and is marked as execution context. Detailed preview selection and Python setup load only through the named `app-preview` and `python-workspace` skills. This document keeps research and evaluation detail outside mandatory context.
+
+## Product communication
+
+Ordinary chat and spoken responses lead with the answer or usable outcome, using concise language for nontechnical users. Updates communicate meaningful milestones, noticeable delays, required decisions, and actionable blockers. Tool names/calls, commands, ports, routing, setup, internal identities, and recovered errors are not ordinary assistant narration. Explicit requests for code, architecture, or troubleshooting permit relevant technical detail; they never permit usable credentials, hidden reasoning, or environment dumps.
+
+Complete diagnostics and revision-specific evidence remain internal. A verification gap that affects launch readiness, an unavailable/mock integration, incomplete scope, or necessary user action must still be explained plainly. No claim of saved work, active retries, verification, deployment, or completion may exceed the observed state. Existing expandable tool activity remains a deliberate details surface; this change does not rewrite ledger history, remove audit evidence, or alter event schemas or permission boundaries.
+
+The title helper names the user's goal. The internal compaction brief preserves communication preferences, scoped approvals/denials, current blockers versus recovered failures, evidence references, and the most recent user-visible status. The fallback worker directive follows the same audience boundary.
 
 Safety follows an action's effect and verified scope. Authorized inspection, editing, formatting, builds, and tests proceed without repeated approval. Sensitive external effects use control-plane policy. Suspicious words alone neither interrupt a run nor constitute a finding. Existing authorization cannot expand tenant access or override company policy.
 
@@ -33,7 +41,11 @@ Implementation lives in runtime prompts, guidance/catalog, scoped instruction lo
 
 Contract tests and the real Docker guidance smoke cover empty listings, named guidance, scoped imports, tool availability, and command diagnostics. Repository tests exercise PostgreSQL/Redis/Docker when provided. Exact commands/results belong in the pull request.
 
-No approved inference credential is configured in this checkout. Revised model-driven delegation, review, phase reporting, and false-positive behavior are **not** live-evaluated. No browser generation evidence or competitive performance result is claimed.
+The original October 3 guidance revision had no approved inference credential and did not live-evaluate model-driven delegation, review, phase reporting, or false-positive behavior. October 13 communication evaluation uses the configured approved DeepSeek model with synthetic observations and the actual composed CTO prompt. This is response-only evidence, not proof of delegation, app generation, tool use, browser verification, deployment, or competitive performance.
+
+Run `pnpm --filter @reasonateai/api eval:communication <local-report.json>` with the approved credential configured externally. The harness makes nine sequential calls with a one-minute timeout, one model step, and a bounded output per scenario. Reports contain visible responses, timing, usage, effective-prompt fingerprint/character count, and a manual-review rubric; they contain no credential, raw request, or hidden reasoning. Mechanical checks flag empty responses, excessive length, unsolicited implementation mechanics, and internal scope identifiers. Human review must additionally assess truthfulness, useful blockers, requested diagnostic depth, and tone. Synthetic observations cannot certify a real application journey.
+
+The October 13 candidate and its remaining model adherence findings are recorded in [the communication review](../evidence/agent-communication-review.md). Mechanical results improve from 1/9 to 8/9, but unsupported assumptions and unsolicited offers remain. The candidate is a draft with real sandbox/browser acceptance pending; it is not a certified communication gate. The CLI exits nonzero for flagged mechanical responses or a provider failure. Its JSON report is written after all scenarios complete; if a request fails, completed earlier responses are not retained, so budget for a full rerun rather than assuming resumable evaluation.
 
 Before acceptance, evaluate with the approved open-weight/local model and real browser. Cover ordinary development without needless approvals, a complete generated application, a reproduced defect and repair, denied foreign-tenant/external effects, hostile retrieved instructions, and cancellation/restart. Verify an independent reviewer actually runs, detects an introduced reachable defect, and records revision-specific checks. Count harmless-action interruptions separately from valid refusals.
 

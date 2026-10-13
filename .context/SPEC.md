@@ -146,6 +146,12 @@ An authorized project can contain multiple build sessions, each representing one
 
 Agents do not coordinate by unrecorded direct chat. They exchange typed, authorized project-state records, task results, artifacts, and audit events. The CTO remains the integration and completion authority, validates every delegated result, and obtains required user approval before destructive external effects, secret use, material scope changes, or public exposure.
 
+### Agent communication
+
+The CTO speaks as a calm, capable, approachable product collaborator for nontechnical users. Ordinary responses lead with the answer or usable outcome and use concise plain language. Progress is selective: meaningful milestones, noticeable delays, required decisions, and actionable blockers. Routine tool names/calls, commands, ports, routing, workspace paths, setup, internal identities, worker handoffs, and recovered diagnostics are execution context rather than ordinary assistant narration. Explicit requests for code, architecture, troubleshooting, or technical details permit relevant explanations at the requested depth; secrets and hidden reasoning remain excluded.
+
+Internal evidence remains complete. Material verification gaps, unavailable or mock integrations, incomplete scope, and readiness limits stay visible through their practical impact and required action. Claims about recovery, saved edits, verification, deployment, and completion must match observed durable state. Worker reports are internal inputs synthesized by the CTO; compaction preserves explicit communication preferences, scoped approvals/denials, current blockers, evidence, and user-visible status. Detailed app-preview and Python setup procedures load by name through the existing skill resource contract rather than occupying every CTO prompt. Existing expandable transcript activity remains an explicit details surface; this communication policy does not delete historical evidence or change its transport/authorization contract.
+
 ### Production control plane and execution plane
 
 The public API is the authenticated control plane. It owns browser sessions, organization/project authorization, build-session creation, plan and tool approvals, project state, source checkpoints, artifact metadata, deployment metadata, signed artifact access, cancellation, and reconnectable event delivery. It accepts browser commands through HTTPS JSON and streams progress through SSE; voice and interactive computer control may use WebSocket or WebRTC only where bidirectional low latency is required.

@@ -8,7 +8,7 @@ The revised guidance is locally verified; model behavior still needs evaluation 
 
 `createReasonateCtoRuntime` creates the CTO, its controller, and scout/coder/debugger/reviewer descriptors. It returns `mainAgent`, `controller`, `subagents`, configured `limits`, and the optional `budget`.
 
-The CTO follows seven scaled phases: understand, plan, build, review, verify and repair, deliver, report. Questions and small changes need less ceremony. Substantial work uses the controller task tools and reports observed outcomes and the next gate. The CTO retains integration and acceptance responsibility.
+The CTO follows seven internal phases: understand, plan, build, review, verify and repair, deliver, report. Questions are answered directly. Substantial work uses the controller task tools; user updates focus on meaningful outcomes, decisions, and actionable blockers. The CTO retains integration and acceptance responsibility and synthesizes internal worker reports into concise product language. Relevant technical details are supplied when requested.
 
 | Worker | Direct tools | Objective |
 | --- | --- | --- |
@@ -23,7 +23,7 @@ Use nonforked delegation for independent review. Mastra's forked path inherits p
 
 ## Rules, skills, and project context
 
-Rules are constraints; skills are procedures. Neither grants permission. Every role receives three short bundled rules and an explicit catalog of five on-demand skills. Contents are company-authored constants bundled into the application artifact, without executable scripts or external downloads.
+Rules are constraints; skills are procedures. Neither grants permission. Every role receives three short bundled rules and an explicit catalog of seven on-demand skills, including app-preview and Python workspace procedures. Contents are company-authored constants bundled into the application artifact, without executable scripts or external downloads.
 
 | Surface | Behavior |
 | --- | --- |
