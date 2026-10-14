@@ -22,16 +22,25 @@ const SHORT_SECRET = /at least 32/;
 
 test("startup failure diagnostics redact raw and encoded configured values", () => {
   const environment = {
-    DATABASE_URL: "postgres://fixture:private+value@localhost:55432/test",
+    DATABASE_URL: "postgres://fixture:private%2Bvalue@localhost:55432/test",
     SESSION_SECRET: "fixture-session-secret-with-32-characters",
+    TURSO_AUTH_TOKEN: "abc123",
   };
-  const output = `startup failed: ${environment.DATABASE_URL} ${encodeURIComponent(environment.SESSION_SECRET)}`;
+  const output = `startup failed: ${environment.DATABASE_URL} ${encodeURIComponent(environment.SESSION_SECRET)} password=private+value encoded=private%2Bvalue authToken=abc123`;
   const safe = startupDiagnostics(output, environment);
   assert.ok(safe.includes("startup failed"));
   for (const value of Object.values(environment)) {
     assert.ok(!safe.includes(value));
     assert.ok(!safe.includes(encodeURIComponent(value)));
   }
+  assert.ok(!safe.includes("private+value"));
+  assert.ok(!safe.includes("private%2Bvalue"));
+  assert.equal(
+    startupDiagnostics("private%GGvalue", {
+      DATABASE_URL: "postgres://fixture:private%GGvalue@localhost/test",
+    }),
+    "[configured value]"
+  );
 });
 const EXPECTED_1 = /development/;
 const EXPECTED_2 = /empty inherited override/;
