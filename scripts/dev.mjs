@@ -24,6 +24,8 @@ try {
         "--filter=@reasonateai/worker",
         "--filter=@reasonateai/web",
         "--env-mode=loose",
+        "--log-order=stream",
+        "--ui=stream",
       ],
       { cwd: root, env: environment, stdio: "inherit", windowsHide: true }
     );
