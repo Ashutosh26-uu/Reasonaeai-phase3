@@ -133,6 +133,8 @@ Only configured speech endpoints are checked/started: `REASONATE_ASR_URL` for re
 
 `REASONATE_WEB_PORT` changes the frontend port; missing origins use that value. Set `PORT` and `REASONATE_API_ORIGIN` together if replacing the API address. For an isolated invocation, `REASONATE_DEV_ENV_FILE` selects an ignored file inside the checkout. Its resolved configuration is inherited by all three applications. Startup unit regressions run as part of `pnpm test`; `pnpm smoke:dev` creates fresh dependencies on unused ports and removes only its own test containers/volumes. It does not stop the user's Docker engine or active application. Integration tests still need an explicitly isolated database/Redis environment; `pnpm test` never adopts the application's `.env` automatically.
 
+The API's development launcher passes an env-file flag only when `apps/api/.env` exists. Isolated invocations inherit their prepared configuration instead; this avoids Node 22 Linux watch mode attempting to watch a missing optional file. Startup smoke failures retain bounded diagnostics with configured values, URL credentials and short sensitive values redacted.
+
 Rollback is restoring the previous startup/manifests and rendering styles. Generated local `.env` settings and retained service volumes remain usable with manually started services; no database migration or published-package version change is introduced. Startup uses Node's [parseEnv](https://nodejs.org/api/util.html#utilparseenvcontent), Docker's [Desktop start](https://docs.docker.com/reference/cli/docker/desktop/start/) and [Compose readiness](https://docs.docker.com/reference/cli/docker/compose/up/) contracts without a new dependency.
 
 ### Live streaming needs a current worker

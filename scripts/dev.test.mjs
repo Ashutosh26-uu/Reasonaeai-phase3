@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startupDiagnostics } from "./dev-diagnostics.mjs";
 import {
+  apiDevelopmentArguments,
   configuredServices,
   developmentEnvironment,
   webPort,
@@ -19,6 +20,24 @@ import {
 } from "./dev-speech.mjs";
 
 const SHORT_SECRET = /at least 32/;
+
+test("API watch startup loads an existing env file and omits an absent optional file", async (t) => {
+  const { root } = await fixture(t);
+  assert.deepEqual(await apiDevelopmentArguments(root), [
+    "--import",
+    "tsx",
+    "--watch",
+    "src/server.ts",
+  ]);
+  await writeFile(join(root, ".env"), "NODE_ENV=development\n");
+  assert.deepEqual(await apiDevelopmentArguments(root), [
+    "--env-file=.env",
+    "--import",
+    "tsx",
+    "--watch",
+    "src/server.ts",
+  ]);
+});
 
 test("startup failure diagnostics redact raw and encoded configured values", () => {
   const environment = {

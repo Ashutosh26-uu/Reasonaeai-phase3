@@ -1,9 +1,22 @@
 import { randomBytes } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { parseEnv } from "node:util";
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+export async function apiDevelopmentArguments(directory) {
+  const argumentsList = [];
+  try {
+    await access(resolve(directory, ".env"));
+    argumentsList.push("--env-file=.env");
+  } catch (cause) {
+    if (cause.code !== "ENOENT") {
+      throw cause;
+    }
+  }
+  return [...argumentsList, "--import", "tsx", "--watch", "src/server.ts"];
+}
 
 export function isLoopback(url) {
   return LOOPBACK_HOSTS.has(url.hostname);
