@@ -7,6 +7,7 @@ import { createServer } from "node:net";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { startupDiagnostics } from "./dev-diagnostics.mjs";
 import { developmentEnvironment } from "./dev-environment.mjs";
 import { waitUntil } from "./dev-services.mjs";
 
@@ -251,6 +252,11 @@ try {
   console.log(
     "Development smoke passed: cold services, repeated startup, stopped-service recovery, retained database data, API, worker, web, and local email availability."
   );
+} catch (cause) {
+  if (output) {
+    console.error(startupDiagnostics(output, environment));
+  }
+  throw cause;
 } finally {
   if (application?.pid) {
     if (process.platform === "win32") {
