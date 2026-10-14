@@ -172,6 +172,8 @@ Formatting and linting are owned by Ultracite/Biome. Do not add ESLint, Prettier
 
 ## Testing and verification
 
+`pnpm dev` owns local service startup and readiness; contributors should not add a second startup convention. It preserves configured services, credentials and volumes. `pnpm smoke:dev` exercises fresh, isolated Docker dependencies and application startup; test fixtures must never use the user's active database, mail, worker or ports.
+
 Every test must defend an observable contract and fail for a plausible regression.
 
 - Unit tests: deterministic domain rules, schema boundaries, state transitions, authorization decisions, and error precedence.

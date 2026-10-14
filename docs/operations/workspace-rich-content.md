@@ -1,0 +1,24 @@
+# Workspace rich content
+
+The workspace selector stays on one line. Its grid reserves the folder and dropdown columns while the name truncates with an ellipsis; the accessible button name and native title retain the full workspace name. Collapsed and mobile navigation retain their existing controls.
+
+Response code fences use one bordered container, a 46 px language header, and a single header copy action. The inner source has no extra border, line-number gutter or floating/download toolbar. Syntax highlighting follows the saved light/dark theme; long source lines scroll inside the source area without widening the transcript. Unknown languages remain readable. Prose and long inline paths wrap inside the response.
+
+Table copy, download and expand controls align in the column-heading row. The last heading reserves space for the controls; the inner table scrolls horizontally when needed, and rows grow naturally rather than being hidden behind a default 400 px vertical viewport. Format menus can extend beyond a short table. Diagram chrome uses the same container/header and shared Bklit palette, with existing zoom/pan/expand controls. Mermaid uses strict security, a neutral theme derived from the accepted palette, and updates when the app theme changes. Untrusted HTML, links and images retain the renderer's existing sanitization and link-safety rules.
+
+The source is [Bklit theming](https://bklit.com/docs/theming) and the existing [captured palette](../design/bklit-palette.json); no external component assets or dependency were added. The renderer styling follows [Streamdown's data attributes](https://streamdown.ai/docs/styling), checked against installed version 2.6.0. Its existing controls remain responsible for clipboard, download and fullscreen behavior.
+
+## Verification — October 14, 2026
+
+The real Rail and MessageResponse components were exercised in a temporary browser fixture with a long workspace name, an unbroken path, wide source lines, a long table value, a one-row table, Mermaid and KaTeX. The fixture was removed after verification; it is not a production route.
+
+- At 1280 px, each table's action container and column headings had identical top/bottom coordinates and a 46 px height. The workspace name used one 22 px line with a reserved 14 px dropdown column. Code copy was inside the header; no second copy/download action or nested source border appeared.
+- At 390 and 520 px, document width equalled viewport width. Wide source scrolled inside its body, table values wrapped within cells, and rows retained natural height. Light/dark rendering used the saved app theme; Mermaid's light primary fill was `#f8f8fa`.
+- Actual clipboard actions retained the code text and table Markdown. A one-row table's format menu extended outside its container; table fullscreen opened and closed successfully. Mermaid rendered with zoom/pan controls and no fixture console errors.
+- The running signup screen enabled its submit button and labelled the local test mailbox. An isolated runtime smoke submitted a real development magic-link request, received `202` with local delivery, and found one message in Mailpit without reading or recording the token or message body.
+
+Repository checks passed: `pnpm install --frozen-lockfile --offline` in a separate verification checkout, `pnpm check`, `pnpm typecheck` (10 tasks), `pnpm build` (10 tasks), the final web production build, `node --test scripts/dev.test.mjs` (9 regressions), and renderer tests (3). `node scripts/smoke-dev.mjs --with-tests` forced all 17 workspace test tasks against fresh PostgreSQL/Redis and the actual Docker sandbox before exercising startup. `pnpm --filter @reasonateai/api smoke:checkpoint` and the final `pnpm smoke:dev` path passed. The startup smoke covered fresh containers, repeated startup, stopped-container recovery, retained database data, API readiness, worker startup, web response and Mailpit delivery.
+
+`pnpm audit --prod --audit-level high` found no high/critical advisories (existing low/moderate advisories remain); the independent sandbox starter audit found none. Gitleaks found no secrets in the checked-out commit's complete 119-commit ancestry. An independent ephemeral review found no remaining material issues after Docker endpoint and table-menu fixes.
+
+The running Docker engine was preserved, so starting a completely stopped Docker Desktop was not exercised. No speech endpoint/model/GPU was configured for this acceptance run; configuration, readiness and model-prerequisite regressions passed, but actual speech execution is not claimed. Company review, hosted CI and preview/staging acceptance remain separate gates. This change introduces no dependencies, persistence migration, authorization expansion or published-package version change. Rollback restores the prior startup/manifests and web renderer/styles together while retaining local configuration and service volumes.

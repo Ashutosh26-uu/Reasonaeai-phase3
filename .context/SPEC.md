@@ -172,6 +172,8 @@ Mastra `AgentController` session state is process-local and therefore non-author
 
 ### Transcript presentation
 
+Rich responses use the shared Bklit light/dark palette. Code fences have one language header with one copy action, syntax highlighting, and source-only horizontal scrolling. Tables place copy/download/expand actions in the column-heading row and grow vertically with their content. Mermaid diagrams share the header/container treatment and remain strictly sanitized. Wide content stays within its message. The workspace selector keeps its name on one line, truncates with an ellipsis when necessary, exposes the full accessible name/title, and reserves space for the dropdown arrow.
+
 Consecutive thinking and tool entries share expandable activity groups, separated by assistant progress messages. During streaming, progress prose remains visible and only the current action label shimmers. Finished activity summaries alphabetize their existing action phrases while expanded entries remain chronological. No model-generated summary titles are required.
 
 Only a durable worker turn outcome collapses prior assistant progress, thinking, tools, and resolved plans into a default-closed “Worked for…” history row. Controller agent ends and errors do not trigger this collapse. The final assistant response remains visible and owns Copy/feedback/branch controls; if no response follows the last activity, earlier progress is not promoted to a final answer. User steering stays visible and navigable. Failed/cancelled outcomes remain identified. Reload uses the same ledger projection and duration, and timestamps format in the browser after hydration.
@@ -283,6 +285,8 @@ Canonical state includes:
 PostgreSQL is the authoritative production source of truth. Redis Streams distributes commands and live events across replicas with consumer groups and bounded redelivery. Private S3-compatible object storage holds immutable artifacts, while sandbox filesystems hold mutable workspaces. SQLite remains allowed only for isolated local development; it is not a replica-coordinated production state store.
 
 ## Approved technology stack
+
+Local development starts with `pnpm dev`. It prepares missing local configuration with random persisted credentials, starts the local Docker engine when supported, reuses configured PostgreSQL/Redis/Mailpit endpoints and retained volumes, and waits for authenticated database/Redis and mailbox readiness. Missing repository-owned sandbox images are built before application startup. The web process waits for API health. Configured speech stacks are conditional; recognition requires prepared local model files and a supported GPU. This bootstrap never manages a remote Docker engine, overwrites existing credentials, replaces data, enables production Mailpit, or invents model/provider credentials. Operational configuration and recovery are documented in `docs/operations/local-development.md`.
 
 | Concern | Approved choice |
 | --- | --- |

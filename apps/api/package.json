@@ -11,7 +11,7 @@
     "build": "mastra build && node scripts/build-server.mjs",
     "check": "ultracite check .",
     "cto:chat": "tsx src/cli/cto-chat.ts",
-    "dev": "node --env-file-if-exists=.env --import tsx --watch src/server.ts",
+    "dev": "node ../../scripts/dev-api.mjs",
     "eval:communication": "node --env-file-if-exists=.env --import tsx src/cli/evaluate-communication.ts",
     "smoke:checkpoint": "tsx src/cli/smoke-checkpoint.ts",
     "smoke:guidance": "tsx src/cli/smoke-guidance.ts",

@@ -65,9 +65,10 @@ docker rm reasonate-pg reasonate-redis
 ## Commands
 
 Start the web app, API, and worker together from the repository root. The
-command loads `apps/api/.env` when present, streams each service's logs in the
-terminal, and Ctrl+C stops all three processes. PostgreSQL and Redis must be
-running first.
+command loads `apps/api/.env`, seeds missing local settings, starts required
+Docker services and waits for readiness. It then streams application logs;
+Ctrl+C stops the applications. Database, Redis and mailbox containers retain
+their data and remain available for subsequent starts.
 
 ```powershell
 pnpm dev
@@ -75,7 +76,9 @@ pnpm dev
 
 | Command | Purpose |
 | --- | --- |
-| `pnpm dev` | Run the web app on port 3219, the API on port 4111, and the worker together |
+| `pnpm dev` | Prepare services, then run web (3219), API (4111), and worker |
+| `pnpm dev --services-only` | Prepare and check configured services without launching applications |
+| `pnpm smoke:dev` | Exercise fresh Docker services, repeat/restart recovery, retained data, and actual app startup on isolated ports |
 | `pnpm install --frozen-lockfile` | Install exactly what the lockfile pins |
 | `pnpm check` | Formatting and linting across the repository |
 | `pnpm fix` | Apply safe formatting and lint fixes |
@@ -92,7 +95,8 @@ pnpm --filter @reasonateai/contracts build
 pnpm --filter @reasonateai/api smoke:checkpoint
 ```
 
-Build the shared API/worker sandbox image before starting local services:
+`pnpm dev` builds a missing repository-owned sandbox image automatically. To
+prepare it separately:
 
 ```sh
 docker build -f services/build-sandbox/Dockerfile -t reasonate-build-sandbox:node22 services/build-sandbox
@@ -118,6 +122,20 @@ The image includes Node.js 22, Python 3.11, Go 1.27.1, and an offline npm cache.
 Never commit a `.env` file. `.env` and `.env.*` are ignored, with `.env.example` as the documented template.
 
 Launch identity uses configured Resend email delivery and Google OIDC. Development can use an explicitly labelled loopback Mailpit inbox; production cannot. See [authentication setup and activation](authentication.md) for provider variables, public-origin requirements, schema version 9 recovery, and verification boundaries. Use a separate database for tests when an API outbox relay is running.
+
+### Automatic development bootstrap
+
+Install Docker Desktop (or a local Docker engine) and the frozen workspace dependencies, then run `pnpm dev`. A fresh checkout needs no manually created database or mail container. Missing settings are saved in ignored `apps/api/.env`: development mode, a local PostgreSQL URL with a random password, Redis, Mailpit, origins, and random session/artifact signing secrets. Existing values are preserved. An empty inherited override of a saved setting is refused; remove that override rather than rotating a saved secret accidentally. Copying the example is optional; its blank database and secret fields are filled on first startup. Configure the approved model credentials separately before executing model work.
+
+The default local ports are PostgreSQL 55432, Redis 56379 and Mailpit 58027. The mailbox at `http://localhost:58027` receives actual development sign-in and sign-up links without delivering email externally. `NODE_ENV=development` is required; the bootstrap rejects production/test mode and remote Docker contexts. Existing healthy host services are reused. Existing compatible containers are selected by configured loopback port, started if stopped, and never replaced. New containers use persistent named volumes and loopback bindings. PostgreSQL is checked with the configured credentials, Redis with PING, Mailpit through `/livez`, and the web process waits for the API's health response. A conflicting port, incorrect saved database password, unavailable custom image or other prerequisite stops startup with an actionable message. Correct the configuration and rerun; never delete user volumes to repair startup. Docker command diagnostics retain their cause internally without printing environment values.
+
+Only configured speech endpoints are checked/started: `REASONATE_ASR_URL` for recognition and `REASONATE_TTS_URL` (or `TTS_URL`) for playback. Healthy endpoints are reused. Unavailable local HTTP endpoints start the checked-in Compose stacks with the configured port and wait for semantic readiness. Remote endpoints are checked without changing infrastructure. Recognition needs exactly one model GGUF and one `mmproj` GGUF in `R2T2_GGUF_DIR`, plus a supported NVIDIA GPU; the bootstrap does not download recognition weights. Kokoro retains its named model cache and can download its documented weights on first start. Configure local speech ports before starting a stack: existing containers are not recreated to change their bindings. See the [recognition](../../services/r2t2-asr/README.md) and [playback](../../services/kokoro-tts/README.md) prerequisites.
+
+`REASONATE_WEB_PORT` changes the frontend port; missing origins use that value. Set `PORT` and `REASONATE_API_ORIGIN` together if replacing the API address. For an isolated invocation, `REASONATE_DEV_ENV_FILE` selects an ignored file inside the checkout. Its resolved configuration is inherited by all three applications. Startup unit regressions run as part of `pnpm test`; `pnpm smoke:dev` creates fresh dependencies on unused ports and removes only its own test containers/volumes. It does not stop the user's Docker engine or active application. Integration tests still need an explicitly isolated database/Redis environment; `pnpm test` never adopts the application's `.env` automatically.
+
+The API's development launcher passes an env-file flag only when `apps/api/.env` exists. Isolated invocations inherit their prepared configuration instead; this avoids Node 22 Linux watch mode attempting to watch a missing optional file. Development output uses [Turborepo's streaming log order](https://turborepo.dev/docs/reference/run#--log-order-option) so persistent tasks expose readiness immediately even in CI; grouped output waits for a task to exit. Startup smoke failures retain bounded diagnostics with configured values, URL credentials and short sensitive values redacted.
+
+Rollback is restoring the previous startup/manifests and rendering styles. Generated local `.env` settings and retained service volumes remain usable with manually started services; no database migration or published-package version change is introduced. Startup uses Node's [parseEnv](https://nodejs.org/api/util.html#utilparseenvcontent), Docker's [Desktop start](https://docs.docker.com/reference/cli/docker/desktop/start/) and [Compose readiness](https://docs.docker.com/reference/cli/docker/compose/up/) contracts without a new dependency.
 
 ### Live streaming needs a current worker
 
