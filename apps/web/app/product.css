@@ -3016,6 +3016,54 @@
   box-shadow: none;
 }
 
+.submitted-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  max-width: 100%;
+  padding: 0;
+  margin: 0 0 0.25rem auto;
+  list-style: none;
+}
+
+.submitted-image {
+  display: block;
+  overflow: hidden;
+  cursor: zoom-in;
+  border: 1px solid var(--border);
+  border-radius: 0.9rem;
+}
+
+.submitted-image img {
+  width: auto;
+  max-width: min(160px, 60vw);
+  height: auto;
+  max-height: 160px;
+  object-fit: contain;
+}
+
+.submitted-file {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.75rem;
+  overflow-wrap: anywhere;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+}
+
+.attachment-viewer img {
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: 75dvh;
+  margin: auto;
+  object-fit: contain;
+}
+
 .prompt-attachment-header {
   justify-content: flex-start;
   order: -1;

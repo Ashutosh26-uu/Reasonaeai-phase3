@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AllocateBuildSessionRequestSchema,
   AppendConversationTurnRequestSchema,
+  AttachmentFilenameSchema,
   BuildSessionAllocationSchema,
   BuildSessionSchema,
   canAdvanceProductLifecycle,
@@ -21,6 +22,28 @@ const ids = {
 const now = "2026-09-19T12:00:00.000Z";
 
 describe("product execution contracts", () => {
+  it("preserves literal attachment names while rejecting paths and control characters", () => {
+    for (const filename of [
+      "notes:raw",
+      "研究 notes.txt",
+      "design final.png",
+    ]) {
+      expect(AttachmentFilenameSchema.parse(filename)).toBe(filename);
+    }
+    for (const filename of [
+      ".",
+      "..",
+      "../secret",
+      "a/b",
+      "a\\b",
+      "a\n.txt",
+      "a\u0000.txt",
+      "研".repeat(100),
+      "broken-\ud800.txt",
+    ]) {
+      expect(AttachmentFilenameSchema.safeParse(filename).success).toBe(false);
+    }
+  });
   it("accepts bounded, typed file attachments and rejects empty or oversized turns", () => {
     const attachment = {
       data: "data:image/png;base64,aGVsbG8=",

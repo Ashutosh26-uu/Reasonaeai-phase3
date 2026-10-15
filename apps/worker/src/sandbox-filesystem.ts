@@ -121,10 +121,30 @@ export class SandboxFilesystem implements WorkspaceFilesystem {
     path: string,
     options?: ReadOptions
   ): Promise<string | Buffer> {
-    const encoded = String(
-      await this.#call("read", { path: this.#path(path) })
+    const target = this.#path(path);
+    const { size } = await this.stat(target);
+    if (size > 16 * 1024 * 1024) {
+      throw new Error("The file exceeds the 16 MiB filesystem read limit.");
+    }
+    const chunks: Buffer[] = [];
+    // Keep each base64 response below the command transport's 1 MiB output bound.
+    const offsets = Array.from(
+      { length: Math.ceil(size / (512 * 1024)) },
+      (_, index) => index * 512 * 1024
     );
-    const content = Buffer.from(encoded, "base64");
+    await offsets.reduce(async (previous, offset) => {
+      await previous;
+      const length = Math.min(512 * 1024, size - offset);
+      const encoded = String(
+        await this.#call("read", { length, offset, path: target })
+      );
+      const chunk = Buffer.from(encoded, "base64");
+      if (chunk.length !== length) {
+        throw new Error("The file changed during reading. Read it again.");
+      }
+      chunks.push(chunk);
+    }, Promise.resolve());
+    const content = Buffer.concat(chunks, size);
     return options?.encoding === undefined
       ? content
       : content.toString(options.encoding);
@@ -191,10 +211,10 @@ export class SandboxFilesystem implements WorkspaceFilesystem {
     let parsed: SandboxFilesystemResult;
     try {
       parsed = JSON.parse(result.stdout) as SandboxFilesystemResult;
-    } catch (cause) {
+    } catch {
+      // biome-ignore lint/style/useErrorCause: JSON parser errors can include private file bytes; retain only a safe transport failure.
       throw new Error(
-        `Sandbox filesystem operation failed: ${result.stderr || result.stdout}`,
-        { cause }
+        "Sandbox filesystem operation returned an invalid or truncated response."
       );
     }
     if (!(result.success && parsed.ok)) {
@@ -266,7 +286,15 @@ const safe = (target, allowMissing = false) => {
 };
 try {
   const { operation, value } = input;
-  if (operation === "read") respond(fs.readFileSync(safe(value.path)).toString("base64"));
+  if (operation === "read") {
+    if (!Number.isSafeInteger(value.offset) || value.offset < 0 || !Number.isSafeInteger(value.length) || value.length < 0 || value.length > 512 * 1024) throw new Error("Invalid bounded file read.");
+    const descriptor = fs.openSync(safe(value.path), "r");
+    try {
+      const buffer = Buffer.alloc(value.length);
+      const count = fs.readSync(descriptor, buffer, 0, value.length, value.offset);
+      respond(buffer.subarray(0, count).toString("base64"));
+    } finally { fs.closeSync(descriptor); }
+  }
   else if (operation === "write" || operation === "append") {
     const target = safe(value.path, true);
     if (value.recursive) fs.mkdirSync(path.dirname(target), { recursive: true });

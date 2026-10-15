@@ -18,7 +18,6 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Attachments } from "@/components/ai-elements/attachments";
 import {
   Conversation,
   ConversationContent,
@@ -45,6 +44,7 @@ import { MessageMinimap } from "./message-minimap";
 import { messageAnchor, messageNavigationItems } from "./message-navigation";
 import { MessageTime } from "./message-time";
 import { PlanCard } from "./plan-card";
+import { SubmittedAttachments } from "./submitted-attachments";
 import {
   projectTranscript,
   type Timeline,
@@ -497,21 +497,12 @@ export function Transcript({
                   id={messageAnchor(turn.user.id)}
                   tabIndex={-1}
                 >
-                  <MessageContent className="msg-user-bubble">
-                    {turn.user.attachments && (
-                      <Attachments
-                        items={turn.user.attachments.map(
-                          (attachment, index) => ({
-                            ...attachment,
-                            id: `${index}:${attachment.filename}`,
-                          })
-                        )}
-                      />
-                    )}
-                    {turn.user.text && (
+                  <SubmittedAttachments files={turn.user.attachments ?? []} />
+                  {turn.user.text && (
+                    <MessageContent className="msg-user-bubble">
                       <p className="msg-user-text">{turn.user.text}</p>
-                    )}
-                  </MessageContent>
+                    </MessageContent>
+                  )}
                   <UserMessageActions
                     createdAt={turn.user.createdAt}
                     onEdit={onEdit}

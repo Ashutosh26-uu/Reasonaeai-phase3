@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createLocalArtifactStore } from "@reasonateai/artifact-store/local";
 import { SESSION_COOKIE } from "@reasonateai/contracts/auth";
 import {
   OrganizationIdSchema,
@@ -73,8 +77,13 @@ describeWithDatabase("build session routes", () => {
   const outsiderUserId = UserIdSchema.parse(randomUUID());
 
   let ownerCookie: string;
+  const artifactRoot = join(
+    tmpdir(),
+    `reasonate-api-attachments-${randomUUID()}`
+  );
 
   const handlers = createBuildSessionHandlers({
+    artifacts: () => createLocalArtifactStore({ root: artifactRoot }),
     resolvePrincipal: async ({ cookieHeader }) =>
       await resolveSessionPrincipal({
         cookieHeader,
@@ -347,6 +356,7 @@ describeWithDatabase("build session routes", () => {
   );
 
   afterAll(async () => {
+    await rm(artifactRoot, { force: true, recursive: true });
     await pool.query(
       "delete from organizations where organization_id = any($1::uuid[])",
       [[organizationId, foreignOrganizationId]]
@@ -471,6 +481,7 @@ describeWithDatabase("build session routes", () => {
       })
     );
     expect(append.status).toBe(202);
+    const { runId: attachmentRunId } = await append.json();
 
     const history = await handlers.history(
       context({
@@ -488,11 +499,74 @@ describeWithDatabase("build session routes", () => {
             filename: "wireframe.png",
             mediaType: "image/png",
             sizeBytes: 5,
+            url: expect.stringContaining(
+              `/v1/build-sessions/${buildSessionId}/attachments/`
+            ),
           },
         ],
         text: "Review this screen",
       })
     );
+    const attachmentContext = (
+      cookie = ownerCookie,
+      conversation = buildSessionId
+    ) =>
+      context({
+        cookie,
+        params: {
+          buildSessionId: conversation,
+          index: "0",
+          runId: attachmentRunId,
+        },
+        query: { organizationId, projectId },
+      });
+    const original = await handlers.attachment(attachmentContext());
+    expect(original.status).toBe(200);
+    expect(await original.text()).toBe("hello");
+    expect((await handlers.attachment(attachmentContext(""))).status).toBe(401);
+    expect(
+      (
+        await handlers.attachment(
+          attachmentContext(ownerCookie, await metadataFixture())
+        )
+      ).status
+    ).toBe(404);
+    const encoded = await pool.query(
+      "select user_attachments from runs where run_id=$1",
+      [attachmentRunId]
+    );
+    expect(encoded.rows[0].user_attachments[0].data).toBe(
+      "data:image/png;base64,aGVsbG8="
+    );
+    // Historical intake allowed noncanonical padding accepted by Node's decoder.
+    await pool.query(
+      "update runs set user_attachments=jsonb_set(user_attachments,'{0,data}',$2::jsonb) where run_id=$1",
+      [attachmentRunId, JSON.stringify("data:image/png;base64,YQ=")]
+    );
+    const legacyHistory = await handlers.history(
+      context({
+        cookie: ownerCookie,
+        params: { buildSessionId },
+        query: { organizationId, projectId },
+      })
+    );
+    expect(legacyHistory.status).toBe(200);
+    expect(
+      await store.history.attachmentReferences(
+        { organizationId, projectId },
+        buildSessionId
+      )
+    ).toContainEqual(
+      expect.objectContaining({ runId: attachmentRunId, sizeBytes: 1 })
+    );
+    expect(await (await handlers.attachment(attachmentContext())).text()).toBe(
+      "a"
+    );
+    await pool.query(
+      "delete from conversation_history where build_session_id=$1 and run_id=$2",
+      [buildSessionId, attachmentRunId]
+    );
+    expect((await handlers.attachment(attachmentContext())).status).toBe(404);
   });
 
   it("accepts a scoped cancellation request only from a builder", async () => {

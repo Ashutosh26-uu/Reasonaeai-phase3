@@ -38,6 +38,57 @@ const delivered = historyEntry(2, "run.steering.delivered", {
   steeringId: "steer",
 });
 describe("saved message controls", () => {
+  it.each(["Please review this reference", ""])(
+    "renders saved image attachments outside the text bubble for %j",
+    (text) => {
+      const url = `/v1/build-sessions/${randomUUID()}/attachments/${runId}/0?organizationId=${organizationId}&projectId=${projectId}`;
+      const message = ConversationMessageSchema.parse({
+        attachments: [
+          {
+            filename: "reference.png",
+            mediaType: "image/png",
+            sizeBytes: 120,
+            url,
+          },
+          {
+            filename: "notes.txt",
+            mediaType: "text/plain",
+            sizeBytes: 30,
+            url: url.replace("/0?", "/1?"),
+          },
+        ],
+        createdAt: "2026-10-15T08:00:00Z",
+        id: randomUUID(),
+        reasoning: null,
+        role: "user",
+        runId,
+        sourceId: null,
+        text,
+      });
+      const html = renderToStaticMarkup(
+        <Transcript
+          live={false}
+          messages={[message]}
+          onEdit={vi.fn()}
+          onRetry={vi.fn()}
+          pending={false}
+          timeline={EMPTY_TIMELINE}
+        />
+      );
+      expect(html).toContain('aria-label="View reference.png"');
+      expect(html).toContain('alt="reference.png"');
+      expect(html).toContain("notes.txt");
+      expect(html).toContain(url.replaceAll("&", "&amp;"));
+      if (text) {
+        expect(html.indexOf("</ul>")).toBeLessThan(
+          html.indexOf("msg-user-bubble")
+        );
+        expect(html).toContain(text);
+      } else {
+        expect(html).not.toContain("msg-user-bubble");
+      }
+    }
+  );
   it("puts edit/retry on the user and copy/feedback/branch on the saved assistant answer", () => {
     const messages = [
       ConversationMessageSchema.parse({

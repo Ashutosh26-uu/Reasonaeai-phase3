@@ -12,7 +12,7 @@ export interface AttachmentItem {
 }
 
 function AttachmentIcon({ item }: { item: AttachmentItem }) {
-  if (item.previewUrl) {
+  if (item.previewUrl && item.mediaType.startsWith("image/")) {
     return (
       <Image
         alt=""

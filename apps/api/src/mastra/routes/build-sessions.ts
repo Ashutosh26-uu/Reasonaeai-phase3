@@ -1,3 +1,5 @@
+import type { ArtifactStore } from "@reasonateai/artifact-store";
+import { preserveAttachment } from "@reasonateai/artifact-store/attachments";
 import { authorize } from "@reasonateai/auth/authorize";
 import {
   decideEntitlement,
@@ -20,6 +22,7 @@ import {
   ConversationListSchema,
   ConversationMetadataSchema,
   ConversationTurnAcceptedSchema,
+  conversationAttachmentUrl,
   type PromptAttachment,
   UpdateConversationRequestSchema,
 } from "@reasonateai/contracts/execution";
@@ -58,6 +61,8 @@ export const PROJECT_CONVERSATIONS_PATH =
   "/v1/projects/:projectId/conversations";
 export const CONVERSATION_MESSAGES_PATH =
   "/v1/build-sessions/:buildSessionId/messages";
+export const CONVERSATION_ATTACHMENT_PATH =
+  "/v1/build-sessions/:buildSessionId/attachments/:runId/:index";
 export const CONVERSATION_TURNS_PATH =
   "/v1/build-sessions/:buildSessionId/turns";
 export const RUN_CANCELLATION_PATH =
@@ -146,6 +151,7 @@ async function appendAcceptedConversationTurn(input: {
   store: ProjectStateStore;
   attachments: PromptAttachment[];
   message: string;
+  preserve: (runId: string) => Promise<void>;
 }) {
   let accepted: Awaited<
     ReturnType<ProjectStateStore["appendConversationTurn"]>
@@ -185,6 +191,7 @@ async function appendAcceptedConversationTurn(input: {
       runId: null,
     });
   }
+  await input.preserve(accepted.runId);
   return accepted;
 }
 
@@ -277,6 +284,7 @@ const DENIAL_BY_REASON: Record<string, ApiErrorCode> = {
 };
 
 export interface BuildSessionRouteDeps {
+  artifacts?: (() => ArtifactStore) | undefined;
   resolvePrincipal: (input: {
     cookieHeader: string | undefined;
   }) => Promise<UserPrincipal | undefined>;
@@ -402,6 +410,7 @@ export async function admitRun(input: {
  * in.
  */
 async function allocateOrRefund(input: {
+  preserve: (allocation: BuildSessionAllocation) => Promise<void>;
   attachments?: PromptAttachment[];
   idempotencyKey: string;
   message?: string;
@@ -447,10 +456,39 @@ async function allocateOrRefund(input: {
     await input.store.usage.record(refund);
   }
 
+  await input.preserve(allocation);
   return allocation;
 }
 
 export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
+  const preserveFiles = async (
+    scope: { organizationId: OrganizationId; projectId: ProjectId },
+    buildSessionId: BuildSessionId,
+    runId: string
+  ) => {
+    const references = (
+      await deps.store().history.attachmentReferences(scope, buildSessionId)
+    ).filter((file) => file.runId === runId);
+    const files = (
+      await Promise.all(
+        references.map((file) =>
+          deps
+            .store()
+            .history.attachment(scope, buildSessionId, file.runId, file.index)
+        )
+      )
+    ).filter((file) => file !== undefined);
+    if (files.length === 0) {
+      return;
+    }
+    const artifacts = deps.artifacts?.();
+    if (!artifacts) {
+      throw new Error("Private attachment storage is unavailable.");
+    }
+    await Promise.all(
+      files.map((file) => preserveAttachment(artifacts, scope, file))
+    );
+  };
   return {
     /**
      * Idempotent allocation. A repeat request with the same key returns the same
@@ -545,6 +583,12 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
         idempotencyKey,
         message: promptMessage(body.data.message),
         organizationId: organizationId.data,
+        preserve: (result) =>
+          preserveFiles(
+            { organizationId: organizationId.data, projectId: projectId.data },
+            result.buildSession.buildSessionId,
+            result.buildSession.runId
+          ),
         principal,
         projectId: projectId.data,
         store,
@@ -703,6 +747,7 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
         buildSessionId,
         idempotencyKey,
         message: promptMessage(body.message),
+        preserve: (runId) => preserveFiles(scope, buildSessionId, runId),
         requestId: rid,
         scope,
         store,
@@ -718,6 +763,92 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
         }),
         202
       );
+    },
+    /** Original bytes are served only for a turn retained in this conversation. */
+    attachment: async (c: HandlerContext): Promise<Response> => {
+      const requestId = c.req.header("x-request-id") ?? crypto.randomUUID();
+      const principal = await deps.resolvePrincipal({
+        cookieHeader: c.req.header("cookie"),
+      });
+      if (!principal) {
+        return apiErrorResponse({
+          code: "unauthenticated",
+          message: "A valid browser session is required.",
+          requestId,
+        });
+      }
+      const parsed = z
+        .strictObject({
+          buildSessionId: BuildSessionIdSchema,
+          index: z.coerce.number().int().min(0).max(4),
+          organizationId: OrganizationIdSchema,
+          projectId: ProjectIdSchema,
+          runId: RunIdSchema,
+        })
+        .safeParse({
+          buildSessionId: c.req.param("buildSessionId"),
+          index: c.req.param("index"),
+          organizationId: c.req.query("organizationId"),
+          projectId: c.req.query("projectId"),
+          runId: c.req.param("runId"),
+        });
+      if (!parsed.success) {
+        return apiErrorResponse({
+          code: "invalid_request",
+          message: "A conversation, attachment and project scope are required.",
+          requestId,
+        });
+      }
+      const { organizationId, projectId, buildSessionId, runId, index } =
+        parsed.data;
+      const scope = { organizationId, projectId };
+      const decision = await authorizeProjectAction({
+        action: "artifact:read",
+        deps,
+        ...scope,
+        principal,
+      });
+      if (!decision.allowed) {
+        return apiErrorResponse({
+          code: "forbidden",
+          message: "You are not authorized to read this attachment.",
+          requestId,
+        });
+      }
+      const file = await deps
+        .store()
+        .history.attachment(scope, buildSessionId, runId, index);
+      if (!file) {
+        return apiErrorResponse({
+          code: "not_found",
+          message: "No such attachment in this conversation.",
+          requestId,
+        });
+      }
+      if (!deps.artifacts) {
+        throw new Error("Private attachment storage is unavailable.");
+      }
+      const { content } = await preserveAttachment(
+        deps.artifacts(),
+        scope,
+        file
+      );
+      const inline = [
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+      ].includes(file.mediaType);
+      return new Response(new Uint8Array(content), {
+        headers: {
+          "Cache-Control": "private, no-store",
+          "Content-Disposition": `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
+          "Content-Length": String(content.length),
+          "Content-Security-Policy": "sandbox; default-src 'none'",
+          "Content-Type": inline ? file.mediaType : "application/octet-stream",
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
     },
 
     /** A durable, project-authorized request for the worker to abort this run. */
@@ -880,7 +1011,20 @@ export function createBuildSessionHandlers(deps: BuildSessionRouteDeps) {
       return c.json(
         ConversationTranscriptSchema.parse({
           events,
-          messages,
+          messages: messages.map((message) => ({
+            ...message,
+            attachments: message.attachments?.map((file, index) => ({
+              ...file,
+              url: message.runId
+                ? conversationAttachmentUrl({
+                    ...scope,
+                    buildSessionId: buildSessionId.data,
+                    index,
+                    runId: message.runId,
+                  })
+                : undefined,
+            })),
+          })),
           nextAfter: events.length === 500 ? after.data + events.length : null,
         }),
         200

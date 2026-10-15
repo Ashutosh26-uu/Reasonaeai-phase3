@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { AgentControllerEvent } from "@mastra/core/agent-controller";
+import { noopObserve } from "@mastra/core/tools";
 import type { PromptAttachment } from "@reasonateai/contracts/execution";
 import { PreviewIdSchema } from "@reasonateai/contracts/execution";
 import {
@@ -13,7 +14,10 @@ import {
   SessionIdSchema,
   UserIdSchema,
 } from "@reasonateai/contracts/identity";
+import { ATTACHMENT_CONTEXT_KEY } from "@reasonateai/cto-runtime/attachments";
 import { sandboxIdFor } from "@reasonateai/cto-runtime/run-scope";
+import { ReadSnapshotStore } from "@reasonateai/cto-runtime/tools/read-snapshots";
+import { createWorkspaceReadTool } from "@reasonateai/cto-runtime/tools/workspace-read";
 import type { ProjectStateStore } from "@reasonateai/project-state/postgres";
 import {
   afterAll,
@@ -24,12 +28,14 @@ import {
   it,
   vi,
 } from "vitest";
+import { loadAttachmentFile } from "../src/attachments.js";
 import {
   checkpointSandboxFor,
   restoreLatestCheckpoint,
   snapshotWorkspaceCheckpoint,
 } from "../src/checkpoint.js";
 import { candidateScope, createRunRequestContext } from "../src/run-context.js";
+import { SandboxFilesystem } from "../src/sandbox-filesystem.js";
 import { createStopSignal } from "../src/stop-signal.js";
 import { resolveBuildSandbox } from "../src/workspace.js";
 import {
@@ -252,6 +258,121 @@ describeWithDatabase("run execution", () => {
     expect(session.lastFiles).toEqual([attachment]);
     session.complete([{ reason: "complete", type: "agent_end" }]);
 
+    expect(await attempt).toBe("succeeded");
+  });
+
+  it("recovers old attachment files after a completed turn without retaining the original model context", async () => {
+    const text = "Persistent reference\n".repeat(190_000);
+    const file = {
+      data: `data:text/plain;base64,${Buffer.from(text).toString("base64")}`,
+      filename: "large-notes:raw",
+      mediaType: "text/plain",
+    };
+    const allocated = await fixture("Keep this reference", [file]);
+    const first = scriptedRuntime();
+    const firstAttempt = createExecutor({
+      harness,
+      holder: "attachments-first",
+      runtime: first.runtime,
+    }).execute(allocated.candidate, createStopSignal());
+    const firstSession = await first.waitForSession();
+    await firstSession.started;
+    expect(firstSession.lastFiles).toEqual([]);
+    const firstSandbox = await resolveBuildSandbox({
+      requestContext: createRunRequestContext(
+        candidateScope(allocated.candidate)
+      ),
+    });
+    // Even an agent's broad staging command must not publish original uploads in source checkpoints.
+    expect(
+      (
+        await checkpointSandboxFor(firstSandbox).runCommand({
+          args: ["add", "-A"],
+          command: "git",
+          cwd: "/workspace",
+        })
+      ).exitCode
+    ).toBe(0);
+    firstSession.complete([{ reason: "complete", type: "agent_end" }]);
+    expect(await firstAttempt).toBe("succeeded");
+    const accepted = await harness.store.appendConversationTurn({
+      buildSessionId: allocated.buildSessionId,
+      idempotencyKey: randomUUID(),
+      message: "Read the earlier file",
+      scope: allocated.scope,
+    });
+    const candidate = (
+      await harness.store.listRunnableRuns({ limit: 100 })
+    ).find((run) => run.runId === accepted.runId);
+    if (!candidate) {
+      throw new Error("Follow-up run missing.");
+    }
+    const second = scriptedRuntime();
+    const attempt = createExecutor({
+      harness,
+      holder: "attachments-second",
+      runtime: second.runtime,
+    }).execute(candidate, createStopSignal());
+    const session = await second.waitForSession();
+    await session.started;
+    const scope = candidateScope(candidate);
+    const requestContext = createRunRequestContext(scope);
+    // Simulate reduced model memory: recovery uses PostgreSQL membership, not prior image/text parts.
+    requestContext.setRaw(ATTACHMENT_CONTEXT_KEY, []);
+    const sandbox = await resolveBuildSandbox({ requestContext });
+    const trackedAttachments = await checkpointSandboxFor(sandbox).runCommand({
+      args: ["ls-files", "--", ".reasonate/attachments"],
+      command: "git",
+      cwd: "/workspace",
+    });
+    expect(trackedAttachments.exitCode).toBe(0);
+    expect(trackedAttachments.stdout.trim()).toBe("");
+    const read = createWorkspaceReadTool({
+      loadAttachment: async ({ runId, index }) =>
+        loadAttachmentFile({
+          artifacts: harness.artifacts,
+          index,
+          sandbox,
+          scope,
+          sourceRunId: runId,
+          store: harness.store,
+        }),
+      resolveFilesystem: async () =>
+        new SandboxFilesystem({
+          id: "attachment-test",
+          root: "/workspace",
+          sandbox,
+        }),
+      resolveSnapshots: async () => new ReadSnapshotStore(),
+      root: "/workspace",
+    });
+    if (!read.execute) {
+      throw new Error("Read tool missing.");
+    }
+    const started = performance.now();
+    const content = await read.execute(
+      { target: `attachment://${allocated.candidate.runId}/0:2-3` },
+      { observe: noopObserve, requestContext }
+    );
+    expect(content).toContain("Persistent reference");
+    expect(performance.now() - started).toBeLessThan(20_000);
+    await expect(
+      read.execute(
+        { target: `attachment://${randomUUID()}/0` },
+        { observe: noopObserve, requestContext }
+      )
+    ).rejects.toThrow("not retained");
+    expect(
+      (
+        await harness.store.history.attachment(
+          allocated.scope,
+          allocated.buildSessionId,
+          allocated.candidate.runId,
+          0
+        )
+      )?.data
+    ).toBe(file.data);
+    session.complete([{ reason: "complete", type: "agent_end" }]);
     expect(await attempt).toBe("succeeded");
   });
 

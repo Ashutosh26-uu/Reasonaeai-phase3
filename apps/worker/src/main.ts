@@ -1,3 +1,6 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createLocalArtifactStore } from "@reasonateai/artifact-store/local";
 import {
   createProjectStateStore,
   type ProjectStateStore,
@@ -121,6 +124,11 @@ function main(): void {
     redisUrl: config.redisUrl,
   });
   const executor = new RunExecutor({
+    artifacts: createLocalArtifactStore({
+      root:
+        process.env.REASONATE_ARTIFACT_ROOT ??
+        join(tmpdir(), "reasonate-artifacts"),
+    }),
     checkpoints: createGitCheckpointStore({ root: config.checkpointRoot }),
     config: {
       holder: config.holder,
@@ -135,6 +143,11 @@ function main(): void {
     resolveSandbox: async ({ requestContext }) =>
       await resolveBuildSandbox({ requestContext }),
     runtime: createCtoRuntimeFactory({
+      artifacts: createLocalArtifactStore({
+        root:
+          process.env.REASONATE_ARTIFACT_ROOT ??
+          join(tmpdir(), "reasonate-artifacts"),
+      }),
       databaseUrl: config.databaseUrl,
       model: config.model,
       store,

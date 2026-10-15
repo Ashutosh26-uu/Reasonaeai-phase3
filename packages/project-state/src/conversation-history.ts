@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  AttachmentReferenceSchema,
   type BuildSessionId,
   BuildSessionIdSchema,
   PromptAttachmentSchema,
@@ -409,14 +410,20 @@ export function createConversationHistory(input: {
   };
   const retainedInputs = async (
     scope: TenantScope,
-    buildSessionId: BuildSessionId
+    buildSessionId: BuildSessionId,
+    includeAttachments = true
   ) => {
     const prompts = await input.pool.query<{
       run_id: string;
       user_attachments: unknown;
     }>(
-      "select r.run_id,r.user_attachments from conversation_history h join runs r using(run_id) where h.build_session_id=$1 and h.organization_id=$2 and h.project_id=$3 order by h.position",
-      [buildSessionId, scope.organizationId, scope.projectId]
+      "select r.run_id,r.user_attachments from conversation_history h join runs r using(run_id) where h.build_session_id=$1 and h.organization_id=$2 and h.project_id=$3 and $4 order by h.position",
+      [
+        buildSessionId,
+        scope.organizationId,
+        scope.projectId,
+        includeAttachments,
+      ]
     );
     const events = await input.pool.query<{
       run_id: string;
@@ -438,6 +445,40 @@ export function createConversationHistory(input: {
     };
   };
   return {
+    attachment: async (
+      scope: TenantScope,
+      buildSessionId: BuildSessionId,
+      runId: string,
+      index: number
+    ) => {
+      if (!Number.isInteger(index) || index < 0 || index > 4) {
+        return;
+      }
+      const result = await input.pool.query<{ attachment: unknown }>(
+        "select r.user_attachments->$5::int as attachment from conversation_history h join runs r using(run_id) where h.build_session_id=$1 and h.run_id=$2 and h.organization_id=$3 and h.project_id=$4 and r.organization_id=$3 and r.project_id=$4",
+        [buildSessionId, runId, scope.organizationId, scope.projectId, index]
+      );
+      const value = result.rows[0]?.attachment;
+      return value ? PromptAttachmentSchema.parse(value) : undefined;
+    },
+    attachmentReferences: async (
+      scope: TenantScope,
+      buildSessionId: BuildSessionId
+    ) => {
+      const result = await input.pool.query<{
+        runId: string;
+        index: number;
+        filename: string;
+        mediaType: string;
+        sizeBytes: number;
+      }>(
+        `select r.run_id as "runId", (file.ordinality-1)::int as index, file.value->>'filename' as filename, file.value->>'mediaType' as "mediaType", (length(rtrim(split_part(file.value->>'data', ',', 2), '='))*3/4) as "sizeBytes"
+         from conversation_history h join runs r using(run_id) cross join lateral jsonb_array_elements(r.user_attachments) with ordinality as file(value,ordinality)
+         where h.build_session_id=$1 and h.organization_id=$2 and h.project_id=$3 and r.organization_id=$2 and r.project_id=$3 order by h.position,file.ordinality`,
+        [buildSessionId, scope.organizationId, scope.projectId]
+      );
+      return AttachmentReferenceSchema.array().parse(result.rows);
+    },
     boundary,
     change,
     contains,

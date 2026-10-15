@@ -73,6 +73,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { pastedTextAttachment } from "@/lib/pasted-attachment";
 
 // ============================================================================
 // Helpers
@@ -1033,6 +1034,14 @@ export const PromptInputTextarea = ({
       if (files.length > 0) {
         event.preventDefault();
         attachments.add(files);
+        return;
+      }
+      const text = event.clipboardData.getData("text/plain");
+      const file = pastedTextAttachment(text);
+      // An unsuccessful conversion must leave the clipboard text pasteable.
+      if (file && attachments.files.length < 5) {
+        event.preventDefault();
+        attachments.add([file]);
       }
     },
     [attachments]
