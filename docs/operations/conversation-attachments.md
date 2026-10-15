@@ -68,6 +68,8 @@ The first upload screenshot demonstrated persistence and viewer behavior but mis
 
 Measured viewports are 1280×900 and 390×844, with an additional 288px container. The six mixed cards are each 240×241.33px on desktop and 326.67×241.33px at the narrow viewport; every wrapped row matches, with no card or page overflow. The image-plus-text pair is uniformly 160px high and documents-only cards uniformly 112px high. An unavailable preview retains a 160px card alongside its document, Retry restores the real image, and Escape from the original viewer restores focus to its trigger. Full application mobile acceptance remains pending; this is component-level responsive acceptance, superseding the earlier failed viewport override only for this grid.
 
+The follow-up two-file and three-file examples use image + pasted text and image + pasted text + PDF. The grid supports up to three columns when space permits, so both examples fit a single row at 1280px (each card 240×160px). At 390px both wrap into equal 326.67×160px cards without horizontal overflow. Screenshots and geometry are retained as `.verification/attachment-grid/two-and-three-files.png` and `two-and-three-measurements.json`. The scoped reviewer found no regression in the additional column.
+
 ## Relationship to research
 
 [The Oh My Pi investigation](../research/attachment-handling.md) traces intake, local blobs, source notices, aliases, format readers, queues, compaction, session moves/forks and output artifacts. It distinguishes initial old local versions from the pulled newer implementation. We adopted durable file identity and recoverability through this product's authorization/storage boundaries; this is not a wholesale port of its terminal application.

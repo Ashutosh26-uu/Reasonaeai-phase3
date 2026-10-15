@@ -132,12 +132,13 @@ export function SubmittedAttachments({
   if (files.length === 0) {
     return null;
   }
+  const columns = Math.min(files.length, 3);
   return (
     <ul
       aria-label="Attached files"
       className="submitted-attachments"
       style={{
-        width: `min(100%, ${Math.min(files.length, 2) * 240 + (files.length > 1 ? 8 : 0)}px)`,
+        width: `min(100%, ${columns * 240 + (columns - 1) * 8}px)`,
       }}
     >
       {files.map((file, index) => (
