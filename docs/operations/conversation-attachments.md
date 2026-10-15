@@ -21,7 +21,7 @@ The production workspace reader returns actual image parts after checking dimens
 
 Workspace file reads are limited to 16 MiB and transported in sequential 512 KiB chunks, keeping encoded responses below the sandbox command-output cap. Invalid transport errors omit parser output that might contain private bytes. API and worker filesystem adapters retain identical behavior. Attachment/document reads do not mint source-edit anchors.
 
-Large paste becomes a UTF-8 `.txt` attachment at 8 KiB or 100 lines. Short text remains inline; over-limit conversion retains the normal paste path. Submitted images appear above/outside the right-aligned message bubble, with aspect-preserving rounded thumbnails, accessible full-size viewing, original links and a retry state. Documents appear as file cards. The Bklit palette is retained.
+Large paste becomes a UTF-8 `.txt` attachment at 8 KiB or 100 lines. Short text remains inline; over-limit conversion retains the normal paste path. Submitted attachments use one right-aligned responsive grid above/outside the message bubble, retaining submission order. All cards expand to the same bounded width and the largest height in that list, including wrapped rows. Images preserve their proportions with full-size viewing, original links and retry; documents show type-specific icons, filename, type and size. Long filenames truncate visually while retaining their full accessible text and title. The Bklit palette is retained.
 
 ## Dependency and runtime
 
@@ -59,6 +59,14 @@ The final root run used fresh isolated PostgreSQL/Redis fixtures and completed i
 Already exercised: actual browser file-picker upload and large clipboard paste; exact original PNG and Unicode/CRLF text retrieved through the running authenticated API; anonymous denial; thumbnail placement outside the bubble; full-size viewer; saved-history reload; real Docker cross-turn recovery with reduced model context; a near-4-MiB attachment; private checkpoint exclusion even after broad Git staging; duplicate immutable writes; Office and PDF extraction; legacy Base64 metadata; and retained-memory references.
 
 Desktop browser acceptance used 1280×720. The browser's viewport override did not change the measured viewport, so mobile acceptance is not claimed. The intentionally unconfigured model in the disposable browser fixture produced a failed model run; this does not represent successful model understanding, and did not prevent upload persistence, preview or original-byte retrieval. Provider vision/model understanding was not exercised by these storage/runtime checks; no paid frontier-model calls were made. Company review, clean Linux hosted checks and deployment acceptance remain required.
+
+## October 16 attachment sizing correction
+
+The first upload screenshot demonstrated persistence and viewer behavior but missed an unusably small image beside the pasted-text card. The follow-up implements the user's equal-card requirement in one submission-ordered list. No storage, API, grant or migration contract changes.
+
+`pnpm --filter @reasonateai/web test` passes all 258 tests, including mixed submission order, accessible file actions, type/size labels, long filenames, unusual extensions and empty lists. Repository `pnpm check` and web type checking pass; a scoped ephemeral reviewer found no actionable issue. `.verification/attachment-grid/` retains desktop/narrow/viewer screenshots and measured geometry from the actual production component and application styles, bundled into an isolated browser fixture without using the active user database, worker, mailbox or ports.
+
+Measured viewports are 1280×900 and 390×844, with an additional 288px container. The six mixed cards are each 240×241.33px on desktop and 326.67×241.33px at the narrow viewport; every wrapped row matches, with no card or page overflow. The image-plus-text pair is uniformly 160px high and documents-only cards uniformly 112px high. An unavailable preview retains a 160px card alongside its document, Retry restores the real image, and Escape from the original viewer restores focus to its trigger. Full application mobile acceptance remains pending; this is component-level responsive acceptance, superseding the earlier failed viewport override only for this grid.
 
 ## Relationship to research
 

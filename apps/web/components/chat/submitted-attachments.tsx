@@ -7,9 +7,48 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@reasonateai/ui/components/dialog";
-import { FileText } from "lucide-react";
+import {
+  File,
+  FileArchive,
+  FileCode,
+  FileSpreadsheet,
+  FileText,
+} from "lucide-react";
 import Image from "next/image";
 import { useCallback, useState } from "react";
+
+const FILE_EXTENSION = /^[a-z0-9]{1,8}$/;
+
+function filePresentation(file: ConversationAttachment) {
+  const extension = file.filename.split(".").at(-1)?.toLowerCase();
+  const label =
+    extension &&
+    extension !== file.filename.toLowerCase() &&
+    FILE_EXTENSION.test(extension)
+      ? extension.toUpperCase()
+      : "FILE";
+  if (["csv", "xls", "xlsx", "ods"].includes(extension ?? "")) {
+    return { Icon: FileSpreadsheet, label };
+  }
+  if (["zip", "gz", "tar", "7z", "rar"].includes(extension ?? "")) {
+    return { Icon: FileArchive, label };
+  }
+  if (
+    ["json", "js", "ts", "tsx", "py", "html", "css", "xml"].includes(
+      extension ?? ""
+    )
+  ) {
+    return { Icon: FileCode, label };
+  }
+  return {
+    Icon:
+      file.mediaType.startsWith("text/") ||
+      ["pdf", "doc", "docx", "md"].includes(extension ?? "")
+        ? FileText
+        : File,
+    label,
+  };
+}
 
 function SubmittedFile({ file }: { file: ConversationAttachment }) {
   const [failed, setFailed] = useState(false);
@@ -23,19 +62,25 @@ function SubmittedFile({ file }: { file: ConversationAttachment }) {
     file.mediaType
   );
   if (!(file.url && image)) {
+    const { Icon, label } = filePresentation(file);
     return (
-      <a className="submitted-file" href={file.url}>
-        <FileText aria-hidden="true" size={18} />
-        {file.filename}
-        <span>{Math.ceil(file.sizeBytes / 1024)} KB</span>
+      <a className="submitted-file" href={file.url} title={file.filename}>
+        <Icon aria-hidden="true" size={28} />
+        <span className="submitted-file-name">{file.filename}</span>
+        <span className="submitted-file-details">
+          {label} · {Math.ceil(file.sizeBytes / 1024)} KB
+        </span>
       </a>
     );
   }
   const src = `${file.url}&preview=${revision}`;
   if (failed) {
     return (
-      <div className="submitted-file" role="status">
-        <span>{file.filename} — preview unavailable</span>
+      <div className="submitted-file submitted-file-error" role="status">
+        <span className="submitted-file-name" title={file.filename}>
+          {file.filename}
+        </span>
+        <span className="submitted-file-details">Preview unavailable</span>
         <button onClick={retry} type="button">
           Retry preview
         </button>
@@ -54,11 +99,11 @@ function SubmittedFile({ file }: { file: ConversationAttachment }) {
       >
         <Image
           alt={file.filename}
-          height={160}
+          height={240}
           onError={failure}
           src={src}
           unoptimized
-          width={160}
+          width={320}
         />
       </DialogTrigger>
       <DialogContent className="attachment-viewer">
@@ -88,7 +133,13 @@ export function SubmittedAttachments({
     return null;
   }
   return (
-    <ul aria-label="Attached files" className="submitted-attachments">
+    <ul
+      aria-label="Attached files"
+      className="submitted-attachments"
+      style={{
+        width: `min(100%, ${Math.min(files.length, 2) * 240 + (files.length > 1 ? 8 : 0)}px)`,
+      }}
+    >
       {files.map((file, index) => (
         <li key={`${index}:${file.filename}`}>
           <SubmittedFile file={file} />
