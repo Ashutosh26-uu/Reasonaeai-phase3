@@ -103,6 +103,14 @@
     "./repair": {
       "types": "./src/repair/index.ts",
       "import": "./dist/repair/index.js"
+    },
+    "./evidence": {
+      "types": "./src/evidence.ts",
+      "import": "./dist/evidence.js"
+    },
+    "./durable-artifacts": {
+      "types": "./src/durable-artifacts.ts",
+      "import": "./dist/durable-artifacts.js"
     }
   },
   "scripts": {
@@ -115,6 +123,7 @@
   "dependencies": {
     "@mastra/core": "^1.67.0",
     "@mastra/memory": "^1.30.0",
+    "@reasonateai/artifact-store": "workspace:*",
     "@reasonateai/contracts": "workspace:*",
     "diff": "^8.0.4",
     "fast-xml-parser": "^5.11.1",

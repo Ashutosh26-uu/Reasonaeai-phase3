@@ -221,6 +221,9 @@ importers:
       '@mastra/pg':
         specifier: 1.25.0
         version: 1.25.0(@mastra/core@1.67.0(@grpc/grpc-js@1.14.4)(ai@7.0.113(zod@4.6.5))(zod@4.6.5))
+      '@reasonateai/artifact-store':
+        specifier: workspace:*
+        version: link:../../packages/artifact-store
       '@reasonateai/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -312,6 +315,9 @@ importers:
       '@mastra/memory':
         specifier: ^1.30.0
         version: 1.30.0(@mastra/core@1.67.0(@grpc/grpc-js@1.14.4)(ai@7.0.113(zod@4.6.5))(zod@4.6.5))
+      '@reasonateai/artifact-store':
+        specifier: workspace:*
+        version: link:../artifact-store
       '@reasonateai/contracts':
         specifier: workspace:*
         version: link:../contracts

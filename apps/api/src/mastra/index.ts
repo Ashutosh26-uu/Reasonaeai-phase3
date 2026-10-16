@@ -19,6 +19,8 @@ import {
 } from "@reasonateai/contracts/execution";
 import type { RunId } from "@reasonateai/contracts/identity";
 import { createReasonateCtoRuntime } from "@reasonateai/cto-runtime";
+import { createDurableSpillSink } from "@reasonateai/cto-runtime/durable-artifacts";
+import { createEvidenceRecorder } from "@reasonateai/cto-runtime/evidence";
 import { readRunScope, sandboxIdFor } from "@reasonateai/cto-runtime/run-scope";
 import {
   type RunSandboxPreviewTarget,
@@ -432,6 +434,43 @@ export const reasonateCtoRuntime = createReasonateCtoRuntime({
       });
     },
   },
+  /**
+   * Spilled tool output is put through the same immutable artifact store the
+   * upload routes use, and its validated manifest is recorded in the
+   * authoritative store, so an `artifact://` read resolves even after the run's
+   * host directory is gone. The digest is looked back up by the spill's
+   * deterministic artifact id — only a recorded digest can produce a key, so
+   * an unrecorded spill is reported as absent rather than guessed at.
+   */
+  createDurableSpillSink: async (scope) =>
+    createDurableSpillSink({
+      artifacts: localArtifacts(),
+      record: async (manifest) => {
+        await stateStore().recordArtifact(manifest, "stored");
+      },
+      recordedDigest: async (artifactId) =>
+        (
+          await stateStore().listArtifacts({
+            organizationId: scope.organizationId,
+            projectId: scope.projectId,
+          })
+        ).find((record) => record.artifactId === artifactId)?.sha256,
+      scope,
+    }),
+  /**
+   * A completed `browser_verify` is recorded as a `browser-evidence` artifact:
+   * its report JSON and captured screenshot PNG go through the same immutable
+   * store as uploads, and the validated manifest is recorded in the
+   * authoritative store so the verification can be listed and downloaded
+   * after the run ends.
+   */
+  createEvidenceRecorder: async (_scope) =>
+    createEvidenceRecorder({
+      artifacts: localArtifacts(),
+      record: async (manifest) => {
+        await stateStore().recordArtifact(manifest, "stored");
+      },
+    }),
   enableBrowserVerification: true,
   enableTestRunner: true,
   model: frontierModel,

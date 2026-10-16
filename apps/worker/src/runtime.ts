@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   AgentControllerEvent,
   Session,
 } from "@mastra/core/agent-controller";
 import type { RequestContext } from "@mastra/core/request-context";
 import { PostgresStore } from "@mastra/pg";
+import { createLocalArtifactStore } from "@reasonateai/artifact-store/local";
 import {
   APP_PREVIEW_RELAY_PORT,
   type BuildSessionId,
@@ -14,6 +17,8 @@ import {
 } from "@reasonateai/contracts/execution";
 import { type RunId, RunIdSchema } from "@reasonateai/contracts/identity";
 import { createReasonateCtoRuntime } from "@reasonateai/cto-runtime";
+import { createDurableSpillSink } from "@reasonateai/cto-runtime/durable-artifacts";
+import { createEvidenceRecorder } from "@reasonateai/cto-runtime/evidence";
 import { readRunScope, sandboxIdFor } from "@reasonateai/cto-runtime/run-scope";
 import {
   type RunSandboxPreviewTarget,
@@ -102,6 +107,19 @@ export function createCtoRuntimeFactory(input: {
     connectionString: input.databaseUrl,
     id: "reasonate-worker-storage",
   });
+  /**
+   * The same local immutable store shape the API composition root uses. A
+   * worker spills through it so an `artifact://` read resolves after the run's
+   * host directory is gone, and the manifest is recorded in the authoritative
+   * store so a later process can rebuild the object key from a digest it
+   * trusts. Setting the root from the deployment environment keeps a test
+   * worker from writing to the operator's home directory by accident.
+   */
+  const artifactStore = createLocalArtifactStore({
+    root:
+      process.env.REASONATE_ARTIFACT_ROOT ??
+      join(tmpdir(), "reasonate-artifacts"),
+  });
   return () => {
     const previewSelections = new Map<
       RunId,
@@ -126,6 +144,39 @@ export function createCtoRuntimeFactory(input: {
           });
         },
       },
+      /**
+       * Durable spill pass-through, wired the same way the API composes it:
+       * bytes through the immutable store, manifest recorded best effort, and
+       * digests looked up in the authoritative store when a spill is re-read.
+       */
+      createDurableSpillSink: async (scope) =>
+        createDurableSpillSink({
+          artifacts: artifactStore,
+          record: async (manifest) => {
+            await input.store.recordArtifact(manifest, "stored");
+          },
+          recordedDigest: async (artifactId) =>
+            (
+              await input.store.listArtifacts({
+                organizationId: scope.organizationId,
+                projectId: scope.projectId,
+              })
+            ).find((record) => record.artifactId === artifactId)?.sha256,
+          scope,
+        }),
+      /**
+       * Evidence is recorded in the execution plane, where the browser tool
+       * runs: report and screenshot through the same immutable store, manifest
+       * into the authoritative store, so a verification is listable and
+       * downloadable after the run ends.
+       */
+      createEvidenceRecorder: async (_scope) =>
+        createEvidenceRecorder({
+          artifacts: artifactStore,
+          record: async (manifest) => {
+            await input.store.recordArtifact(manifest, "stored");
+          },
+        }),
       enableBrowserVerification: true,
       enableTestRunner: true,
       model: input.model,

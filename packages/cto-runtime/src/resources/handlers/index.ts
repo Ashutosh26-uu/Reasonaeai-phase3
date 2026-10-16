@@ -14,6 +14,7 @@
  */
 
 import type { InstructionSource } from "../../context/instructions.js";
+import type { DurableSpillSink } from "../../durable-artifacts.js";
 import { BUNDLED_SKILLS } from "../../guidance/catalog.js";
 import type { RunScope } from "../../run-scope.js";
 import { createFormatReaders } from "../../tools/readers/registry.js";
@@ -34,6 +35,12 @@ export interface RunResourceOptions {
   cwd: string;
   /** Documentation roots to publish under `docs://`. Omit to leave it unregistered. */
   docsRoots?: readonly DocsRoot[] | undefined;
+  /**
+   * Durable pass-through for spilled output, written on every spill and used
+   * as the read fallback when the run's directory no longer has the bytes.
+   * Omitting it keeps spilling purely local.
+   */
+  durable?: DurableSpillSink | undefined;
   /** Overrides the home directory used for user-level rules. */
   home?: string | undefined;
   instructionSources?: readonly InstructionSource[] | undefined;
@@ -66,7 +73,11 @@ export interface RunResources {
  * independently derived directories.
  */
 export function createRunResources(options: RunResourceOptions): RunResources {
-  const artifacts = createArtifactStore(options.root, options.scope);
+  const artifacts = createArtifactStore(
+    options.root,
+    options.scope,
+    options.durable
+  );
   const agentOutputs = createAgentOutputStore(options.root, options.scope);
 
   const handlers: ProtocolHandler[] = [

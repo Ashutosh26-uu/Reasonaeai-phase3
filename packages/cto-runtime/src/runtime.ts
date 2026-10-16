@@ -23,6 +23,8 @@ import { composeSystemPrompt } from "./context/compose.js";
 import type { PlatformFacts, SandboxCapacity } from "./context/environment.js";
 import type { InstructionSource } from "./context/instructions.js";
 import { loadWorkspaceInstructions } from "./context/workspace-instructions.js";
+import type { DurableSpillSink } from "./durable-artifacts.js";
+import type { EvidenceRecorder } from "./evidence.js";
 import { renderBundledRules, renderSkillCatalog } from "./guidance/catalog.js";
 import { deepseekReasoningCompat } from "./model/deepseek-reasoning.js";
 import { MAIN_AGENT_INSTRUCTIONS, REASONATE_CTO_NAME } from "./prompts.js";
@@ -105,6 +107,21 @@ export interface ReasonateCtoRuntimeConfig {
    */
   capacity?: SandboxCapacity | undefined;
   controllerId?: string;
+  /** Persists a short-lived same-sandbox preview lease before the tool returns. */
+  /**
+   * Builds the durable spill sink for one run, called at most once per run.
+   * Configuring one makes every spilled read output also land in immutable
+   * artifact storage, and lets `artifact://` resolve past a wiped temporary
+   * directory. Omitted keeps spilling purely local, as before.
+   */
+  createDurableSpillSink?: (input: RunScope) => Promise<DurableSpillSink>;
+  /**
+   * Builds the evidence recorder for one run, called at most once per run.
+   * Configuring one makes every `browser_verify` call record its report and
+   * screenshot as a `browser-evidence` artifact in immutable storage. Omitted
+   * keeps verifications transcript-only.
+   */
+  createEvidenceRecorder?: (input: RunScope) => Promise<EvidenceRecorder>;
   enableBrowserVerification?: boolean | undefined;
   enableTestRunner?: boolean | undefined;
   limits?: Partial<CtoRuntimeLimits>;
@@ -116,7 +133,6 @@ export interface ReasonateCtoRuntimeConfig {
    * the host while every command runs inside the sandbox.
    */
   platform?: PlatformFacts | undefined;
-  /** Persists a short-lived same-sandbox preview lease before the tool returns. */
   registerPreview?: (input: RunScope & { appPort: number }) => Promise<void>;
   resourceId?: string;
   /**
@@ -229,8 +245,27 @@ function createRuntimeTools(
   const isBrowserVerificationEnabled =
     Boolean(config.enableBrowserVerification) ||
     config.browserVerification !== undefined;
+  /**
+   * The evidence recorder is built per verification (it is tenant-scoped), so
+   * the tool receives a factory keyed by the verified run scope rather than a
+   * prebuilt recorder. A run without a recorder factory verifies without
+   * recording, exactly as before the option existed.
+   */
+  const evidenceRecorderFactory = config.createEvidenceRecorder;
   const browserVerificationTool = isBrowserVerificationEnabled
-    ? createBrowserVerificationTool(config.browserVerification ?? {})
+    ? createBrowserVerificationTool({
+        ...(config.browserVerification ?? {}),
+        ...(evidenceRecorderFactory === undefined
+          ? {}
+          : {
+              evidence: {
+                record: async (evidenceInput) =>
+                  await (
+                    await evidenceRecorderFactory(evidenceInput.scope)
+                  ).record(evidenceInput),
+              } satisfies EvidenceRecorder,
+            }),
+      })
     : undefined;
   const submitPlanTool = createSubmitPlanTool();
   return {
@@ -358,14 +393,19 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
       return existing;
     }
     const scope = readRunScope(requestContext);
-    const resources = resolveInstructionSources(requestContext).then(
-      (instructionSources) =>
-        createRunResources({
-          cwd: config.workspaceRoot ?? process.cwd(),
-          instructionSources,
-          root: resourcesRoot,
-          scope,
-        })
+    const resources = Promise.all([
+      resolveInstructionSources(requestContext),
+      config.createDurableSpillSink === undefined
+        ? Promise.resolve(undefined)
+        : config.createDurableSpillSink(scope),
+    ]).then(([instructionSources, durable]) =>
+      createRunResources({
+        cwd: config.workspaceRoot ?? process.cwd(),
+        ...(durable === undefined ? {} : { durable }),
+        instructionSources,
+        root: resourcesRoot,
+        scope,
+      })
     );
     resourcesByRequest.set(requestContext, resources);
     return resources;
