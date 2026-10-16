@@ -208,7 +208,7 @@ export function renderResourceCatalog(
   return [
     "## Additional resources",
     "",
-    "Use the read tool for a named resource only when relevant. The bundled rules are already applied and skills are listed above; no startup enumeration is required. Do not guess schemes or repeatedly retry empty listings. Selectors apply to workspace files; a resource uses its own handler contract.",
+    "Use the read tool for a named resource only when relevant. Bundled policy is already applied, and the scoped rules and skills are listed above; no startup enumeration is required. Do not guess schemes or repeatedly retry empty listings. Selectors apply to workspace files; a resource uses its own handler contract.",
     "",
     ...ordered.map(
       (entry) => `- \`${entry.scheme}://\` — ${entry.description}`

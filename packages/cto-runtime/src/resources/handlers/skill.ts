@@ -1,4 +1,4 @@
-import type { GuidanceEntry } from "../../guidance/catalog.js";
+import type { GuidanceEntry } from "../../guidance/types.js";
 import type {
   InternalResource,
   ParsedResourceUrl,
@@ -9,20 +9,25 @@ import { notFound } from "./resource-helpers.js";
 
 const LEADING_SLASHES_RE = /^\/+/;
 
-/** Immutable, explicitly named guidance; no model-controlled filesystem access. */
-export class GuidanceHandler implements ProtocolHandler {
+/**
+ * `skill://` — the bundled task procedures, addressed by name.
+ *
+ * A skill's body is deliberately absent from the system prompt: the prompt
+ * advertises the catalog, and the body is fetched here when the task matches.
+ * Naming a skill that does not exist fails with the available names rather than
+ * returning an empty document, because a silently empty skill would look like a
+ * skill that advised nothing.
+ */
+export class SkillHandler implements ProtocolHandler {
+  readonly scheme = "skill";
   readonly immutable = true;
-  readonly scheme: string;
-  readonly description: string;
+  readonly description =
+    "Bundled task procedures. Read a named skill from the prompt catalog when the task matches; an empty name lists them.";
+
   readonly #entries: readonly GuidanceEntry[];
 
-  constructor(scheme: "rule" | "skill", entries: readonly GuidanceEntry[]) {
-    this.scheme = scheme;
+  constructor(entries: readonly GuidanceEntry[]) {
     this.#entries = entries;
-    this.description =
-      scheme === "rule"
-        ? "Bundled policy already applied to this run. Read a named rule only to revisit it; enumeration is optional."
-        : "Bundled task procedures. Choose a named skill from the prompt catalog when relevant.";
   }
 
   resolve(
@@ -41,14 +46,14 @@ export class GuidanceHandler implements ProtocolHandler {
     const content =
       entry?.content ??
       [
-        `# Available ${this.scheme === "rule" ? "rules" : "skills"}`,
+        "# Available skills",
         ...(this.#entries.length === 0
           ? [
               "No entries are configured. Continue with the supplied instructions; do not retry discovery.",
             ]
           : this.#entries.map(
               (candidate) =>
-                `- ${this.scheme}://${candidate.name} — ${candidate.description}`
+                `- skill://${candidate.name} — ${candidate.description}`
             )),
       ].join("\n");
     return Promise.resolve({

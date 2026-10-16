@@ -51,7 +51,7 @@ describeWithImage("build sandbox runtimes", () => {
         "sh",
         [
           "-c",
-          "node --version && python3 --version && python3 -c \"import fastapi,httpx,matplotlib,numpy,openpyxl,pandas,PIL,plotly,pydantic,pytest,seaborn,uvicorn; assert matplotlib.get_backend().lower() == 'agg'\" && go version && test -x /opt/reasonate/templates/next-shadcn/node_modules/.bin/vitest && test -x /opt/reasonate/templates/next-shadcn/node_modules/.bin/next",
+          "node --version && python3 --version && python3 -c \"import docx,fastapi,httpx,matplotlib,numpy,openpyxl,pandas,pdfplumber,PIL,plotly,pydantic,pypdf,pytest,reportlab,seaborn,uvicorn; assert matplotlib.get_backend().lower() == 'agg'\" && go version && test -x /opt/reasonate/templates/next-shadcn/node_modules/.bin/vitest && test -x /opt/reasonate/templates/next-shadcn/node_modules/.bin/next",
         ],
         { cwd: "/workspace", timeout: 10_000 }
       );

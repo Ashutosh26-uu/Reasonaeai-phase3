@@ -33,6 +33,8 @@ Rejecting an item requires recording the decision and reason before removing it.
 
 - Live sandbox browser-use streaming in its own conversation workspace tab, separate from the checkpoint-backed App preview. Deferred explicitly while generic session tabs, files/diffs/activity, and running app previews are implemented; requires an authorized browser-session/evidence transport rather than copying local desktop browser controls.
 
+- Design-rule calibration from observed generated output. The current `interface-design` rule, `frontend-design`, and `ui-review` carry a baseline defect catalog and an explicit "not defects" list, written from public collections rather than from our own generated pages. Improving them requires collected evidence: screenshots of generated interfaces across viewports, the defects a model actually ships (spacing rhythm, alignment drift, nested surfaces, state omissions), the false positives our own reviewer raises, and a regression example per corrected pattern. Do not expand the catalog from opinion; every added anti-pattern should name a defect observed in a real generated app.
+
 - Conditional mid-turn rule matching is deferred. The current CTO uses concise bundled policy, relevant procedures, and effect-based authorization. Do not add blanket keyword-triggered interruptions; revisit a matcher only with a specific evidenced failure and evaluation of false positives, provenance, and resume behavior.
 - Safe user-authored executable skills after isolation, provenance, review, signing, permission, and revocation controls exist.
 - Additional specialist models selected through repeatable cost-per-verified-task evaluation.

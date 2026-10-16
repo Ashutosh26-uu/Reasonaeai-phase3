@@ -14,7 +14,7 @@
  */
 
 import type { InstructionSource } from "../../context/instructions.js";
-import { BUNDLED_SKILLS } from "../../guidance/catalog.js";
+import { BUNDLED_SKILLS } from "../../guidance/bundled.js";
 import type { RunScope } from "../../run-scope.js";
 import { createFormatReaders } from "../../tools/readers/registry.js";
 import type { FormatReader } from "../../tools/readers/types.js";
@@ -26,8 +26,8 @@ import { AgentOutputHandler } from "./agent.js";
 import { ArtifactHandler } from "./artifact.js";
 import type { DocsRoot } from "./docs.js";
 import { DocsHandler } from "./docs.js";
-import { GuidanceHandler } from "./guidance.js";
 import { RuleHandler } from "./rule.js";
+import { SkillHandler } from "./skill.js";
 
 export interface RunResourceOptions {
   /** Working directory of the run, used to discover the project's rules. */
@@ -76,7 +76,7 @@ export function createRunResources(options: RunResourceOptions): RunResources {
       home: options.home,
       sources: options.instructionSources,
     }),
-    new GuidanceHandler("skill", BUNDLED_SKILLS),
+    new SkillHandler(BUNDLED_SKILLS),
   ];
 
   if (options.docsRoots !== undefined && options.docsRoots.length > 0) {
