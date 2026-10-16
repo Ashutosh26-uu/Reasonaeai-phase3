@@ -1272,7 +1272,7 @@ export function createProjectStateStore(config: {
          select r.run_id::text as id, 'user'::text as role,
                 r.user_message as text, r.created_at, null::text as source_id,
                 null::text as reasoning, 0 as position, r.run_id,
-                coalesce((select jsonb_agg(jsonb_build_object('filename', file.value->>'filename', 'mediaType', file.value->>'mediaType', 'sizeBytes', (length(rtrim(split_part(file.value->>'data', ',', 2), '='))*3/4)) order by file.ordinality) from jsonb_array_elements(r.user_attachments) with ordinality as file(value,ordinality)), '[]'::jsonb) as user_attachments
+                coalesce((select jsonb_agg(jsonb_strip_nulls(jsonb_build_object('filename', file.value->>'filename', 'mediaType', file.value->>'mediaType', 'origin', file.value->>'origin', 'paste', file.value->'paste', 'sizeBytes', (length(rtrim(split_part(file.value->>'data', ',', 2), '='))*3/4))) order by file.ordinality) from jsonb_array_elements(r.user_attachments) with ordinality as file(value,ordinality)), '[]'::jsonb) as user_attachments
            from runs r join conversation_history history on history.run_id=r.run_id
           where history.build_session_id = $1 and r.organization_id = $2
             and r.project_id = $3 and r.user_message is not null

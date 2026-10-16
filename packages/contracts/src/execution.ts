@@ -120,6 +120,22 @@ export const AttachmentFilenameSchema = z
     );
   }, "Use a valid filename within 255 UTF-8 bytes, without path separators or control characters.");
 
+/** Bounded presentation metadata; the original paste remains in its durable file. */
+export const PastePresentationSchema = z.strictObject({
+  charCount: z
+    .number()
+    .int()
+    .min(1)
+    .max(4 * 1024 * 1024),
+  lineCount: z
+    .number()
+    .int()
+    .min(1)
+    .max(4 * 1024 * 1024 + 1),
+  preview: z.string().max(512),
+});
+export type PastePresentation = z.infer<typeof PastePresentationSchema>;
+
 /** An attachment accepted with a user turn and forwarded to the run worker. */
 export const PromptAttachmentSchema = z
   .strictObject({
@@ -130,8 +146,28 @@ export const PromptAttachmentSchema = z
       .regex(/^data:[^;,]+;base64,[A-Za-z0-9+/]+=*$/),
     filename: AttachmentFilenameSchema,
     mediaType: z.string().min(1).max(128),
+    origin: z.enum(["upload", "paste"]).optional(),
+    paste: PastePresentationSchema.optional(),
   })
   .superRefine((attachment, context) => {
+    if (
+      (attachment.paste || attachment.origin === "paste") &&
+      attachment.mediaType !== "text/plain"
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Pasted text must use text/plain.",
+      });
+    }
+    if (
+      (attachment.origin === "upload" && attachment.paste) ||
+      (attachment.origin === "paste" && !attachment.paste)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Attachment origin does not match its paste presentation.",
+      });
+    }
     const dataMediaType = attachment.data.slice(
       5,
       attachment.data.indexOf(";")
@@ -191,6 +227,8 @@ export function conversationAttachmentUrl(input: {
 export const ConversationAttachmentSchema = z.strictObject({
   filename: z.string().min(1).max(255),
   mediaType: z.string().min(1).max(128),
+  origin: z.enum(["upload", "paste"]).optional(),
+  paste: PastePresentationSchema.optional(),
   sizeBytes: z
     .number()
     .int()

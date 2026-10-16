@@ -16,6 +16,59 @@ function file(
 }
 
 describe("submitted attachments", () => {
+  it("shows a paste as its own readable text preview beside images and PDFs", () => {
+    const pasted = {
+      ...file("pasted-text-1234abcd.txt", "text/plain"),
+      paste: {
+        charCount: 9000,
+        lineCount: 120,
+        preview: "First line\n<script>reference only</script>\nThird line",
+      },
+    };
+    const html = renderToStaticMarkup(
+      <SubmittedAttachments
+        files={[
+          file("reference.png", "image/png"),
+          pasted,
+          file("brief.pdf", "application/pdf"),
+        ]}
+      />
+    );
+    expect(html).toContain("Pasted text");
+    expect(html).toContain("120 lines");
+    expect(html).toContain("First line");
+    expect(html).toContain("&lt;script&gt;reference only&lt;/script&gt;");
+    expect(html).not.toContain("<script>");
+    expect(html).not.toContain("pasted-text-1234abcd.txt");
+    expect(html).not.toContain("TXT ·");
+    expect(html).toContain("brief.pdf");
+  });
+  it("recognizes pre-metadata generated pastes without relabeling ordinary text uploads", () => {
+    const html = renderToStaticMarkup(
+      <SubmittedAttachments
+        files={[
+          file("pasted-text-1234abcd.txt", "text/plain"),
+          file("notes.txt", "text/plain"),
+        ]}
+      />
+    );
+    expect(html).toContain('aria-label="Read pasted text"');
+    expect(html).toContain("Open to preview pasted content");
+    expect(html).toContain("notes.txt");
+    expect(html).toContain("TXT · 2 KB");
+    const uploaded = renderToStaticMarkup(
+      <SubmittedAttachments
+        files={[
+          {
+            ...file("pasted-text-1234abcd.txt", "text/plain"),
+            origin: "upload",
+          },
+        ]}
+      />
+    );
+    expect(uploaded).not.toContain("Read pasted text");
+    expect(uploaded).toContain("pasted-text-1234abcd.txt");
+  });
   it("keeps mixed files in submission order with accessible image and file actions", () => {
     const files = [
       file("reference.png", "image/png"),

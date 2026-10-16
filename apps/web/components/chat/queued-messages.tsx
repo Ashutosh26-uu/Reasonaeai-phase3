@@ -7,6 +7,7 @@ import {
   DropdownMenuTrigger,
 } from "@reasonateai/ui/components/dropdown-menu";
 import {
+  ClipboardPaste,
   CornerDownRight,
   FileText,
   ListEnd,
@@ -65,6 +66,7 @@ export function QueuedMessageRow({
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(queued.message);
   const [attachment] = queued.attachments;
+  const FileIcon = attachment?.paste ? ClipboardPaste : FileText;
   const beginEdit = useCallback(() => {
     setText(queued.message);
     setEditing(true);
@@ -108,7 +110,7 @@ export function QueuedMessageRow({
                 width={28}
               />
             ) : (
-              <FileText aria-hidden="true" size={18} />
+              <FileIcon aria-hidden="true" size={18} />
             )}
             {queued.attachments.length > 1 && (
               <small>+{queued.attachments.length - 1}</small>
@@ -116,7 +118,8 @@ export function QueuedMessageRow({
           </span>
         )}
         <p className={styles.queuedText} title={queued.message}>
-          {queued.message || attachment?.filename}
+          {queued.message ||
+            (attachment?.paste ? "Pasted text" : attachment?.filename)}
         </p>
         <div className={styles.queuedActions}>
           <button

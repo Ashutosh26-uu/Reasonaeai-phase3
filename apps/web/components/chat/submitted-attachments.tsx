@@ -16,6 +16,8 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { useCallback, useState } from "react";
+import { PastedText } from "@/components/ai-elements/pasted-text";
+import { isLegacyPaste } from "@/lib/pasted-attachment";
 
 const FILE_EXTENSION = /^[a-z0-9]{1,8}$/;
 
@@ -61,6 +63,9 @@ function SubmittedFile({ file }: { file: ConversationAttachment }) {
   const image = ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(
     file.mediaType
   );
+  if (file.paste || isLegacyPaste(file)) {
+    return <PastedText file={file} />;
+  }
   if (!(file.url && image)) {
     const { Icon, label } = filePresentation(file);
     return (

@@ -442,7 +442,13 @@ describeWithDatabase("build session routes", () => {
     );
   });
 
-  it("accepts an image attachment on a later turn and returns only its metadata in history", async () => {
+  it("retains image and paste presentation metadata in history without exposing encoded originals", async () => {
+    const pastedText = "First line\r\nSecond line\n終わり";
+    const paste = {
+      charCount: pastedText.length,
+      lineCount: 3,
+      preview: "First line\nSecond line\n終わり",
+    };
     const allocated = await handlers.allocate(
       allocationRequest({ body: body() })
     );
@@ -470,6 +476,14 @@ describeWithDatabase("build session routes", () => {
               data: "data:image/png;base64,aGVsbG8=",
               filename: "wireframe.png",
               mediaType: "image/png",
+              origin: "upload",
+            },
+            {
+              data: `data:text/plain;base64,${Buffer.from(pastedText).toString("base64")}`,
+              filename: "pasted-text-1234abcd.txt",
+              mediaType: "text/plain",
+              origin: "paste",
+              paste,
             },
           ],
           message: "Review this screen",
@@ -498,7 +512,18 @@ describeWithDatabase("build session routes", () => {
           {
             filename: "wireframe.png",
             mediaType: "image/png",
+            origin: "upload",
             sizeBytes: 5,
+            url: expect.stringContaining(
+              `/v1/build-sessions/${buildSessionId}/attachments/`
+            ),
+          },
+          {
+            filename: "pasted-text-1234abcd.txt",
+            mediaType: "text/plain",
+            origin: "paste",
+            paste,
+            sizeBytes: Buffer.byteLength(pastedText),
             url: expect.stringContaining(
               `/v1/build-sessions/${buildSessionId}/attachments/`
             ),
@@ -509,13 +534,14 @@ describeWithDatabase("build session routes", () => {
     );
     const attachmentContext = (
       cookie = ownerCookie,
-      conversation = buildSessionId
+      conversation = buildSessionId,
+      index = "0"
     ) =>
       context({
         cookie,
         params: {
           buildSessionId: conversation,
-          index: "0",
+          index,
           runId: attachmentRunId,
         },
         query: { organizationId, projectId },
@@ -523,6 +549,13 @@ describeWithDatabase("build session routes", () => {
     const original = await handlers.attachment(attachmentContext());
     expect(original.status).toBe(200);
     expect(await original.text()).toBe("hello");
+    expect(
+      await (
+        await handlers.attachment(
+          attachmentContext(ownerCookie, buildSessionId, "1")
+        )
+      ).text()
+    ).toBe(pastedText);
     expect((await handlers.attachment(attachmentContext(""))).status).toBe(401);
     expect(
       (
@@ -538,6 +571,7 @@ describeWithDatabase("build session routes", () => {
     expect(encoded.rows[0].user_attachments[0].data).toBe(
       "data:image/png;base64,aGVsbG8="
     );
+    expect(encoded.rows[0].user_attachments[1].paste).toEqual(paste);
     // Historical intake allowed noncanonical padding accepted by Node's decoder.
     await pool.query(
       "update runs set user_attachments=jsonb_set(user_attachments,'{0,data}',$2::jsonb) where run_id=$1",

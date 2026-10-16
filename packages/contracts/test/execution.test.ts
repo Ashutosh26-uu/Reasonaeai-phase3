@@ -8,6 +8,7 @@ import {
   canAdvanceProductLifecycle,
   DeploymentSchema,
   isShareableDeployment,
+  PromptAttachmentSchema,
 } from "../src/execution.js";
 
 const ids = {
@@ -22,6 +23,40 @@ const ids = {
 const now = "2026-09-19T12:00:00.000Z";
 
 describe("product execution contracts", () => {
+  it("retains bounded paste presentation while keeping ordinary uploads unchanged", () => {
+    const paste = { charCount: 12, lineCount: 2, preview: "First\nSecond" };
+    const input = {
+      data: "data:text/plain;base64,Rmlyc3QKU2Vjb25k",
+      filename: "notes.txt",
+      mediaType: "text/plain",
+      paste,
+    };
+    expect(PromptAttachmentSchema.parse(input).paste).toEqual(paste);
+    expect(
+      PromptAttachmentSchema.safeParse({
+        ...input,
+        paste: { ...paste, preview: "x".repeat(513) },
+      }).success
+    ).toBe(false);
+    expect(
+      PromptAttachmentSchema.safeParse({
+        ...input,
+        data: "data:image/png;base64,YQ==",
+        mediaType: "image/png",
+      }).success
+    ).toBe(false);
+    const { paste: _paste, ...upload } = input;
+    expect(PromptAttachmentSchema.parse(upload)).not.toHaveProperty("paste");
+    expect(
+      PromptAttachmentSchema.parse({ ...upload, origin: "upload" }).origin
+    ).toBe("upload");
+    expect(
+      PromptAttachmentSchema.safeParse({ ...input, origin: "upload" }).success
+    ).toBe(false);
+    expect(
+      PromptAttachmentSchema.safeParse({ ...upload, origin: "paste" }).success
+    ).toBe(false);
+  });
   it("preserves literal attachment names while rejecting paths and control characters", () => {
     for (const filename of [
       "notes:raw",

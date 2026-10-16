@@ -1,6 +1,16 @@
 # Attachment handling: Oh My Pi and ReasonateAI
 
-Research date: October 15, 2026.
+Research dates: October 15–16, 2026.
+
+## October 16 paste presentation follow-up
+
+The preferred local checkout `C:/Users/wwwmo/reference-projects/oh-my-pi` was fast-forward updated to `a536558dc21634462c1b2647676953204569779c`, preserving its untracked `findings/` notes. The broad fetch initially disconnected; a main-only fetch succeeded. The duplicate `oh-my-pi-src` is clean, has one main branch/worktree, and its HEAD is an ancestor of the retained checkout. Automatic approval review rejected recursive deletion, so the duplicate still exists; removal is not claimed.
+
+The current terminal composer treats pasted text as a distinct attachment, not a filename card. Its attachment band uses a rounded card with a paste icon/number, the leading four lines, and a `+N lines` caption (or `N chars` for a single line). Images occupy the same card geometry with image-specific content/captions. Source: [attachment card rendering](https://github.com/can1357/oh-my-pi/blob/a536558dc21634462c1b2647676953204569779c/packages/tui/src/prompt/attachment-chips.ts#L42).
+
+`insertTextAttachment` records the paste text/counts and inserts a compact token backed by an editor atom. Removing the token removes its submitted attachment; submission expands the stored atom. The configurable large-paste menu separately offers a wrapped block, a local file, or inline text; cancellation retains the paste. The local-file option writes `local://paste-N.md`, whereas the default text chip does not itself mean a saved `.txt` upload. Sources: [text attachment staging](https://github.com/can1357/oh-my-pi/blob/a536558dc21634462c1b2647676953204569779c/packages/tui/src/prompt/custom-editor.ts#L719), [large-paste choices](https://github.com/can1357/oh-my-pi/blob/a536558dc21634462c1b2647676953204569779c/packages/coding-agent/src/modes/controllers/input-controller.ts#L2499).
+
+The implemented web adaptation keeps the user's required encoded and file originals, and changes the presentation to a clipboard card with a bounded leading excerpt, line/character count and original-text viewer. Origin/presentation metadata is retained through draft, queue, submission and history. A real text-file upload remains a file card, including newly uploaded files whose names happen to resemble old generated paste names. Reference content remains untrusted text; none of its instructions become project policy. Current acceptance and recovery evidence is in the operational record below.
 
 ## Authorized follow-up and implementation
 
