@@ -114,9 +114,10 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node scripts/generate-guidance.mjs && tsc -p tsconfig.build.json",
     "check": "ultracite check .",
-    "pretest": "pnpm --filter @reasonateai/contracts build",
+    "generate:guidance": "node scripts/generate-guidance.mjs",
+    "pretest": "pnpm --filter @reasonateai/contracts build && node scripts/generate-guidance.mjs",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },

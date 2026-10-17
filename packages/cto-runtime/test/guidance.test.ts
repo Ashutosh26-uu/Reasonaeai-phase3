@@ -1,7 +1,9 @@
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Agent } from "@mastra/core/agent";
 import { RequestContext } from "@mastra/core/request-context";
 import {
@@ -11,7 +13,12 @@ import {
 } from "@mastra/core/workspace";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadWorkspaceInstructions } from "../src/context/workspace-instructions.js";
-import { BUNDLED_RULES, BUNDLED_SKILLS } from "../src/guidance/catalog.js";
+import { BUNDLED_RULES, BUNDLED_SKILLS } from "../src/guidance/bundled.js";
+import {
+  renderBundledRules,
+  renderRuleCatalog,
+  renderSkillCatalog,
+} from "../src/guidance/catalog.js";
 import { createRunResources } from "../src/resources/handlers/index.js";
 import { readRunScope, runScopeKeys } from "../src/run-scope.js";
 import { createReasonateCtoRuntime } from "../src/runtime.js";
@@ -34,6 +41,106 @@ afterEach(async () => {
       .splice(0)
       .map((path) => rm(path, { force: true, recursive: true }))
   );
+});
+
+describe("bundled guidance composition", () => {
+  it("keeps the always-applied policy small and scoped rules out of the prompt", () => {
+    const applied = renderBundledRules();
+    const always = BUNDLED_RULES.filter((rule) => rule.always);
+    const scoped = BUNDLED_RULES.filter((rule) => !rule.always);
+
+    expect(always.length).toBeGreaterThan(0);
+    expect(scoped.length).toBeGreaterThan(0);
+    for (const rule of always) {
+      expect(applied).toContain(rule.content);
+      expect(rule.globs).toEqual([]);
+      expect(renderRuleCatalog()).not.toContain(`rule://${rule.name} (`);
+    }
+    for (const rule of scoped) {
+      // A scoped rule is advertised, never injected: the whole point is that a Go
+      // rule costs no context on a Next.js run.
+      expect(applied).not.toContain(rule.content);
+      expect(renderRuleCatalog()).toContain(
+        `- rule://${rule.name} (${rule.globs.join(", ")}) — ${rule.description}`
+      );
+    }
+  });
+
+  it("advertises every skill by name and description", () => {
+    const catalog = renderSkillCatalog();
+    for (const skill of BUNDLED_SKILLS) {
+      expect(catalog).toContain(
+        `- skill://${skill.name} — ${skill.description}`
+      );
+    }
+  });
+
+  it("lists scoped rules and skills through the read surface", async () => {
+    const { root, scope } = await fixture();
+    const { router } = createRunResources({
+      cwd: "/workspace",
+      instructionSources: [],
+      root,
+      scope,
+    });
+    const context = { cwd: "/workspace", scope };
+    const rules = await router.resolve("rule://", context);
+    const skills = await router.resolve("skill://", context);
+    for (const rule of BUNDLED_RULES) {
+      expect(rules.content).toContain(`rule://${rule.name}`);
+    }
+    for (const skill of BUNDLED_SKILLS) {
+      expect(skills.content).toContain(`skill://${skill.name}`);
+    }
+    const scoped = await router.resolve("rule://typescript", context);
+    expect(scoped.content).toBe(
+      BUNDLED_RULES.find((rule) => rule.name === "typescript")?.content
+    );
+  });
+
+  it("gives the CTO the policy inline and the scoped catalogs by reference", async () => {
+    const { filesystem, requestContext } = await fixture();
+    const workspace = new Workspace({ filesystem, id: "guidance-prompt" });
+    const runtime = createReasonateCtoRuntime({
+      budget: { tokens: 100 },
+      model: "deepseek/deepseek-flash",
+      workspace,
+      workspaceRoot: "/workspace",
+    });
+    const prompt = await runtime.mainAgent.getInstructions({ requestContext });
+
+    for (const rule of BUNDLED_RULES.filter((entry) => entry.always)) {
+      expect(prompt).toContain(rule.content);
+    }
+    const scoped = BUNDLED_RULES.filter((entry) => !entry.always);
+    for (const rule of scoped) {
+      // The bulk of a scoped rule must not be in the prompt: the catalog line is
+      // what buys the on-demand read, and the body is what it costs.
+      expect(prompt).not.toContain(rule.content);
+      expect(prompt).toContain(
+        `rule://${rule.name} (${rule.globs.join(", ")})`
+      );
+    }
+    for (const skill of BUNDLED_SKILLS) {
+      expect(prompt).toContain(`skill://${skill.name} — ${skill.description}`);
+      expect(prompt).not.toContain(skill.content);
+    }
+  });
+
+  it("keeps the generated module current with the authored markdown", () => {
+    // A rule edited without regenerating would otherwise ship the previous
+    // wording to every run, which no runtime check can detect.
+    expect(() =>
+      execFileSync(
+        process.execPath,
+        ["scripts/generate-guidance.mjs", "--check"],
+        {
+          cwd: fileURLToPath(new URL("..", import.meta.url)),
+          stdio: "pipe",
+        }
+      )
+    ).not.toThrow();
+  });
 });
 
 describe("bundled guidance and verified project instructions", () => {

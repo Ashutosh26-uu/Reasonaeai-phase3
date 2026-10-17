@@ -1,18 +1,23 @@
 # Compact, general-purpose Python environment for data, APIs, visualization,
-# and common raster image processing. requirements.lock pins transitive versions
-# and hashes for reproducible, offline-at-runtime image builds.
+# raster image processing, and document authoring (PDF and Word).
+# requirements.lock pins transitive versions and hashes for reproducible,
+# offline-at-runtime image builds.
 fastapi
 httpx
 matplotlib
 numpy
 openpyxl
 pandas
+pdfplumber
 pillow
 plotly
 pydantic
+pypdf
 pytest
+python-docx
 python-dotenv
 python-multipart
+reportlab
 ruff
 seaborn
 uvicorn[standard]

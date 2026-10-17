@@ -25,7 +25,11 @@ import { composeSystemPrompt } from "./context/compose.js";
 import type { PlatformFacts, SandboxCapacity } from "./context/environment.js";
 import type { InstructionSource } from "./context/instructions.js";
 import { loadWorkspaceInstructions } from "./context/workspace-instructions.js";
-import { renderBundledRules, renderSkillCatalog } from "./guidance/catalog.js";
+import {
+  renderBundledRules,
+  renderRuleCatalog,
+  renderSkillCatalog,
+} from "./guidance/catalog.js";
 import { deepseekReasoningCompat } from "./model/deepseek-reasoning.js";
 import { MAIN_AGENT_INSTRUCTIONS, REASONATE_CTO_NAME } from "./prompts.js";
 import { createTestExecutionTool } from "./repair/test-tool.js";
@@ -437,6 +441,7 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
         basePrompt: [
           basePrompt,
           renderBundledRules(),
+          renderRuleCatalog(),
           renderSkillCatalog(),
           attachmentIndex(runAttachments(requestContext)),
         ].join("\n\n"),

@@ -17,7 +17,7 @@ import {
   type InstructionSource,
   loadInstructionSource,
 } from "../../context/instructions.js";
-import { BUNDLED_RULES } from "../../guidance/catalog.js";
+import { BUNDLED_RULES } from "../../guidance/bundled.js";
 import type {
   InternalResource,
   ParsedResourceUrl,
@@ -40,7 +40,7 @@ export class RuleHandler implements ProtocolHandler {
   readonly scheme = "rule";
   readonly immutable = true;
   readonly description =
-    "Bundled policy and loaded project instructions, already included in the prompt. Revisit a named rule only when needed; enumeration is optional.";
+    "Bundled policy, scoped bundled rules, and loaded project instructions. Policy is already applied; read a named rule only when the files it governs are in scope.";
 
   readonly #cwd: string;
   readonly #home: string | undefined;
@@ -119,10 +119,12 @@ export class RuleHandler implements ProtocolHandler {
   ): InternalResource {
     const content = [
       "# Applied rules",
-      "Bundled policy is already applied. This listing is optional; continue with your task instead of rereading every rule.",
+      "Bundled policy is already applied and needs no re-reading. A scoped rule is worth reading only when the files it governs are in scope. This listing is optional.",
       "",
-      ...BUNDLED_RULES.map(
-        (rule) => `- rule://${rule.name} — ${rule.description}`
+      ...BUNDLED_RULES.map((rule) =>
+        rule.always
+          ? `- rule://${rule.name} — applied to every run. ${rule.description}`
+          : `- rule://${rule.name} (${rule.globs.join(", ")}) — ${rule.description}`
       ),
       ...(candidates.length === 0
         ? ["No project-specific instruction files are configured."]
