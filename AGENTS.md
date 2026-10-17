@@ -61,6 +61,19 @@ These context files are living repository state, not passive documentation. Upda
 6. Exercise the actual changed path. Fix the owning code rather than suppressing errors or weakening checks.
 7. Update canonical context, operational documentation, and version metadata when their contracts changed.
 8. Commit only a coherent, verified unit of work.
+9. After the pull request merges, record the delivered outcome in the company Notion tracker. See *Delivery record* below.
+
+## Delivery record
+
+Delivery status lives in the company Notion workspace, not in this repository alone. Any agent that merges, hands off, or reports completion of work updates it in the same session, before that report.
+
+- Parent page: **ReasonateAI — Team Roles & Delivery Plan**.
+- Tracker: **Workstream Delivery Tracker**, data source `collection://d398cb20-0545-4e67-8f98-68c34a8acf50`.
+- Fill every property that has a value: `Task / Deliverable` (the outcome, not the commit), `Status`, `Phase`, `Role / Workstream`, `Priority`, `Risk`, `Owned Area`, `Acceptance Criteria`, `Evidence Link` (the pull request URL), `Proof of Work` (the commands or scenarios run and their results, including hosted checks), `Blocker / Next Action`, and `Assignee`.
+- Search the tracker before writing. Update the row for that workstream instead of adding a duplicate; create a row only when the outcome has none.
+- Set `Status` to Done only when every applicable Definition of Done criterion is met. Otherwise record the unmet criterion in `Blocker / Next Action`.
+- Record verification limits as plainly as results. An unmeasured behavior, an unreviewed change, and a capability the environment cannot verify all belong in the row.
+- Never write secrets, credentials, usable tokens, or customer data into the tracker.
 
 ## Completion standard
 
@@ -139,6 +152,8 @@ Formatting and linting are owned by Ultracite/Biome. Do not add ESLint, Prettier
 - Mastra's model router is the provider/model adapter layer. The CTO owns planning, required approval, implementation, delegation, integration, verification, deployment, and completion; every worker remains constrained by a short-lived workload grant and may not bypass company policy or communicate through unrecorded direct chat.
 - Mastra does not replace centralized authorization, capability/tool gates, approval policy, budgets, audit, tenant isolation, secret brokerage, evidence acceptance, deployment policy, or recovery.
 - Runtime rules define constraints and are applied automatically; skills are task procedures loaded by name when relevant. Neither can expand a verified grant. Project instructions are loaded from the scoped workspace, never the API/worker host's home. Safety decisions follow actual effects and scope, not keyword alarms. Review meaningful implementation changes with an ephemeral reviewer; command-capable verification is not a read-only security guarantee.
+- Bundled rules and skills are company-authored markdown in `packages/cto-runtime/guidance/`, embedded into the compiled module at build time by `packages/cto-runtime/scripts/generate-guidance.mjs`. Never edit the generated module by hand: edit the markdown and regenerate. An `always: true` rule is injected into every system prompt, a rule with `globs` is advertised by name and read on demand, and a skill is chosen by its description. Always-applied guidance is paid for on every model step of every run, so that set stays small; a language- or stack-specific rule belongs in the scoped set.
+- The sandbox image's Python baseline is hash-locked. Add a package to `services/build-sandbox/python/requirements.in`, regenerate `requirements.lock` with the command recorded in its own header, and extend the container import assertion in `apps/worker/test/sandbox-runtime.test.ts`. Never hand-edit the lock, never install a Python package at sandbox run time, and treat a package's absence from the baseline as a recorded size decision rather than an oversight.
 - PostgreSQL is authoritative for commands, state transitions, idempotency keys, run leases, artifact metadata, and a sequenced event ledger. A transactional outbox publishes to Redis Streams; Redis is transport and never the sole record of work or user-visible state.
 - A mutable sandbox filesystem is restored from private Git checkpoints and durable project state. Immutable artifacts live in private tenant-scoped object storage behind validated manifests and short-lived authorized URLs. Parallel workers require task ownership and per-file mutation locks before sharing a workspace.
 - The public API exposes only company-owned authenticated product routes. Raw Mastra agent/controller routes, worker endpoints, sandbox control, and deployment control are private; browser commands use HTTPS JSON and browser progress uses replayable SSE.

@@ -64,9 +64,9 @@ Primary sources were inspected on 2026-10-03. These informed the contract; sampl
 
 Implementation lives in runtime prompts, guidance markdown, `guidance/catalog`, scoped instruction loading, and resource handlers. Product/policy decisions belong in AGENTS.md and .context/SPEC.md; delivery status belongs in .context/PHASE.md.
 
-### Language, framework, and design coverage (2026-10-16)
+### Language, framework, and design coverage (2026-10-17)
 
-The scoped rules and the language, framework, and interface skills were written for this runtime against the versions the sandbox image actually pins. Public collections were consulted for topic coverage, current API facts, and the catalog of defects agents generate by default — no third-party text was reproduced. Licenses were verified on 2026-10-16 and the full table with URLs lives in [SOURCES.md](../../packages/cto-runtime/guidance/SOURCES.md).
+The scoped rules and the language, framework, and interface skills were written for this runtime against the versions the sandbox image actually pins. Public collections were consulted for topic coverage, current API facts, and the catalog of defects agents generate by default — no third-party text was reproduced. Licenses were verified on 2026-10-17 and the full table with URLs lives in [SOURCES.md](../../packages/cto-runtime/guidance/SOURCES.md).
 
 | Source (license) | What it contributed |
 | --- | --- |
@@ -85,7 +85,7 @@ The design rules deliberately carry a "not defects" list beside the anti-pattern
 
 Contract tests and the real Docker guidance smoke cover empty listings, named guidance, scoped imports, tool availability, and command diagnostics. Repository tests exercise PostgreSQL/Redis/Docker when provided. Exact commands/results belong in the pull request.
 
-### Scoped guidance revision (2026-10-16)
+### Scoped guidance revision (2026-10-17)
 
 Verified for `@reasonateai/cto-runtime`:
 

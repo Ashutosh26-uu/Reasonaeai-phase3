@@ -6,7 +6,7 @@ Node/TypeScript, Python, and Go stacks the product target. No third-party text i
 verbatim.
 
 The following public collections were consulted for topic coverage, current API facts, and the
-catalog of defects that agents generate by default. Licenses verified on 2026-10-16.
+catalog of defects that agents generate by default. Licenses verified on 2026-10-17.
 
 | Source | URL | License | Used for |
 | --- | --- | --- | --- |
