@@ -74,19 +74,20 @@ suite("retained conversation memory", { timeout: 60_000 }, () => {
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0]).toMatchObject({
       content: {
-        experimental_attachments: [
-          {
-            contentType: sketch.mediaType,
-            name: sketch.filename,
-            url: sketch.data,
-          },
+        experimental_attachments: [],
+        parts: [
+          expect.objectContaining({
+            text: expect.stringContaining(
+              `attachment://${fixture.candidate.runId}/0`
+            ),
+            type: "text",
+          }),
         ],
-        parts: [],
       },
       role: "user",
     });
   });
-  it("imports only the retained prefix, delivered steering, saved question answers and original images, idempotently", async () => {
+  it("imports only the retained prefix, delivered steering, saved question answers and stable attachment references, idempotently", async () => {
     const image = {
       data: "data:image/png;base64,aGVsbG8=",
       filename: "idea.png",
@@ -191,7 +192,8 @@ suite("retained conversation memory", { timeout: 60_000 }, () => {
     expect(text).toContain("Keep navigation simple");
     expect(text).toContain("Use purple");
     expect(text).not.toContain("Never delivered");
-    expect(text.split(image.data)).toHaveLength(2);
+    expect(text).not.toContain(image.data);
+    expect(text).toContain(`attachment://${fixture.candidate.runId}/0`);
     expect(
       (
         await memory.listMessages({

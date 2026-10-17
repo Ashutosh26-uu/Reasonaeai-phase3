@@ -35,6 +35,7 @@
     "@reasonateai/sandbox": "workspace:*",
     "hono": "4.13.13",
     "jose": "6.2.12",
+    "pdfjs-dist": "6.4.299",
     "zod": "catalog:"
   },
   "devDependencies": {

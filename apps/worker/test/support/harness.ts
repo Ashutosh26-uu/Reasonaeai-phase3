@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { AgentControllerEvent } from "@mastra/core/agent-controller";
+import type { ArtifactStore } from "@reasonateai/artifact-store";
+import { createLocalArtifactStore } from "@reasonateai/artifact-store/local";
 import type {
   BuildSessionId,
   PromptAttachment,
@@ -62,6 +64,7 @@ export interface RunFixture {
 }
 
 export interface Harness {
+  artifacts: ArtifactStore;
   checkpoints: CheckpointStore;
   /** Removes the fixtures this harness created, and nothing else. */
   cleanup: () => Promise<void>;
@@ -94,6 +97,9 @@ export async function createHarness(input: {
   const createdOrganizations = new Set<string>();
 
   return {
+    artifacts: createLocalArtifactStore({
+      root: join(checkpointRoot, "artifacts"),
+    }),
     checkpoints: createGitCheckpointStore({ root: checkpointRoot }),
     cleanup: async () => {
       if (createdOrganizations.size === 0) {
@@ -214,6 +220,7 @@ export function createExecutor(input: {
   const renewIntervalMs = input.renewIntervalMs ?? leaseTtlMs / 4;
   const store = input.store ?? input.harness.store;
   return new RunExecutor({
+    artifacts: input.harness.artifacts,
     checkpoints: input.harness.checkpoints,
     config: {
       holder: input.holder,

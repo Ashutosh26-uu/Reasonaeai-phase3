@@ -1,5 +1,6 @@
 "use client";
 
+import type { PastePresentation } from "@reasonateai/contracts/execution";
 import {
   Command,
   CommandEmpty,
@@ -73,6 +74,14 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  filePastePresentation,
+  pastedTextAttachment,
+} from "@/lib/pasted-attachment";
+
+export type PromptInputFile = FileUIPart & {
+  paste?: PastePresentation | undefined;
+};
 
 // ============================================================================
 // Helpers
@@ -182,7 +191,7 @@ export interface AttachmentsContext {
   add: (files: File[] | FileList) => void;
   clear: () => void;
   fileInputRef: RefObject<HTMLInputElement | null>;
-  files: (FileUIPart & { id: string })[];
+  files: (PromptInputFile & { id: string })[];
   openFileDialog: () => void;
   remove: (id: string) => void;
 }
@@ -255,7 +264,7 @@ export const PromptInputProvider = ({
 
   // ----- attachments state (global when wrapped)
   const [attachmentFiles, setAttachmentFiles] = useState<
-    (FileUIPart & { id: string })[]
+    (PromptInputFile & { id: string })[]
   >([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // oxlint-disable-next-line eslint(no-empty-function)
@@ -273,6 +282,7 @@ export const PromptInputProvider = ({
         filename: file.name,
         id: nanoid(),
         mediaType: file.type,
+        paste: filePastePresentation(file),
         type: "file" as const,
         url: URL.createObjectURL(file),
       })),
@@ -482,7 +492,7 @@ export const PromptInputActionAddScreenshot = ({
 };
 
 export interface PromptInputMessage {
-  files: FileUIPart[];
+  files: PromptInputFile[];
   text: string;
 }
 
@@ -533,7 +543,7 @@ export const PromptInput = ({
   const formRef = useRef<HTMLFormElement | null>(null);
 
   // ----- Local attachments (only used when no provider)
-  const [items, setItems] = useState<(FileUIPart & { id: string })[]>([]);
+  const [items, setItems] = useState<(PromptInputFile & { id: string })[]>([]);
   const files = usingProvider ? controller.attachments.files : items;
 
   // ----- Local referenced sources (always local to PromptInput)
@@ -610,12 +620,13 @@ export const PromptInput = ({
             message: "Too many files. Some were not added.",
           });
         }
-        const next: (FileUIPart & { id: string })[] = [];
+        const next: (PromptInputFile & { id: string })[] = [];
         for (const file of capped) {
           next.push({
             filename: file.name,
             id: nanoid(),
             mediaType: file.type,
+            paste: filePastePresentation(file),
             type: "file",
             url: URL.createObjectURL(file),
           });
@@ -861,7 +872,7 @@ export const PromptInput = ({
 
       try {
         // Convert blob URLs to data URLs asynchronously
-        const convertedFiles: FileUIPart[] = await Promise.all(
+        const convertedFiles: PromptInputFile[] = await Promise.all(
           files.map(async ({ id: _id, ...item }) => {
             if (item.url?.startsWith("blob:")) {
               const dataUrl = await convertBlobUrlToDataUrl(item.url);
@@ -1033,6 +1044,14 @@ export const PromptInputTextarea = ({
       if (files.length > 0) {
         event.preventDefault();
         attachments.add(files);
+        return;
+      }
+      const text = event.clipboardData.getData("text/plain");
+      const file = pastedTextAttachment(text);
+      // An unsuccessful conversion must leave the clipboard text pasteable.
+      if (file && attachments.files.length < 5) {
+        event.preventDefault();
+        attachments.add([file]);
       }
     },
     [attachments]

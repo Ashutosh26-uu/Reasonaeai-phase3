@@ -54,6 +54,7 @@ import {
 import {
   BUILD_SESSION_COLLECTION_PATH,
   BUILD_SESSION_ITEM_PATH,
+  CONVERSATION_ATTACHMENT_PATH,
   CONVERSATION_MESSAGES_PATH,
   CONVERSATION_TURNS_PATH,
   createBuildSessionHandlers,
@@ -279,6 +280,7 @@ const projectStateMigrationMiddleware = {
 };
 
 const buildSessionHandlers = createBuildSessionHandlers({
+  artifacts: localArtifacts,
   resolvePrincipal: resolvePrincipalFrom,
   store: stateStore,
 });
@@ -474,7 +476,7 @@ export const mastra = new Mastra({
     reasonateCto: reasonateCtoRuntime.mainAgent,
   },
   bundler: {
-    externals: ["@duckdb/node-bindings"],
+    externals: ["@duckdb/node-bindings", "pdfjs-dist"],
     transpilePackages: [
       "@reasonateai/auth",
       "@reasonateai/contracts",
@@ -531,6 +533,10 @@ export const mastra = new Mastra({
       }),
       registerApiRoute(CONVERSATION_MESSAGES_PATH, {
         handler: (c) => buildSessionHandlers.history(c),
+        method: "GET",
+      }),
+      registerApiRoute(CONVERSATION_ATTACHMENT_PATH, {
+        handler: (c) => buildSessionHandlers.attachment(c),
         method: "GET",
       }),
       registerApiRoute(CONVERSATION_TURNS_PATH, {

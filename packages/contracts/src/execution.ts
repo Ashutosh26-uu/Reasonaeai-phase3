@@ -100,6 +100,42 @@ export const BuildSessionSchema = z.strictObject({
 });
 export type BuildSession = z.infer<typeof BuildSessionSchema>;
 
+export const AttachmentFilenameSchema = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine((name) => {
+    const bytes = new TextEncoder().encode(name);
+    return (
+      bytes.length <= 255 &&
+      new TextDecoder().decode(bytes) === name &&
+      name !== "." &&
+      name !== ".." &&
+      !name.includes("/") &&
+      !name.includes("\\") &&
+      Array.from(name).every(
+        (character) =>
+          character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127
+      )
+    );
+  }, "Use a valid filename within 255 UTF-8 bytes, without path separators or control characters.");
+
+/** Bounded presentation metadata; the original paste remains in its durable file. */
+export const PastePresentationSchema = z.strictObject({
+  charCount: z
+    .number()
+    .int()
+    .min(1)
+    .max(4 * 1024 * 1024),
+  lineCount: z
+    .number()
+    .int()
+    .min(1)
+    .max(4 * 1024 * 1024 + 1),
+  preview: z.string().max(512),
+});
+export type PastePresentation = z.infer<typeof PastePresentationSchema>;
+
 /** An attachment accepted with a user turn and forwarded to the run worker. */
 export const PromptAttachmentSchema = z
   .strictObject({
@@ -108,10 +144,30 @@ export const PromptAttachmentSchema = z
       .min(1)
       .max(6_000_000)
       .regex(/^data:[^;,]+;base64,[A-Za-z0-9+/]+=*$/),
-    filename: z.string().min(1).max(255),
+    filename: AttachmentFilenameSchema,
     mediaType: z.string().min(1).max(128),
+    origin: z.enum(["upload", "paste"]).optional(),
+    paste: PastePresentationSchema.optional(),
   })
   .superRefine((attachment, context) => {
+    if (
+      (attachment.paste || attachment.origin === "paste") &&
+      attachment.mediaType !== "text/plain"
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Pasted text must use text/plain.",
+      });
+    }
+    if (
+      (attachment.origin === "upload" && attachment.paste) ||
+      (attachment.origin === "paste" && !attachment.paste)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Attachment origin does not match its paste presentation.",
+      });
+    }
     const dataMediaType = attachment.data.slice(
       5,
       attachment.data.indexOf(";")
@@ -131,15 +187,54 @@ export const PromptAttachmentSchema = z
   });
 export type PromptAttachment = z.infer<typeof PromptAttachmentSchema>;
 
+export const AttachmentReferenceSchema = z.strictObject({
+  filename: AttachmentFilenameSchema,
+  index: z.number().int().min(0).max(4),
+  mediaType: z.string().min(1).max(128),
+  runId: z.uuid(),
+  sizeBytes: z
+    .number()
+    .int()
+    .min(0)
+    .max(4 * 1024 * 1024),
+});
+export type AttachmentReference = z.infer<typeof AttachmentReferenceSchema>;
+
+/** A scoped journal reference, never a browser token or a host filesystem path. */
+export function attachmentUri(runId: string, index: number): string {
+  return `attachment://${runId}/${index}`;
+}
+
+export function attachmentWorkspacePath(
+  runId: string,
+  index: number,
+  filename: string
+): string {
+  return `.reasonate/attachments/${runId}/${index}/${filename}`;
+}
+
+export function conversationAttachmentUrl(input: {
+  buildSessionId: string;
+  organizationId: string;
+  projectId: string;
+  runId: string;
+  index: number;
+}): string {
+  return `/v1/build-sessions/${input.buildSessionId}/attachments/${input.runId}/${input.index}?organizationId=${input.organizationId}&projectId=${input.projectId}`;
+}
+
 /** Safe attachment details shown in durable conversation history. */
 export const ConversationAttachmentSchema = z.strictObject({
   filename: z.string().min(1).max(255),
   mediaType: z.string().min(1).max(128),
+  origin: z.enum(["upload", "paste"]).optional(),
+  paste: PastePresentationSchema.optional(),
   sizeBytes: z
     .number()
     .int()
     .nonnegative()
     .max(4 * 1024 * 1024),
+  url: z.string().startsWith("/v1/build-sessions/").max(2048).optional(),
 });
 export type ConversationAttachment = z.infer<
   typeof ConversationAttachmentSchema

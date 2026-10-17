@@ -1,18 +1,21 @@
 "use client";
 
+import type { PastePresentation } from "@reasonateai/contracts/execution";
 import { FileText, Image as ImageIcon, X } from "lucide-react";
 import Image from "next/image";
 import { useCallback } from "react";
+import { PastedText } from "./pasted-text";
 
 export interface AttachmentItem {
   filename: string;
   id: string;
   mediaType: string;
+  paste?: PastePresentation | undefined;
   previewUrl?: string;
 }
 
 function AttachmentIcon({ item }: { item: AttachmentItem }) {
-  if (item.previewUrl) {
+  if (item.previewUrl && item.mediaType.startsWith("image/")) {
     return (
       <Image
         alt=""
@@ -67,11 +70,27 @@ export function Attachments({
   return (
     <ul aria-label="Attached files" className="prompt-attachments">
       {items.map((item) => (
-        <li className="prompt-attachment" key={item.id}>
-          <AttachmentIcon item={item} />
-          <span className="prompt-attachment-name" title={item.filename}>
-            {item.filename}
-          </span>
+        <li
+          className={
+            item.paste
+              ? "prompt-attachment prompt-attachment-paste"
+              : "prompt-attachment"
+          }
+          key={item.id}
+        >
+          {item.paste ? (
+            <PastedText
+              className="pasted-text-draft"
+              file={{ paste: item.paste, url: item.previewUrl }}
+            />
+          ) : (
+            <>
+              <AttachmentIcon item={item} />
+              <span className="prompt-attachment-name" title={item.filename}>
+                {item.filename}
+              </span>
+            </>
+          )}
           {onRemove && (
             <AttachmentRemoveButton
               filename={item.filename}

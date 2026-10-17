@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./attachments": {
+      "types": "./src/attachments.ts",
+      "import": "./dist/attachments.js"
+    },
     ".": {
       "types": "./src/runtime.ts",
       "import": "./dist/runtime.js"
@@ -100,6 +104,10 @@
       "types": "./src/tools/workspace-path.ts",
       "import": "./dist/tools/workspace-path.js"
     },
+    "./tools/workspace-read": {
+      "types": "./src/tools/workspace-read.ts",
+      "import": "./dist/tools/workspace-read.js"
+    },
     "./repair": {
       "types": "./src/repair/index.ts",
       "import": "./dist/repair/index.js"
@@ -119,6 +127,7 @@
     "diff": "^8.0.4",
     "fast-xml-parser": "^5.11.1",
     "fflate": "^0.8.3",
+    "pdfjs-dist": "6.4.299",
     "turndown": "^7.2.4",
     "zod": "catalog:"
   },
@@ -127,5 +136,8 @@
     "@types/turndown": "^5.0.6",
     "typescript": "catalog:",
     "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=22.22.0"
   }
 }

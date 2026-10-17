@@ -1,9 +1,12 @@
+import { randomUUID } from "node:crypto";
 import {
   type FileHandle,
+  link,
   mkdir,
   open,
   readFile,
   realpath,
+  unlink,
 } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ArtifactManifest } from "@reasonateai/contracts/execution-protocol";
@@ -222,8 +225,27 @@ async function writeImmutableObject(
   digest: string,
   key: string
 ): Promise<void> {
-  const handle = await openExclusively(target.objectPath, key);
-  if (handle === undefined) {
+  const staged = `${target.objectPath}.${randomUUID()}.tmp`;
+  const handle = await openExclusively(staged, key);
+  if (!handle) {
+    throw new ArtifactStoreError("Could not stage the artifact.");
+  }
+  try {
+    try {
+      await handle.writeFile(content);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      // Create-only publication: readers can never observe a partial object.
+      await link(staged, target.objectPath);
+      return;
+    } catch (error) {
+      if (errorCodeOf(error) !== "EEXIST") {
+        throw error;
+      }
+    }
     // The object was already there. Re-resolve it so a link planted at the
     // object path cannot make this read (or this write) leave the tenant.
     const realTarget = await realpathIfPresent(target.objectPath);
@@ -239,13 +261,8 @@ async function writeImmutableObject(
         key,
       });
     }
-    return;
-  }
-
-  try {
-    await handle.writeFile(content);
   } finally {
-    await handle.close();
+    await unlink(staged);
   }
 }
 

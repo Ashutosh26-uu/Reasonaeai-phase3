@@ -8,11 +8,13 @@ import type { RequestContext } from "@mastra/core/request-context";
 import type { MastraCompositeStore } from "@mastra/core/storage";
 import type { Workspace, WorkspaceFilesystem } from "@mastra/core/workspace";
 import { Memory } from "@mastra/memory";
+import type { AttachmentReference } from "@reasonateai/contracts/execution";
 import {
   materializeDelegatableSubagents,
   type WorkerOverride,
   type WorkerOverrides,
 } from "./agents/materialize.js";
+import { attachmentIndex, runAttachments } from "./attachments.js";
 import {
   type BudgetStopCondition,
   createRunBudget,
@@ -108,6 +110,13 @@ export interface ReasonateCtoRuntimeConfig {
   enableBrowserVerification?: boolean | undefined;
   enableTestRunner?: boolean | undefined;
   limits?: Partial<CtoRuntimeLimits>;
+  loadAttachment?:
+    | ((input: {
+        requestContext: RequestContext;
+        runId: string;
+        index: number;
+      }) => Promise<AttachmentReference | undefined>)
+    | undefined;
   memory?: Memory;
   model: string;
   /**
@@ -206,6 +215,7 @@ function createRuntimeTools(
         : { root: config.workspaceRoot }),
     }),
     read: createWorkspaceReadTool({
+      loadAttachment: config.loadAttachment,
       resolveFilesystem,
       resolveResourceContext: async (requestContext) => ({
         cwd: config.workspaceRoot ?? process.cwd(),
@@ -428,6 +438,7 @@ export function createReasonateCtoRuntime(config: ReasonateCtoRuntimeConfig) {
           basePrompt,
           renderBundledRules(),
           renderSkillCatalog(),
+          attachmentIndex(runAttachments(requestContext)),
         ].join("\n\n"),
         cwd: config.workspaceRoot ?? process.cwd(),
         instructionSources: await resolveInstructionSources(requestContext),

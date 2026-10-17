@@ -444,6 +444,8 @@ function readPromptAttachments(input: PromptInputMessage) {
       data: file.url,
       filename: file.filename ?? "attachment",
       mediaType: file.mediaType || "application/octet-stream",
+      origin: file.paste ? ("paste" as const) : ("upload" as const),
+      paste: file.paste,
     };
   });
   const totalBytes = promptAttachments.reduce(
@@ -473,6 +475,7 @@ function PromptAttachmentPreview() {
           filename: file.filename ?? "Attachment",
           id: file.id,
           mediaType: file.mediaType || "application/octet-stream",
+          paste: file.paste,
           previewUrl: file.url,
         }))}
         onRemove={remove}

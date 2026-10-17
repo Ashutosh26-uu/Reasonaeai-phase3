@@ -15,7 +15,7 @@ import {
   type BuildSessionId,
   BuildSessionIdSchema,
   BuildSessionSchema,
-  type ConversationAttachment,
+  ConversationAttachmentSchema,
   type ConversationMessage,
   ConversationMessageSchema,
   type ConversationMetadata,
@@ -322,17 +322,6 @@ function isRetryableMigrationError(error: unknown): boolean {
 
 function asIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
-}
-
-function estimateDataUrlBytes(data: string): number {
-  const encoded = data.slice(data.indexOf(",") + 1);
-  let padding = 0;
-  if (encoded.endsWith("==")) {
-    padding = 2;
-  } else if (encoded.endsWith("=")) {
-    padding = 1;
-  }
-  return Math.floor((encoded.length * 3) / 4) - padding;
 }
 
 function toBuildSession(row: Record<string, unknown>): BuildSession {
@@ -1283,7 +1272,7 @@ export function createProjectStateStore(config: {
          select r.run_id::text as id, 'user'::text as role,
                 r.user_message as text, r.created_at, null::text as source_id,
                 null::text as reasoning, 0 as position, r.run_id,
-                r.user_attachments
+                coalesce((select jsonb_agg(jsonb_strip_nulls(jsonb_build_object('filename', file.value->>'filename', 'mediaType', file.value->>'mediaType', 'origin', file.value->>'origin', 'paste', file.value->'paste', 'sizeBytes', (length(rtrim(split_part(file.value->>'data', ',', 2), '='))*3/4))) order by file.ordinality) from jsonb_array_elements(r.user_attachments) with ordinality as file(value,ordinality)), '[]'::jsonb) as user_attachments
            from runs r join conversation_history history on history.run_id=r.run_id
           where history.build_session_id = $1 and r.organization_id = $2
             and r.project_id = $3 and r.user_message is not null
@@ -1323,15 +1312,9 @@ export function createProjectStateStore(config: {
     );
     return result.rows.map((row) =>
       ConversationMessageSchema.parse({
-        attachments: PromptAttachmentSchema.array()
-          .parse(row.user_attachments ?? [])
-          .map(
-            (attachment): ConversationAttachment => ({
-              filename: attachment.filename,
-              mediaType: attachment.mediaType,
-              sizeBytes: estimateDataUrlBytes(attachment.data),
-            })
-          ),
+        attachments: ConversationAttachmentSchema.array().parse(
+          row.user_attachments ?? []
+        ),
         createdAt: asIso(row.created_at as Date),
         feedback:
           row.role === "assistant"

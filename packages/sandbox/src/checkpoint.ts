@@ -216,7 +216,21 @@ export async function snapshotSandbox(
     "core.autocrlf",
     "false",
   ]);
-  await runChecked(sandbox, workdir, "git", ["add", "-A"]);
+  await runChecked(sandbox, workdir, "git", [
+    "rm",
+    "--cached",
+    "-r",
+    "--ignore-unmatch",
+    "--",
+    ".reasonate/attachments",
+  ]);
+  await runChecked(sandbox, workdir, "git", [
+    "add",
+    "-A",
+    "--",
+    ".",
+    ":(exclude).reasonate/attachments",
+  ]);
   await runChecked(
     sandbox,
     workdir,
